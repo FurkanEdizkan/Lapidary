@@ -207,7 +207,7 @@ impl std::fmt::Display for Violation {
                  (xtask/src/deploy.rs) but does not set SERVER_FEATURES — or is absent from \
                  the file entirely — so its image would build without the CAD kernel it \
                  needs. Add `args: SERVER_FEATURES: \
-                 mock-kernel` (or the current feature name) under {service} in \
+                 worker` (or the current feature name) under {service} in \
                  deploy/compose.yaml, or remove {service} from KERNEL_LINKED_SERVICES if it \
                  no longer needs the kernel."
             ),
@@ -343,12 +343,12 @@ impl std::fmt::Display for Violation {
                 ".github/workflows/containers.yml builds deploy/Containerfile with no --target: `{line}`. That takes \
                  the file's last stage, the worker, around a binary built with whatever SERVER_FEATURES the line \
                  passes, and with none it refuses to start as a worker. Build `--target api`, and `--target worker \
-                 --build-arg SERVER_FEATURES=mock-kernel`, as deploy/compose.yaml does."
+                 --build-arg SERVER_FEATURES=worker`, as deploy/compose.yaml does."
             ),
             Violation::WorkflowWorkerWithoutKernel { line } => write!(
                 f,
                 ".github/workflows/containers.yml builds the worker target without its kernel: `{line}`. Pass \
-                 `--build-arg SERVER_FEATURES=mock-kernel`, as deploy/compose.yaml's worker does."
+                 `--build-arg SERVER_FEATURES=worker`, as deploy/compose.yaml's worker does."
             ),
             Violation::WorkflowApiWithKernel { line } => write!(
                 f,
@@ -551,8 +551,8 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                 block.target = Some(scalar(value));
             }
             if !trimmed.starts_with('#') {
-                // Mapping form (`SERVER_FEATURES: mock-kernel`, the form deploy/compose.yaml
-                // actually uses) and list form (`- SERVER_FEATURES=mock-kernel`, equally
+                // Mapping form (`SERVER_FEATURES: worker`, the form deploy/compose.yaml
+                // actually uses) and list form (`- SERVER_FEATURES=worker`, equally
                 // valid Compose syntax for `args:`) both count. Recognizing only the mapping
                 // form would make a list-form worker report MissingKernelLink — telling the
                 // reader their image ships kernel-less when it would not.
@@ -1081,7 +1081,7 @@ pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Ve
 }
 
 /// Every `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` builds what compose builds: `--target
-/// api` with no `SERVER_FEATURES`, or `--target worker` with `mock-kernel`. Line-wise, with `\`-continued lines joined.
+/// api` with no `SERVER_FEATURES`, or `--target worker` with the `worker` feature. Line-wise, with `\`-continued lines joined.
 pub fn check_workflow(contents: &str) -> Vec<Violation> {
     logical_lines(contents)
         .iter()
@@ -1110,7 +1110,7 @@ pub fn check_workflow(contents: &str) -> Vec<Violation> {
                 .unwrap_or_default();
             match target.as_deref() {
                 None => Some(Violation::WorkflowBuildWithoutTarget { line }),
-                Some("worker") if !features.split(',').any(|f| f == "mock-kernel") => {
+                Some("worker") if !features.split(',').any(|f| f == "worker") => {
                     Some(Violation::WorkflowWorkerWithoutKernel { line })
                 }
                 Some("api") if !features.is_empty() => {
@@ -1234,7 +1234,7 @@ services:
       target: worker
       args:
         # Only the worker links the CAD kernel — the open path (api) never invokes it.
-        SERVER_FEATURES: mock-kernel
+        SERVER_FEATURES: worker
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
       LAPIDARY_ROLE: worker
@@ -1276,7 +1276,7 @@ FROM runtime AS worker
     fn server_features_on_a_non_listed_service_fails_and_names_it() {
         let bad = CORRECT_COMPOSE.replacen(
             "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
-            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: mock-kernel\n",
+            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: worker\n",
             1,
         );
         let violations = check_compose(&bad);
@@ -1292,7 +1292,7 @@ FROM runtime AS worker
     #[test]
     fn worker_missing_server_features_fails() {
         let bad = CORRECT_COMPOSE.replacen(
-            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n",
+            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n",
             "",
             1,
         );
@@ -1315,7 +1315,7 @@ FROM runtime AS worker
         // raised nothing.
         let bad = CORRECT_COMPOSE.replacen(
             "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
-            "# ---- application services ----\n  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: mock-kernel\n",
+            "# ---- application services ----\n  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: worker\n",
             1,
         );
         let violations = check_compose(&bad);
@@ -1333,7 +1333,7 @@ FROM runtime AS worker
         // ever walked the services the parser found, so a KERNEL_LINKED_SERVICES entry that
         // never parsed at all raised nothing. This pins the reverse check.
         let bad = CORRECT_COMPOSE.replacen(
-            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      target: worker\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
+            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      target: worker\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
             "",
             1,
         );
@@ -1355,13 +1355,13 @@ FROM runtime AS worker
 
     #[test]
     fn list_form_args_setting_server_features_is_recognized() {
-        // Compose accepts `args:` as a list (`- SERVER_FEATURES=mock-kernel`) as well as a
+        // Compose accepts `args:` as a list (`- SERVER_FEATURES=worker`) as well as a
         // mapping. Recognizing only the mapping form would make this fixture report
         // MissingKernelLink — telling the reader their worker ships kernel-less when it
         // would not, since the arg genuinely reaches the build either way.
         let list_form = CORRECT_COMPOSE.replacen(
-            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: mock-kernel\n",
-            "      args:\n        - SERVER_FEATURES=mock-kernel\n",
+            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n",
+            "      args:\n        - SERVER_FEATURES=worker\n",
             1,
         );
         assert_eq!(check_compose(&list_form), vec![]);
@@ -1517,7 +1517,7 @@ FROM runtime AS worker
     fn hardcoded_features_flag_in_build_line_fails() {
         let bad = CORRECT_CONTAINERFILE.replace(
             "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "RUN cargo build --release --locked -p lapidary-server --features mock-kernel ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
+            "RUN cargo build --release --locked -p lapidary-server --features worker ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
         );
         let violations = check_containerfile(&bad);
         assert_eq!(violations, vec![Violation::BuildLineHardcodedFeatures]);
@@ -2111,13 +2111,13 @@ RUN install -d -m 0755 /var/lib/lapidary-peer-staging
 
         let right = workflow(&[
             "docker build -f deploy/Containerfile --target api -t lapidary-api:1 .",
-            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=mock-kernel -t lapidary-worker:1 .",
+            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=worker -t lapidary-worker:1 .",
             "docker build -f deploy/web/Containerfile -t lapidary-web:1 .",
         ]);
         assert_eq!(check_workflow(&right), vec![]);
 
         let kernel_less_worker = "docker build -f deploy/Containerfile --target worker -t w .";
-        let kernel_api = "docker build -f deploy/Containerfile --target api --build-arg SERVER_FEATURES=mock-kernel -t a .";
+        let kernel_api = "docker build -f deploy/Containerfile --target api --build-arg SERVER_FEATURES=worker -t a .";
         let test_stage = "docker build -f deploy/Containerfile --target runtime -t t .";
         assert_eq!(
             check_workflow(&workflow(&[kernel_less_worker, kernel_api, test_stage])),

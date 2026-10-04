@@ -1,8 +1,8 @@
 //! A pull (sharing S3), end to end: the sharer's routes over a real pinned connection, the mirror, the puller's fetch
 //! and bundles, and the worker importing them. Both installations use one database, as `peer_mirror.rs`'s tests do,
 //! each with its own store. Here for `peer_sync.rs`'s reason: `#[sqlx::test]`, and `deny.toml`'s list of who may take
-//! `sqlx`. Needs the worker, so only with `mock-kernel`.
-#![cfg(feature = "mock-kernel")]
+//! `sqlx`. Needs the worker, so only with `worker`.
+#![cfg(feature = "worker")]
 
 use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{

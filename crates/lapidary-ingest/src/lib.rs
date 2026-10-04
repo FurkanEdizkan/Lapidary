@@ -11,7 +11,7 @@
 //! what lets `xtask/src/layers.rs`'s `FORBIDDEN_PAIRS` forbid `lapidary-api ->
 //! lapidary-cad` again, unconditionally, while this crate depends on it freely.
 //!
-//! `bin/lapidary-server` links this crate only behind its `mock-kernel` Cargo feature
+//! `bin/lapidary-server` links this crate only behind its `worker` Cargo feature
 //! (see that crate's `Cargo.toml` for why that feature now does double duty), and only
 //! merges its router into the worker process's router when `LAPIDARY_ROLE=worker` — the
 //! `api` image is built without the feature, so it does not link `lapidary-cad`, this

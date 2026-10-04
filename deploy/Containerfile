@@ -8,7 +8,7 @@ FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd
 # Feature list for the lapidary-server build, threaded in by deploy/compose.yaml. Declared
 # here, inside the stage — an ARG before the first FROM lives in a different scope and is
 # not visible to the RUN below. Empty by default so the api image carries no worker;
-# deploy/compose.yaml sets this to `mock-kernel` only for the worker service.
+# deploy/compose.yaml sets this to `worker` only for the worker service.
 ARG SERVER_FEATURES=
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -85,9 +85,9 @@ ENTRYPOINT ["/usr/local/bin/lapidary-server"]
 #
 # Both are the runtime above, and since the CAD kernel came out neither adds a layer to it: what
 # separates the two images is the SERVER_FEATURES build arg, which is what compiles the worker's
-# ingest half in (`mock-kernel`) and leaves the api without it. They stay two named targets
-# because every lapidary-server service must name one — an untargeted build takes the last stage
-# in this file — and `cargo xtask check-deploy` fails a service that picks none or the wrong one.
+# ingest half in (the `worker` feature) and leaves the api without it. They stay two named
+# targets because every lapidary-server service must name one — an untargeted build takes the last
+# stage in this file — and `check-deploy` fails a service that picks none or the wrong one.
 # That matters for the build arg as much as for the stage: an untargeted build takes `worker`'s
 # stage around a binary built with SERVER_FEATURES empty, which refuses to start as a worker.
 FROM runtime AS api

@@ -115,12 +115,12 @@ parses and rasterizes, cannot live in it. It lives in `lapidary-ingest`, and onl
 `worker` image compiles that in:
 
 ```sh
-cargo tree -p lapidary-server                        | grep lapidary-cad   # nothing
-cargo tree -p lapidary-server --features mock-kernel | grep lapidary-cad   # two lines
+cargo tree -p lapidary-server                    | grep lapidary-cad   # nothing
+cargo tree -p lapidary-server --features worker | grep lapidary-cad   # two lines
 ```
 
 One `Containerfile` builds both images; `deploy/compose.yaml` passes
-`SERVER_FEATURES: mock-kernel` to `worker` and nothing to `api`, and `cargo xtask
+`SERVER_FEATURES: worker` to `worker` and nothing to `api`, and `cargo xtask
 check-deploy` fails the build if that ever stops being true. So the `api` container does
 not merely decline to serve `/scan` — the code behind it is not linked into the binary.
 

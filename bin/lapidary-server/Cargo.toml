@@ -9,17 +9,20 @@ publish = false
 
 [features]
 default = []
-# Compiles in the mock CAD kernel and reports it at startup, AND compiles in
-# lapidary-ingest — the crate holding the real scan handler (see its module doc for why
-# ingest is a separate crate rather than a route inside lapidary-api). One feature now
-# gates two things, which is a slight misnomer (this isn't just about the mock kernel any
-# more); kept as one name because deploy/compose.yaml already toggles exactly this value
-# per service (`worker` sets SERVER_FEATURES: mock-kernel, `api` does not) and splitting
-# it into two feature names would mean touching deploy/compose.yaml, deploy/Containerfile
-# and xtask/src/deploy.rs's tests for no behavioural gain. `deploy/Containerfile` takes
-# the value as a build arg (SERVER_FEATURES), empty by default, so `api` builds without
-# linking lapidary-cad, lapidary-ingest, or anything reachable through either.
-mock-kernel = [
+# Everything the worker role needs and the api role must not link: the mesh parsers
+# (lapidary-cad), the scan handler (lapidary-ingest — see its module doc for why ingest is a
+# separate crate rather than a route inside lapidary-api), and the job loop they feed
+# (lapidary-jobs). `deploy/Containerfile` takes the value as a build arg (SERVER_FEATURES),
+# empty by default, so `api` builds without linking any of the three.
+#
+# **It was called `mock-kernel`** — for a test double that is deleted and a feature that
+# never gated it — and this manifest said in as many words that the name was "a slight
+# misnomer" kept because renaming it would mean touching deploy/compose.yaml,
+# deploy/Containerfile and xtask/src/deploy.rs's tests "for no behavioural gain". That cost is
+# paid here. A gate whose name describes something that no longer exists is worse than the
+# churn of renaming it: an operator reading `SERVER_FEATURES: mock-kernel` on the one service
+# that runs real ingest has every reason to think the worker is a stub.
+worker = [
     "dep:lapidary-cad",
     "dep:lapidary-ingest",
     "dep:lapidary-jobs",
@@ -28,17 +31,17 @@ mock-kernel = [
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
-# The peer role's router and its pinned-key TLS. Not optional and not behind `mock-kernel`,
-# unlike lapidary-cad and lapidary-ingest below: the peer role links no CAD kernel, so every
+# The peer role's router and its pinned-key TLS. Not optional and not behind `worker`,
+# unlike lapidary-cad and lapidary-ingest below: the peer role parses nothing, so every
 # build can carry it, and a role the binary cannot serve would be a role compose could set and
 # nothing would answer.
 lapidary-peer.workspace = true
-# Optional, off by default: only the mock-kernel feature pulls this in. lapidary-api
-# never depends on lapidary-cad — the open path lives there and must never invoke the
-# kernel — so the worker reaches it directly, through this binary.
+# Optional, off by default: only the `worker` feature pulls this in. lapidary-api
+# never depends on lapidary-cad — the open path lives there and must never read a model
+# file — so the worker reaches it directly, through this binary.
 lapidary-cad = { workspace = true, optional = true }
 # The worker-only ingest router. Gated the same way as lapidary-cad above (see the
-# mock-kernel feature doc) — a binary built without this feature has no
+# `worker` feature doc) — a binary built without this feature has no
 # lapidary_ingest::router at all; main.rs fails fast at startup if LAPIDARY_ROLE=worker
 # is requested against such a build, rather than silently serving a worker with no scan
 # route.
@@ -46,7 +49,7 @@ lapidary-ingest = { workspace = true, optional = true }
 # The worker loop this binary spawns under LAPIDARY_ROLE=worker. Gated the same way as
 # the two above, for the same reason: only the worker image runs it, and only that image
 # has a JobHandler (lapidary-ingest's) to hand it. lapidary-jobs itself is L2 and never
-# reaches the kernel — that is what the JobHandler seam is for — so this gating is about
+# reaches a parser — that is what the JobHandler seam is for — so this gating is about
 # keeping the api image to what it actually uses, not about the open-path boundary.
 lapidary-jobs = { workspace = true, optional = true }
 anyhow.workspace = true
