@@ -29,7 +29,7 @@ pub mod reap;
 mod scan;
 mod seed;
 
-pub use handler::WorkerHandler;
+pub use handler::{Pause, WorkerHandler};
 pub use seed::seed_examples;
 
 use axum::Router;

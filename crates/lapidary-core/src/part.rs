@@ -218,7 +218,7 @@ pub const CAD_FORMATS: [&str; 4] = ["step", "stp", "iges", "igs"];
 /// Why a B-rep file is refused, named by its format.
 ///
 /// Here rather than at either call site because two places refuse: `lapidary-api`'s upload route,
-/// before a byte is transferred, and the worker's `kernel_for`, for a file a scan found. A person
+/// before a byte is transferred, and the worker's `refuse_b_rep`, for a file a scan found. A person
 /// who meets both must meet the same sentence, and it has to say what this library takes rather
 /// than how to rebuild it — Lapidary is a visual index of meshes, and there is no feature to turn
 /// on.

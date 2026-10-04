@@ -12,7 +12,7 @@ lapidary-core.workspace = true
 lapidary-db.workspace = true
 lapidary-storage.workspace = true
 # The whole reason this is a separate crate from lapidary-api: the open path must never
-# depend on lapidary-cad, and the handler below genuinely needs MeshKernel.
+# depend on lapidary-cad, and the handler below genuinely needs its parsers.
 lapidary-cad.workspace = true
 # The seam handler.rs implements: JobHandler and HandlerError. L3 -> L2, allowed.
 lapidary-jobs.workspace = true
@@ -36,12 +36,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
-# tests/handler.rs implements `Kernel` for a CAD kernel with no OCCT behind it.
-async-trait.workspace = true
-# tests/scan.rs decodes the stored thumbnail rather than checking its byte length: a
-# zeroed or empty WebP has a length too, and only a decode proves the bytes that reached
-# `derivative.thumb_bytes` are the image the kernel actually rendered.
-image.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }

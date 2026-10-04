@@ -23,7 +23,6 @@ mock-kernel = [
     "dep:lapidary-cad",
     "dep:lapidary-ingest",
     "dep:lapidary-jobs",
-    "lapidary-cad/mock-kernel",
 ]
 
 [dependencies]

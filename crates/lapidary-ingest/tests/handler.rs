@@ -1,6 +1,5 @@
 //! The handler, exercised the way the worker exercises it.
 
-use lapidary_cad::{CadError, Kernel, KernelOutput, KernelParams, KernelVersion, MeshKernel};
 use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
@@ -9,6 +8,7 @@ use lapidary_core::{
 use lapidary_db::{
     GridQuery, IngestRequest, JobRow, PartRepository, PgIngest, PgParts, Sort, StoredBlobRow,
 };
+use lapidary_ingest::Pause;
 use lapidary_ingest::WorkerHandler;
 use lapidary_jobs::{HandlerError, JobHandler};
 use sqlx::PgPool;
@@ -54,7 +54,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
-        kernel: None,
+        pause: None,
     }
 }
 
@@ -178,7 +178,7 @@ async fn a_real_stl_ingests_with_its_real_measurements(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let outcome = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -259,7 +259,7 @@ async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPo
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let outcome = handler
@@ -305,7 +305,7 @@ async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool:
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
     let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
 
@@ -344,7 +344,7 @@ async fn an_upload_of_bytes_a_scan_already_filed_reads_them_from_that_part_direc
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
     let scanned = handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -397,7 +397,7 @@ async fn an_upload_whose_only_filed_copy_was_edited_fails_permanently_and_indexe
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
     handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -447,7 +447,7 @@ async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let err = handler
@@ -474,7 +474,7 @@ async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let first = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -504,7 +504,7 @@ async fn a_truncated_stl_fails_permanently_so_it_is_never_retried(pool: PgPool) 
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let error = handler
@@ -535,13 +535,13 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
     let handler_b = WorkerHandler {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
-        kernel: None,
+        pause: None,
     };
 
     let job_a = job_for(BRACKET);
@@ -2669,11 +2669,6 @@ async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool
 
     // The positive control. An export is still built on demand, so an export row an older
     // writer left is still swept — and this is what proves the sweep ran at all.
-    let version = MeshKernel.version(&KernelParams {
-        linear_deflection_mm: None,
-        format: "stl".to_owned(),
-        produce: Vec::new(),
-    });
     sqlx::query(
         "INSERT INTO derivative (id, revision_id, kind, thumb_bytes, kernel_version, params_json) \
          SELECT uuidv7(), r.id, 'export_stl', '\\x00'::bytea, 'mesh stl-1+glb-1+cpu-1', '{}'::jsonb \
@@ -2697,7 +2692,8 @@ async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool
     assert_eq!(swept[0].0, "derive");
     assert_eq!(swept[0].1["produce"], "export_stl");
     assert_ne!(
-        version.version, "stl-1+glb-1+cpu-1",
+        lapidary_cad::kernel_version("stl"),
+        "mesh stl-1+glb-1+cpu-1",
         "and the seed is stale against what this build reports"
     );
     handler.enqueue_stale_derivatives().await;
@@ -2991,28 +2987,26 @@ async fn the_same_bytes_already_at_its_path_ingest_as_written(pool: PgPool) {
     );
 }
 
-/// Holds a job inside the kernel until the test lets it go, so another job can finish first.
+/// The two handles [`Pause`] wants, and a release that cannot hang the suite.
 ///
-/// The mesh kernel, delayed — and the only reason `WorkerHandler::kernel` is still an `Option`.
-/// `MeshKernel` is synchronous all the way down, so without a double there is no instant at which
-/// one of two jobs over one path can be suspended, and the two races below cannot be staged at
-/// all. They were staged through the CAD kernel until this goal refused those formats.
-struct HeldMesh {
-    reached: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-#[async_trait::async_trait]
-impl Kernel for HeldMesh {
-    fn version(&self, params: &KernelParams) -> KernelVersion {
-        MeshKernel.version(params)
-    }
-
-    async fn process(&self, bytes: &[u8], params: &KernelParams) -> Result<KernelOutput, CadError> {
-        self.reached.notify_one();
-        self.release.notified().await;
-        MeshKernel.process(bytes, params).await
-    }
+/// **Awaiting `reached` bare is how this test file hangs rather than fails.** If the pause ever
+/// stops firing — deleted, or moved above the read it has to sit below — a bare
+/// `reached.notified().await` waits for ever, under the machine-wide compile lock, with no
+/// message. Ten seconds is far longer than an ingest of a 48-triangle bracket and short enough
+/// to read the panic.
+fn held() -> (Pause, impl std::future::Future<Output = ()>) {
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let pause = Pause {
+        reached: reached.clone(),
+        release: release.clone(),
+    };
+    let wait = async move {
+        tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+            .await
+            .expect("the held job must reach the parse: WorkerHandler::pause never fired");
+    };
+    (pause, wait)
 }
 
 /// Two jobs, different bytes, one new path (slice 1 spec §3.3). The loser read no part there, and
@@ -3030,20 +3024,17 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
         let loser_dir = tempfile::tempdir().expect("temp dir");
         stage(winner_dir.path(), BRACKET, BRACKET_FIXTURE);
         stage(loser_dir.path(), BRACKET, GEAR_FIXTURE);
-        let reached = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
+        let (pause, reached) = held();
+        let release = pause.release.clone();
         let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
         let loser = WorkerHandler {
-            kernel: Some(Arc::new(HeldMesh {
-                reached: reached.clone(),
-                release: release.clone(),
-            })),
+            pause: Some(pause),
             ..handler_over(&pool, loser_dir.path(), blob_root.path())
         };
         let job = job_for_library(library, BRACKET);
 
         let (lost, ()) = tokio::join!(loser.handle(&job), async {
-            reached.notified().await;
+            reached.await;
             assert_eq!(
                 winner.handle(&job).await.expect("the winner ingests"),
                 Outcome::Ingested
@@ -3082,20 +3073,17 @@ async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPo
     let loser_dir = tempfile::tempdir().expect("temp dir");
     stage(winner_dir.path(), BRACKET, BRACKET_FIXTURE);
     stage(loser_dir.path(), BRACKET, BRACKET_FIXTURE);
-    let reached = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
+    let (pause, reached) = held();
+    let release = pause.release.clone();
     let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
     let loser = WorkerHandler {
-        kernel: Some(Arc::new(HeldMesh {
-            reached: reached.clone(),
-            release: release.clone(),
-        })),
+        pause: Some(pause),
         ..handler_over(&pool, loser_dir.path(), blob_root.path())
     };
     let job = job_for(BRACKET);
 
     let (lost, ()) = tokio::join!(loser.handle(&job), async {
-        reached.notified().await;
+        reached.await;
         assert_eq!(
             winner.handle(&job).await.expect("the winner ingests"),
             Outcome::Ingested

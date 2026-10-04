@@ -205,7 +205,7 @@ async fn terrain(pool: &sqlx::PgPool) -> Terrain {
             db: pool.clone(),
             ingest_dir: ingest.path().to_path_buf(),
             blob_root: our_store.path().to_path_buf(),
-            kernel: None,
+            pause: None,
         }),
         lapidary_jobs::WorkerConfig {
             poll_interval: Duration::from_millis(100),

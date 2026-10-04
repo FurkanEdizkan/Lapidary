@@ -178,19 +178,10 @@ fn default_bind() -> String {
 /// are refused by name (`lapidary_core::cad_refusal`).
 #[cfg(feature = "mock-kernel")]
 fn kernel_description() -> String {
-    use lapidary_cad::{Kernel, KernelParams, MeshKernel};
-    // `version` describes one run, and this line has no file in hand -- what it answers is
-    // which kernels are linked at all, which is `implementation`, the same for every
-    // format, so the params here name a representative one rather than a real job's.
-    let params = KernelParams {
-        linear_deflection_mm: None,
-        format: "stl".to_owned(),
-        // `version` never looks at `produce` -- nothing here is asking the kernel to
-        // build anything, only to name itself.
-        produce: Vec::new(),
-    };
-    let mesh = MeshKernel.version(&params).implementation;
-    format!("{mesh}, for stl, obj and 3mf")
+    // Asked of `lapidary-cad` rather than written out here, because that is what makes this
+    // line evidence: a literal would print the same words in a build that never linked the
+    // crate at all.
+    format!("{}, for stl, obj and 3mf", lapidary_cad::IMPLEMENTATION)
 }
 
 #[cfg(not(feature = "mock-kernel"))]
@@ -380,7 +371,7 @@ fn spawn_worker(
         db: db.clone(),
         ingest_dir,
         blob_root: blob_root.clone(),
-        kernel: None,
+        pause: None,
     });
 
     // The quarantine sweep rides along with the worker rather than getting a process or a
