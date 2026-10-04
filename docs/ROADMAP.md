@@ -3946,6 +3946,42 @@ goal lands, so the history stays legible. The plan is the goal files R1–R6 on 
     and open it in a real tool.
   - **`FEATURES.md`'s "a 17th column" line is corrected** where it was written: the premise died when `GridRow` became a
     named `FromRow` struct, and the grid now carries nine more fields than it did.
+- **R3, production stops and similarity goes with it** (merged `76eec33`, gate 14 green in 251.07 s on the merged
+  tree; the lane's own gate was 14 green in 220.04 s with `main` merged in). **128 files, +2,223 / −11,884, 31 files
+  deleted.** `DerivativeKind` is `ExportStl` and `Export3mf`; ingest's `produce` list is empty — measurements only.
+  Migration **0054** takes the pending and running render jobs, `part_shape`, `part_link` and `library.auto_thumbnail`.
+  - **The assertion the goal rests on:** two worker starts over a library seeded with every shape of corpse — a stale
+    thumbnail, all three stale rungs, structure, entities and PMI rows, a mesh revision with a volume and no centre, and
+    a part with no L0 at all — queue **zero** jobs, both times. It was red at 8 before the deletions. **Its positive
+    control is not decoration:** `enqueue_stale_derivatives` logs and swallows every database error, so a sweep whose
+    SQL no longer parses is exactly as silent as a sweep with nothing to do. A stale export must still queue exactly one
+    rebuild, and two mutations prove that control works.
+  - **It corrected the goal file's first stated fact.** `revisions_missing(Thumbnail)` is *not* in the worker-start
+    sweep — `main.rs` calls `enqueue_stale_derivatives` and nothing else, and the real caller was the thumbnails
+    route. It went either way, and the lane said the lead's fact was wrong.
+  - **A hole no compiler could see: `PgJobs::retry` resurrected jobs nothing can run.** `0054` leaves *failed* rows
+    alone on purpose, because deleting them would change the totals of a batch somebody had already read — so pressing
+    Retry on a dead `profile_shape` row set it pending, the worker refused it, and the person read "this job's payload
+    is malformed" about work removed from the product. The filter is positive now, keyed off the job-kind constants, so
+    deleting another variant is a compile error there.
+  - **The migration deletes pending *and running* rows.** `dequeue` reclaims a running row whose lease expired — that
+    is reclamation without a sweeper, by design — so one left behind is claimed by the next worker and dies on a payload
+    `from_row` cannot parse. `job_outcome_known` is deliberately **not** restated: finished rows hold `profiled`,
+    and `batch_status` counts by name and never had such a column.
+  - **Fourteen mutations, fourteen caught — and the fifteenth was deleted rather than counted.**
+    `rebuild-promises-a-rung` survived because it was **vacuous**: it ended by rebinding `rebuildable` to
+    `DerivativeKind::ALL`, so the mutated code behaved identically. It could not have been written otherwise —
+    `DerivativeKind` has two variants now, both exports, so **there is no rung to name**. That rule is held by the type
+    rather than by a test, which is the strongest place to hold it, and a mutation that cannot express its violation is
+    noise. Deleted with the reason written where it stood. Two of the fourteen turn R1's parting warning — that removing
+    the thumbnail and L0 LATERALs renumbers every later bind across three query sites — into a test.
+  - **Three tests that would have passed on broken code**, all changed: the sweep test without its control; the
+    migration's totals checked against a *copy* of `batch_status`'s SQL rather than through the aggregate itself; and
+    one that could never have passed at all — `!body.contains("l0")` against a refusal that quotes the requested
+    variant back.
+  - **Left for R4, and it matters:** the kernel version string is **unchanged on purpose**, because
+    `enqueue_stale_derivatives` compares it against every stored export row — changing it would re-queue every export
+    in the corpus at the next worker start. R4.md's stage 1 had assumed R3 changed it.
   - **Left for later:** the STEP-against-STL pair from `fixtures/step` needs `occt-bridge`, which this lane had no
     permission to build; the subdivided-surface row above is the closest proxy and is not reassuring. Two `ponytail:`
     notes name a shapeless rung re-queued every worker start and the 5,000-a-start backfill cap.
