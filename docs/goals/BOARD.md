@@ -30,8 +30,8 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [R1](R1.md) | The card shows a picture; the viewer loads the original | 4 | web (+ one db read) | — | the page query's card picture, `Card.tsx`, `Viewer.tsx`, the engine half of the frontend | — | merged `c96a5a1` | `feat/picture-first` |
 | [R2](R2.md) | OCCT out, STEP and IGES refused by name | 4 | Rust + deploy | — | `sidecar/`, `lapidary-cad/src/occt.rs`, `deploy/Containerfile`, `xtask/src/{verify,deploy}.rs`, `kernel_for` | — | merged `43e7932` | `chore/remove-occt` |
 | [R3](R3.md) | Production stops, and similarity goes with it | 4 | Rust | R1, R2 | `DerivativeKind`, the four producers, `shapes.rs`/`likeness.rs` and their api | 0054 | merged `76eec33` | `chore/stop-rendering` |
-| [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | open | `chore/purge-renders` |
-| [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | open | `refactor/mesh-facts-only` |
+| [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | claimed (lane 1) | `chore/purge-renders` |
+| [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | claimed (lane 2) | `refactor/mesh-facts-only` |
 | [R6](R6.md) | The rig, and the documents | 5 | tooling + lead | R1, R2, R3 | `scripts/e2e/`, `CLAUDE.md`, `PRODUCT.md`, `FEATURES.md`, `DATA.md`, `ARCHITECTURE.md` | — | open | `docs/visual-library` |
 
 **Wave 1 is closed** (2026-09-26): G3 `f18e0f0`, G6 `4479e1b`, G2 `5fdd5af`, T1 `9818ad2`, each gated on its merged
