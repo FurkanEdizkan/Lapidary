@@ -21,30 +21,32 @@ export type InstanceStorageView = {
  */
 sourceBytes: number, 
 /**
- * Rungs **on the storage volume**, each blob counted once however many libraries point
- * at it — where the per-library figure charges it to each of them in full.
+ * What Lapidary wrote **on the storage volume** — the slicer exports — each blob counted
+ * once however many libraries point at it, where the per-library figure charges it to
+ * each of them in full.
+ *
+ * **There is no inline figure beside it since R4.** `inlinePreviewBytes` carried the
+ * thumbnails, which were in Postgres and not on the volume, and had to be kept apart so
+ * that the figures here could be compared with `on_disk_bytes` and add up — folded in,
+ * the tracked total exceeded a walk of the storage root by exactly that amount, measured
+ * at 5,745,760 bytes on the library it was written against. Migration `0055` deleted
+ * every one of those rows, so the field could only ever report zero and the panel was
+ * printing a row that said nothing.
  */
 derivativeBytes: number, 
-/**
- * Thumbnails, which are in Postgres and not on the volume.
- *
- * Separate so that the figures above can be compared with `on_disk_bytes` and add up.
- * Folded in, the tracked total exceeds a walk of the storage root by exactly this
- * amount — measured at 5,745,760 bytes on the library this was written against — and
- * a panel reporting more tracked than present reads as bytes having gone missing.
- */
-inlinePreviewBytes: number, 
 /**
  * Soft-deleted parts. On the disk, and back the moment somebody restores them.
  */
 removedBytes: number, 
 /**
- * Purged and inside the thirty-day hold. Bytes no per-library panel can admit to.
+ * Inside the thirty-day hold. Bytes no per-library panel can admit to — a purged part's,
+ * or a blob that lost its last reference, which since `0055` includes the render
+ * derivatives Lapidary deleted on its own behalf.
  */
 quarantinedBytes: number, 
 /**
- * Rendered previews nobody has opened in 90 days, which "free cache space" would put into
- * quarantine. Lapidary rebuilds each one when its part is next opened.
+ * Slicer exports nobody has downloaded in 90 days, which "free cache space" would put
+ * into quarantine. Lapidary writes each one again when it is next asked for.
  */
 renderCacheBytes: number, 
 /**

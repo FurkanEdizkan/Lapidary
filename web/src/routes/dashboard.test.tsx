@@ -132,7 +132,6 @@ function valueFor(config: DrawnWidget): WidgetResult {
           value: {
             sourceBytes: 8_388_608,
             derivativeBytes: 629_145,
-            inlinePreviewBytes: 5_745_760,
             removedBytes: 0,
             quarantinedBytes: 0,
             renderCacheBytes: 0,

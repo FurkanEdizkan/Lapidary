@@ -2784,7 +2784,6 @@ function instanceStorage(hostStorageRoot: string | null) {
   return {
     sourceBytes: 150406654,
     derivativeBytes: 7555924,
-    inlinePreviewBytes: 5745760,
     removedBytes: 0,
     quarantinedBytes: 0,
     onDiskBytes: null,
@@ -2810,7 +2809,8 @@ function cliffPath(): string {
  * `quarantinedBytes` is the one that matters: a purge removes the part chain, so those
  * bytes belong to no library and appear in no other number this application renders. They
  * are on the disk for thirty days regardless, and a storage panel that could not mention
- * them was under-reporting by everything anybody had purged.
+ * them was under-reporting by everything anybody had purged — and, since R4's `0055`, by
+ * every thumbnail and rung Lapidary deleted on its own behalf.
  */
 test("the instance panel reports quarantined bytes, which no library total can", async () => {
   stubFetch({
@@ -2825,7 +2825,6 @@ test("the instance panel reports quarantined bytes, which no library total can",
     instanceStorage: ok({
       sourceBytes: 9684,
       derivativeBytes: 4096,
-      inlinePreviewBytes: 512,
       removedBytes: 0,
       quarantinedBytes: 12976,
       onDiskBytes: null,
@@ -2835,7 +2834,7 @@ test("the instance panel reports quarantined bytes, which no library total can",
   renderIndex();
 
   expect(
-    await screen.findByText(strings.storage.everything(9684, 4096, 512, 0, 12976)),
+    await screen.findByText(strings.storage.everything(9684, 4096, 0, 12976)),
   ).toBeDefined();
   // And the library's own line still says nothing about them, which is why the other exists.
   expect(screen.getByText(strings.storage.totals(9684, 4096, 0.42))).toBeDefined();
@@ -2852,9 +2851,6 @@ test("measuring the disk asks the server to walk it and explains the difference"
   const tracked = {
     sourceBytes: 9684,
     derivativeBytes: 4096,
-    // In Postgres, so deliberately absent from what the walk is compared against — which
-    // is the whole reason the field is separate.
-    inlinePreviewBytes: 5745760,
     removedBytes: 0,
     quarantinedBytes: 0,
     hostStorageRoot: null,

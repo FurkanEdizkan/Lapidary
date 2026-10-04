@@ -1061,3 +1061,199 @@ async fn production_stops_and_takes_only_the_jobs_nothing_can_run(pool: PgPool) 
         .expect("counts");
     assert_eq!(parts, 2, "both parts are still here");
 }
+
+/// A part and a revision of it, for `0055`'s seeds. Returns the revision.
+async fn seeded_revision(pool: &PgPool, name: &str, path: &str) -> Uuid {
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let part = Uuid::now_v7();
+    sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $4)")
+        .bind(part)
+        .bind(library)
+        .bind(name)
+        .bind(path)
+        .execute(pool)
+        .await
+        .expect("a part");
+    let revision = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
+    )
+    .bind(revision)
+    .bind(part)
+    .execute(pool)
+    .await
+    .expect("a revision");
+    revision
+}
+
+/// A `derivative` row of any kind, in raw SQL because `DerivativeKind` has two variants and both
+/// are exports — it cannot name a single one of the kinds `0055` removes.
+///
+/// `None` for the hash is the inline shape: the bytes are the row, and there is no blob to
+/// settle. `derivative_storage_is_exclusive` (`0004`) is what makes it one or the other.
+async fn seeded_derivative(pool: &PgPool, revision: Uuid, kind: &str, hash: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO derivative (id, revision_id, kind, blake3, thumb_bytes, kernel_version, \
+                                 params_json) \
+         VALUES ($1, $2, $3, $4, \
+                 CASE WHEN $4::text IS NULL THEN '\\x524946468c'::bytea END, \
+                 'occt-7.8+glb-1+cpu-1', '{}'::jsonb)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(revision)
+    .bind(kind)
+    .bind(hash)
+    .execute(pool)
+    .await
+    .expect("a derivative row");
+}
+
+/// `ref_count` and whether the clock is running, which is the whole of what `0055` writes.
+async fn blob_state(pool: &PgPool, hash: &str) -> (i32, bool) {
+    sqlx::query_as("SELECT ref_count, quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1")
+        .bind(hash)
+        .fetch_one(pool)
+        .await
+        .expect("the blob row is still there")
+}
+
+/// `0055`: the rendered derivatives leave the table and the reaper gets their blobs.
+///
+/// Four blob stories, because the predicate has four outcomes and only one case can reach each:
+/// an orphan the sweep must collect, a blob a **`file`** row still needs, a blob a surviving
+/// **export** still names, and a blob the migration must never look at at all. Plus the inline
+/// thumbnail, which has no blob because its bytes are the row.
+///
+/// Run by hand up to `0054` so the rows genuinely pre-date `0055` rather than being written into
+/// a database where no build can name their kinds.
+#[sqlx::test(migrations = false)]
+async fn the_renders_leave_the_table_and_only_their_own_blobs_are_quarantined(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(54, &pool)
+        .await
+        .expect("migrations up to 0054 apply");
+
+    // Four hashes, named for the story each one tells.
+    let orphan = "a0".repeat(32);
+    let shared_with_source = "b0".repeat(32);
+    let shared_with_export = "c0".repeat(32);
+    let export_only = "d0".repeat(32);
+
+    let bracket = seeded_revision(
+        &pool,
+        "Bracket, LP-1042-03",
+        "brackets/bracket-lp-1042-03.stl",
+    )
+    .await;
+    let spacer = seeded_revision(
+        &pool,
+        "Hex spacer, M4×20, LP-2145-01",
+        "fasteners/hex-spacer-m4x20-lp-2145-01.stl",
+    )
+    .await;
+
+    for (hash, stored, refs) in [
+        (&orphan, 184_320_i64, 4_i32),
+        (&shared_with_source, 2_097_152, 2),
+        (&shared_with_export, 61_440, 2),
+        (&export_only, 48_210, 1),
+    ] {
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, $2, $2, NULL, $3)",
+        )
+        .bind(hash)
+        .bind(stored)
+        .bind(refs)
+        .execute(&pool)
+        .await
+        .expect("a blob row");
+    }
+
+    // The orphan carries four of the seven dead kinds, which is the ordinary case: a part's
+    // rungs and its CAD reads were several rows naming one encode.
+    for kind in ["tessellation_l0", "tessellation_l1", "entities", "pmi"] {
+        seeded_derivative(&pool, bracket, kind, Some(&orphan)).await;
+    }
+    // **The blob a `file` row still references.** Content addressing makes the overlap possible
+    // however it arose, and this is the case the `file` half of `recount`'s predicate exists
+    // for: lose that half and this migration quarantines a live model file.
+    seeded_derivative(&pool, bracket, "structure", Some(&shared_with_source)).await;
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, stored_bytes) \
+         VALUES ($1, $2, 'source', 'stl', $3, 2097152, 2097152)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(bracket)
+    .bind(&shared_with_source)
+    .execute(&pool)
+    .await
+    .expect("the part's own model file");
+    // **The blob a surviving export still names.** The `derivative` half.
+    seeded_derivative(&pool, spacer, "tessellation_l2", Some(&shared_with_export)).await;
+    seeded_derivative(&pool, spacer, "export_3mf", Some(&shared_with_export)).await;
+    // A blob no dead row ever named: its hash must never reach the recount, so the drifted
+    // `ref_count` it arrived with is left exactly as it is rather than corrected in passing.
+    seeded_derivative(&pool, spacer, "export_stl", Some(&export_only)).await;
+    // The inline thumbnail: `blake3 IS NULL`, its bytes in the row, no blob to settle.
+    seeded_derivative(&pool, spacer, "thumbnail", None).await;
+    // A kind no build has ever named. `NOT IN (the two exports)` is what settles it, and that is
+    // the direction this migration's predicate is written in: what survives is what something
+    // can still build, not what a list of seven happened to mention.
+    seeded_derivative(&pool, bracket, "preview", None).await;
+
+    migrator.run(&pool).await.expect("0055 applies");
+
+    let left: Vec<String> = sqlx::query_scalar("SELECT kind FROM derivative ORDER BY kind")
+        .fetch_all(&pool)
+        .await
+        .expect("reads the table");
+    assert_eq!(
+        left,
+        ["export_3mf", "export_stl"],
+        "the table holds only what something can still build"
+    );
+    let inline: i64 = sqlx::query_scalar(
+        "SELECT coalesce(sum(octet_length(thumb_bytes)), 0)::bigint FROM derivative",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts the inline bytes");
+    assert_eq!(
+        inline, 0,
+        "no inline thumbnail is left — though the space itself waits on `VACUUM FULL derivative`"
+    );
+
+    assert_eq!(
+        blob_state(&pool, &orphan).await,
+        (0, true),
+        "nothing points at it any more, so its thirty days start now — and `PgBlobs::reap` is \
+         what unlinks it, because a migration cannot unlink a file at all"
+    );
+    assert_eq!(
+        blob_state(&pool, &shared_with_source).await,
+        (1, false),
+        "**the model file's bytes are untouched.** The `file` half of the predicate is the whole \
+         guard, and this is the row it guards"
+    );
+    assert_eq!(
+        blob_state(&pool, &shared_with_export).await,
+        (1, false),
+        "a surviving export still names these bytes, so they are counted down to one and not \
+         quarantined"
+    );
+    assert_eq!(
+        blob_state(&pool, &export_only).await,
+        (1, false),
+        "no dead row ever named it, so the migration never looked at it"
+    );
+
+    // The user's data, which is the half of the store this migration must not reach.
+    let (parts, files): (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM file)")
+            .fetch_one(&pool)
+            .await
+            .expect("counts");
+    assert_eq!((parts, files), (2, 1), "both parts and the model file stay");
+}

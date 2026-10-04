@@ -7,9 +7,11 @@
 //! every producer then surfaced as a compile error instead of a judgement call about what a
 //! function should now return.
 //!
-//! The strings those rows hold are still in the database until migration `0055` (R4) removes
-//! them, and every reader of `derivative.kind` filters in SQL or drops what it does not know —
-//! so a row of a kind this build cannot name is invisible, never an error.
+//! **Migration `0055` (R4) deleted those rows**, so `derivative.kind` now holds only the two
+//! strings below — the rule the table keeps is that every row in it is a kind something can
+//! still build. Every reader filters in SQL or drops what it does not know all the same, which
+//! is what made the deletion a migration rather than a rewrite: a row of a kind this build
+//! cannot name was invisible rather than an error, so nothing had to be read before it went.
 
 /// Also the discriminator a `derive` job carries, which is why it lives here rather than
 /// in `lapidary-cad`: the job queue names it and the database stores it.

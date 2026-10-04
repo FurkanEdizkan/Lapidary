@@ -915,21 +915,25 @@ export const strings = {
     /**
      * The whole store, across every library, and the two figures no per-library line can
      * carry: `removed` is on the disk until somebody purges it, and `quarantined` is on the
-     * disk *and* belongs to no library at all, because the part that would have said which
-     * one is the part that was purged.
+     * disk *and* belongs to no library at all, because whatever would have said which one is
+     * gone.
      *
      * Both clauses are conditional for the reason `removed` above is: a permanent
-     * "0 B quarantined" is noise on every installation where nobody has purged anything,
-     * and the moment one exists it is bytes nothing else in the application admits to.
+     * "0 B waiting" is noise on every installation where nothing has been removed, and the
+     * moment one exists it is bytes nothing else in the application admits to.
+     *
+     * **The quarantine clause does not say "purged" any more.** It did, and it was true while
+     * a purge was the only thing that put bytes in there; after R4's `0055` the figure on
+     * every upgraded installation is mostly the thumbnails and rungs *Lapidary* deleted, and
+     * telling somebody who has purged nothing that their store holds purged data is the
+     * data-loss reading `CLAUDE.md` forbids this area from producing. It names the hold and
+     * what ends it instead, which is the part a person can act on.
+     *
+     * There is no thumbnail figure. It was `inlinePreviewBytes`, the one kind of derivative
+     * that lived in Postgres rather than on the volume, and `0055` deleted every row of it.
      */
-    everything: (
-      source: number,
-      derivative: number,
-      inline: number,
-      removed: number,
-      quarantined: number,
-    ) =>
-      `Everything: ${bytes(source + derivative + inline + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of generated views, ${bytes(inline)} of thumbnails in the database${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} purged and waiting out its 30 days` : ''}.`,
+    everything: (source: number, derivative: number, removed: number, quarantined: number) =>
+      `Everything: ${bytes(source + derivative + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of files made for other tools${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} on hold for 30 days before the space comes back` : ''}.`,
     /**
      * The walk is opt-in because it costs the server a look at every file. Worded as the
      * question it answers rather than as the work it does — "measure" is what the user
@@ -938,20 +942,25 @@ export const strings = {
     measureOnDisk: 'Measure what is actually on disk',
     measuring: 'Measuring…',
     /**
-     * The render cache (Phase 4 slice 2): previews Lapidary made and can make again. Worded by the
+     * The render cache (Phase 4 slice 2): files Lapidary made and can make again. Worded by the
      * eviction boundary above: "free cache space", never "delete", and no number called freed,
      * because the bytes leave only when their quarantine ends.
+     *
+     * **Slicer files alone since R3**, and the words had to follow: nothing renders, so there
+     * is no "detailed 3D preview" to make again and a sentence promising one would be offering
+     * a rebuild nothing could perform. The name of the figure is unchanged because it is on the
+     * wire; what it describes is not.
      */
     renderCache: (size: number) =>
-      `${bytes(size)} of detailed 3D previews and slicer files nobody has opened in 90 days. Lapidary makes each one again when it is next needed.`,
+      `${bytes(size)} of slicer files nobody has downloaded in 90 days. Lapidary writes each one again when it is next asked for.`,
     freeCache: 'Free cache space…',
     freeCacheTitle: 'Free cache space?',
     freeCacheBody: (size: number) =>
-      `This removes the detailed 3D previews and slicer files of parts nobody has opened in 90 days. No model file is touched: each part still opens at once on its coarse preview while the detailed one is rebuilt, and a slicer file is written again when it is next asked for. ${bytes(size)} goes into the 30-day quarantine and becomes free space when that ends.`,
+      `This removes the slicer files Lapidary wrote for parts nobody has downloaded in 90 days. No model file is touched, and no picture: every part still shows its own image and still hands you the original file to view or download. A slicer file is written again when it is next asked for. ${bytes(size)} goes into the 30-day quarantine and becomes free space when that ends.`,
     freeCacheConfirm: 'Free cache space',
     freeCacheFailed: 'Could not free cache space. Check that the api service is running, then try again.',
     cacheFreed: (removed: number, size: number) =>
-      `Removed ${removed} ${removed === 1 ? 'file' : 'files'} from the render cache. ${bytes(size)} becomes free space when its 30-day quarantine ends.`,
+      `Removed ${removed} slicer ${removed === 1 ? 'file' : 'files'} Lapidary can write again. ${bytes(size)} becomes free space when its 30-day quarantine ends.`,
     /**
      * The two numbers side by side, and the gap named rather than left to be noticed.
      *
@@ -963,10 +972,12 @@ export const strings = {
      * difference is not an error.
      */
     /**
-     * `tracked` here is the part of the figures above that is genuinely *in the storage
-     * folder* — so not the thumbnails, which are in Postgres. Measured on a real library
-     * before this was written: folding them in put the tracked total 5.7 MB above a walk of
-     * the store, which reads as bytes having gone missing rather than as a category error.
+     * `tracked` is every figure above, and it is all of them now. It used to exclude the
+     * thumbnails, which were in Postgres: folding them in put the tracked total 5.7 MB above a
+     * walk of the store on the library this was measured against, which reads as bytes having
+     * gone missing rather than as a category error. `0055` deleted those rows, so there is
+     * nothing left in the figures that is not a file in the storage folder — and the sentence
+     * stops claiming there is.
      *
      * The disk is then legitimately the larger of the two, by the `metadata.json` beside
      * every model (deliberately counted by nothing) plus whatever the owner has put in the
@@ -974,8 +985,8 @@ export const strings = {
      */
     onDisk: (disk: number, tracked: number) =>
       disk >= tracked
-        ? `On disk: ${bytes(disk)} in the storage folder. That is ${bytes(disk - tracked)} more than the models and views above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real. Thumbnails are not in this figure: they live in the database.`
-        : `On disk: ${bytes(disk)} in the storage folder, which is ${bytes(tracked - disk)} less than the models and views above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
+        ? `On disk: ${bytes(disk)} in the storage folder. That is ${bytes(disk - tracked)} more than the figures above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real.`
+        : `On disk: ${bytes(disk)} in the storage folder, which is ${bytes(tracked - disk)} less than the figures above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
     onDiskFailed:
       'Could not measure the storage folder. The figures above still stand — they come from the database, not from the disk.',
   },

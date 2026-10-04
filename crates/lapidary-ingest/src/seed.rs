@@ -10,9 +10,8 @@
 //! Because a migration cannot write a blob. A seeded `file` row naming bytes the store
 //! does not hold is a part whose download answers 500, and a part seeded *without* a
 //! source row renders the "no source file on this revision" state — a broken-looking part
-//! is worse than an empty grid, not better. Seeding through ingest means real bytes, real
-//! measurements and a real thumbnail, produced by the same code path every other part
-//! goes through.
+//! is worse than an empty grid, not better. Seeding through ingest means real bytes and real
+//! measurements, produced by the same code path every other part goes through.
 //!
 //! # Why it is not the ingest mount
 //!

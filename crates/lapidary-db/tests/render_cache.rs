@@ -3,8 +3,14 @@
 //!
 //! **The exports alone since R3.** `cache_kinds` named the L1 and L2 rungs too, and after the
 //! pivot nothing can rebuild a rung — so evicting one would be data loss dressed as a cache sweep,
-//! and the wording of that button is a product rule: eviction must never read as data loss. The
-//! rung rows are still in the table; R4's migration deletes them.
+//! and the wording of that button is a product rule: eviction must never read as data loss.
+//!
+//! **And R4's `0055` deleted the rung rows**, so in a live database the table holds exports and
+//! nothing else. The rung below is still seeded, by hand, after the migration has run: what is
+//! being pinned is that these two queries select *by kind* rather than by "every row in the
+//! table", which is the edit `0055` makes tempting and which would turn the button into an
+//! unconditional purge of whatever a later slice stores here. That no such row survives a
+//! migrated database is `migrations.rs`'s assertion, not this file's.
 
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, RevisionId};
 use lapidary_db::{IngestRequest, PgIngest, PgParts, StoredBlobRow};
@@ -65,9 +71,9 @@ async fn export(pool: &sqlx::PgPool, part: PartId, kind: DerivativeKind, seed: u
         .expect("the export lands");
 }
 
-/// A rung a pre-pivot pipeline left behind, written as raw SQL because nothing in this build can
-/// name its kind. It must be left exactly where it is by every sweep: unrebuildable bytes are the
-/// user's data now, not our cache.
+/// A row of a kind nothing can rebuild, written as raw SQL because nothing in this build can name
+/// one. It must be left exactly where it is by every sweep: unrebuildable bytes would be the
+/// user's data, not our cache, and `0055` is the only thing that has ever removed one.
 async fn stale_rung(pool: &sqlx::PgPool, part: PartId, kind: &str, seed: u8, stored: u64) {
     sqlx::query(
         "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
@@ -148,7 +154,7 @@ async fn only_old_exports_are_cache_and_an_unrebuildable_rung_is_left_alone(pool
     );
 
     let freed = parts.free_render_cache().await.expect("frees");
-    assert_eq!(freed.rungs, 2, "the bracket's two exports");
+    assert_eq!(freed.removed, 2, "the bracket's two exports");
     assert_eq!(freed.quarantined_bytes, 48_210 + 12_405);
 
     assert_eq!(

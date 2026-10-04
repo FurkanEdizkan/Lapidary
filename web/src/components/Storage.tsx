@@ -84,18 +84,12 @@ export function InstanceStorage({
     return null
   }
 
-  const {
-    sourceBytes,
-    derivativeBytes,
-    inlinePreviewBytes,
-    removedBytes,
-    quarantinedBytes,
-    renderCacheBytes,
-    onDiskBytes,
-  } = instance
-  // Deliberately **without** `inlinePreviewBytes`: those are in Postgres, and this figure
-  // is compared against a walk of the storage folder. Including them put the tracked total
-  // above the disk by exactly their size on a real library, which reads as loss.
+  const { sourceBytes, derivativeBytes, removedBytes, quarantinedBytes, renderCacheBytes, onDiskBytes } =
+    instance
+  // Every figure above, and that is all of them since R4: `inlinePreviewBytes` was the one
+  // that was in Postgres rather than in the storage folder, and had to be left out of a total
+  // compared against a walk of it — included, it put the tracked figure above the disk by
+  // exactly its size on a real library, which reads as loss. `0055` deleted those rows.
   const tracked = sourceBytes + derivativeBytes + removedBytes + quarantinedBytes
   // Narrowed here and not in the JSX, for the reason `ShowInFolder` narrows where it does:
   // a `typeof x === 'number'` inside a child expression puts the literal `'number'` in a
@@ -106,13 +100,7 @@ export function InstanceStorage({
   return (
     <div className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
       <p>
-        {strings.storage.everything(
-          sourceBytes,
-          derivativeBytes,
-          inlinePreviewBytes,
-          removedBytes,
-          quarantinedBytes,
-        )}
+        {strings.storage.everything(sourceBytes, derivativeBytes, removedBytes, quarantinedBytes)}
       </p>
       {free.data !== undefined ? (
         <p className="mt-1">{strings.storage.cacheFreed(free.data.removed, free.data.quarantinedBytes)}</p>
