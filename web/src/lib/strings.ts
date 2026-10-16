@@ -94,6 +94,7 @@ export const strings = {
      */
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
+    settings: 'Settings — Lapidary',
     dashboard: 'Dashboard — Lapidary',
   },
   /**
@@ -102,6 +103,53 @@ export const strings = {
    * it fit, and every control inside them is the same control it was when it had a row of
    * its own.
    */
+  /**
+   * The Settings page (F3): the keys for the sites a model can be imported from, each checked
+   * against its site before anybody relies on it. A saved key is shown by its last four
+   * characters and never in full.
+   */
+  settings: {
+    title: 'Settings',
+    lead: 'Keys for the sites Lapidary imports models from. A key stays on this server: it is shown here by its last four characters, and sent only to its own site.',
+    sitesHeading: 'Model sites',
+    switchedOff:
+      'Importing from model sites is switched off on this install (LAPIDARY_IMPORT_LINKS=false). Whoever runs the server can turn it on in deploy/.env.',
+    loading: 'Loading settings…',
+    failed: 'Could not load the settings. Check that the server is running, then reload.',
+    noKeyNeeded: 'Free models import without a key.',
+    keyLabel: (site: string) => `${site} key`,
+    /** Where each site's key comes from, said once beside the field. */
+    keyHelp: {
+      thingiverse: 'An app token: create an app at thingiverse.com/apps/create and copy its token.',
+      myminifactory:
+        'Your account’s access token (OAuth). An API key reads models but cannot download their files; the token can, including what your account has bought.',
+    } as Record<string, string>,
+    saved: (hint: string) => `A key ending ${hint} is saved.`,
+    noneSaved: 'No key saved.',
+    lastCheck: (ok: boolean, when: string) =>
+      `${ok ? 'Worked' : 'Did not work'} when checked ${new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}.`,
+    save: 'Save',
+    check: 'Check',
+    checkSaved: 'Check the saved key',
+    checkSite: 'Check that it answers',
+    checking: 'Checking…',
+    remove: 'Remove',
+    saveFailed: 'The key was not saved. Check that the server is running, then try again.',
+    checkFailed: 'The check could not run. Check that the server is running, then try again.',
+  },
+  /** Importing a model from the page a person pastes (F3). */
+  importLink: {
+    menuItem: 'Import from a link…',
+    title: 'Import from a link',
+    lead: 'Paste a model’s page on Printables, Thingiverse or MyMiniFactory. Its STL, OBJ and 3MF files are imported into this library with the page’s name, creator, licence, tags and picture.',
+    label: 'Model page address',
+    confirm: 'Import',
+    failed: 'The import could not be queued. Check that the server is running, then try again.',
+    running: 'Importing from the model’s page…',
+    finished: (ingested: number, skipped: number, revised: number) =>
+      `Import complete — ${ingested.toLocaleString('en-US')} added, ${revised.toLocaleString('en-US')} revised, ${skipped.toLocaleString('en-US')} already here.`,
+    unknown: 'That import is not one this library knows about. Import the link again.',
+  },
   /** The header every page shares. */
   frame: {
     /** The accessible name of the header's nav — "navigation" alone says nothing. */

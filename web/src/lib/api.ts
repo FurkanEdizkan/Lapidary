@@ -52,6 +52,11 @@ import type {
   UploadFile,
   UploadManifest,
   UploadPlan,
+  CheckSiteKey,
+  ImportLink,
+  SetSiteKey,
+  SiteCheck,
+  SiteSettings,
 } from './types'
 import { strings } from './strings'
 
@@ -377,6 +382,73 @@ export function fileLink(part: PartId, origin: string = window.location.origin):
 /** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
 export function exportUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`
+}
+
+/**
+ * `GET /api/settings/sites` — each model site, whether a key is saved for it (by its last four
+ * characters, never the key) and what its last check said.
+ */
+export async function fetchSiteSettings(): Promise<SiteSettings> {
+  const response = await fetch('/api/settings/sites')
+  if (!response.ok) throw new Error(`site settings returned ${response.status}`)
+  return (await response.json()) as SiteSettings
+}
+
+/** `PUT /api/settings/sites/{site}` — save a key, replacing the one there. */
+export async function saveSiteKey(site: string, key: string): Promise<void> {
+  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key } satisfies SetSiteKey),
+  })
+  if (!response.ok) throw new Error(`saving a site key returned ${response.status}`)
+}
+
+/** `DELETE /api/settings/sites/{site}` — forget the key. */
+export async function clearSiteKey(site: string): Promise<void> {
+  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error(`removing a site key returned ${response.status}`)
+}
+
+/**
+ * `POST /api/settings/sites/{site}/check` — whether a key works: the one typed, unsaved, or the
+ * saved one when none is given. "It does not work" is an answer, not a failure.
+ */
+export async function checkSiteKey(site: string, key?: string): Promise<SiteCheck> {
+  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}/check`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify((key === undefined ? {} : { key }) satisfies CheckSiteKey),
+  })
+  if (response.ok || response.status === 403) {
+    const body: unknown = await response.json()
+    if (response.ok) return body as SiteCheck
+    const message = (body as { message?: unknown }).message
+    return { ok: false, account: null, message: typeof message === 'string' ? message : strings.settings.checkFailed }
+  }
+  throw new Error(`checking a site key returned ${response.status}`)
+}
+
+/**
+ * `POST /api/libraries/{id}/imports/link` — queue a model's import from its page. A refusal comes
+ * back with the server's sentence: the site is not supported, the key is missing, importing is off.
+ */
+export async function importLink(
+  library: LibraryId,
+  url: string,
+): Promise<{ kind: 'queued'; accepted: ScanAccepted } | { kind: 'refused'; message: string }> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/imports/link`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url } satisfies ImportLink),
+  })
+  if (response.ok) return { kind: 'queued', accepted: (await response.json()) as ScanAccepted }
+  if ([400, 403, 404, 422].includes(response.status)) {
+    const body: unknown = await response.json().catch(() => null)
+    const message = body !== null && typeof body === 'object' ? (body as { message?: unknown }).message : undefined
+    return { kind: 'refused', message: typeof message === 'string' ? message : strings.importLink.failed }
+  }
+  throw new Error(`importing a link returned ${response.status}`)
 }
 
 /**

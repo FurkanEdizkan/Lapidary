@@ -12,6 +12,7 @@ members = [
     "crates/lapidary-cad",
     "crates/lapidary-jobs",
     "crates/lapidary-targets",
+    "crates/lapidary-sites",
     "crates/lapidary-api",
     "crates/lapidary-ingest",
     "bin/lapidary-server",
@@ -36,6 +37,7 @@ lapidary-storage = { path = "crates/lapidary-storage" }
 lapidary-cad = { path = "crates/lapidary-cad" }
 lapidary-jobs = { path = "crates/lapidary-jobs" }
 lapidary-targets = { path = "crates/lapidary-targets" }
+lapidary-sites = { path = "crates/lapidary-sites" }
 lapidary-api = { path = "crates/lapidary-api" }
 lapidary-ingest = { path = "crates/lapidary-ingest" }
 

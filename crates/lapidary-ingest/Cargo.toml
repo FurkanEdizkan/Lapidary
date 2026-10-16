@@ -18,6 +18,9 @@ lapidary-cad.workspace = true
 lapidary-jobs.workspace = true
 # Reading a bundle back for import (Phase 4 slice 2). L3 -> L2, allowed.
 lapidary-targets.workspace = true
+# Reading a model from Printables, Thingiverse or MyMiniFactory, through the client that refuses
+# private addresses (F3).
+lapidary-sites.workspace = true
 axum.workspace = true
 # Hash first, always: handler.rs computes BLAKE3 over each file's bytes before doing
 # anything else with them.
@@ -36,6 +39,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
+# `Sites::local` and `Net::allowing_loopback`, so a test can serve a site from 127.0.0.1.
+lapidary-sites = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }

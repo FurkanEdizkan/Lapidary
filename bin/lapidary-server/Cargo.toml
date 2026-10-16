@@ -14,6 +14,8 @@ lapidary-db.workspace = true
 # three in-process; `lapidary-api` itself still never links `lapidary-cad` (check-layers).
 lapidary-cad.workspace = true
 lapidary-ingest.workspace = true
+# `Sites::public()`, for the `WorkerHandler` the server builds.
+lapidary-sites.workspace = true
 lapidary-jobs.workspace = true
 anyhow.workspace = true
 # This binary owns the listener, so it calls axum::serve directly. lapidary-api builds

@@ -13,6 +13,9 @@ lapidary-db.workspace = true
 lapidary-storage.workspace = true
 lapidary-jobs.workspace = true
 lapidary-targets.workspace = true
+# Reading a model from Printables, Thingiverse or MyMiniFactory, through the client that refuses
+# private addresses (F3).
+lapidary-sites.workspace = true
 axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
@@ -38,6 +41,8 @@ tracing.workspace = true
 ts-rs.workspace = true
 
 [dev-dependencies]
+# `Sites::local` and `Net::allowing_loopback`, so a test can serve a site from 127.0.0.1.
+lapidary-sites = { workspace = true, features = ["testing"] }
 # Reads the bundle route's archive back in its tests.
 zip.workspace = true
 sqlx.workspace = true

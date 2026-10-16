@@ -24,7 +24,7 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
     Some(match crate_name {
         "lapidary-core" => Layer::L0,
         "lapidary-db" | "lapidary-storage" => Layer::L1,
-        "lapidary-cad" | "lapidary-jobs" | "lapidary-targets" => Layer::L2,
+        "lapidary-cad" | "lapidary-jobs" | "lapidary-targets" | "lapidary-sites" => Layer::L2,
         // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
         // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
         // exists as its own crate rather than a module inside lapidary-api.
@@ -480,6 +480,7 @@ mod tests {
             "lapidary-targets",
             "lapidary-cad",
             "lapidary-targets",
+            "lapidary-sites",
             "lapidary-api",
             "lapidary-ingest",
             "lapidary-server",

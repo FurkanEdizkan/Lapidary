@@ -24,6 +24,7 @@
 mod derive;
 mod handler;
 mod import;
+mod link;
 mod migrate;
 pub mod reap;
 mod scan;

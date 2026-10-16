@@ -37,13 +37,13 @@ impl Caps {
         max_decompressed: 2 << 30,
         max_entries: 1024,
         max_ratio: 200,
-        // A triangle is `[[f32; 3]; 3]` = 36 bytes, so 8 million is ~288 MB of `Vec`.
-        // `deploy/compose.yaml` runs the worker at `LAPIDARY_WORKER_CONCURRENCY: 2`
-        // against a 2 GiB ceiling, so two jobs at this budget at once is ~576 MB -- room
-        // to spare. It is also roughly 200x the largest part in the project's test
-        // corpus (35,774 triangles, per the slice-3 handoff doc), so it refuses bombs
-        // without refusing real work.
-        max_triangles: 8_000_000,
+        // A triangle is `[[f32; 3]; 3]` = 36 bytes, so 20 million is ~720 MB of `Vec`.
+        // **20 M since F3 (2026-10-16), the owner's call:** at 8 M the cap refused five
+        // real Bambu kits of 129–179 MB in the owner's corpus — parts, not bombs. Two jobs at
+        // the cap at once (`LAPIDARY_WORKER_CONCURRENCY: 2`) is ~1.4 GB against the app's
+        // 2 GiB ceiling, which the F3 record measured with those five kits. It still refuses
+        // a component bomb: branching^depth past 20 M stops before it is allocated.
+        max_triangles: 20_000_000,
     };
 }
 
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(Caps::DEFAULT.max_decompressed, 2 << 30);
         assert_eq!(Caps::DEFAULT.max_entries, 1024);
         assert_eq!(Caps::DEFAULT.max_ratio, 200);
-        assert_eq!(Caps::DEFAULT.max_triangles, 8_000_000);
+        assert_eq!(Caps::DEFAULT.max_triangles, 20_000_000);
     }
 
     use std::io::Write as _;

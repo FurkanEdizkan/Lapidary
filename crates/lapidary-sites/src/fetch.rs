@@ -44,7 +44,9 @@
 //! that routes private space *into* the public ranges has a network this module cannot
 //! reason about.
 
-use crate::images::MAX_INPUT_BYTES;
+/// The same 10 MB `lapidary_storage::images::MAX_INPUT_BYTES` puts on a picture; `lapidary-api`'s
+/// tests assert the two agree.
+pub const MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 use reqwest::{Client, redirect};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -105,6 +107,9 @@ pub enum FetchError {
 
     #[error("That address could not be reached: {detail}")]
     Unreachable { detail: String },
+
+    #[error("That answer is larger than the {} MB this request allows, so Lapidary stopped reading it.", .cap / (1024 * 1024))]
+    AnswerTooLarge { cap: usize },
 }
 
 /// Fetch the bytes at `url`, or say why not.
@@ -113,37 +118,110 @@ pub enum FetchError {
 /// that, from the file's own header. This function's job ends at "these bytes came from a
 /// place we were willing to ask".
 pub async fn fetch_image(url: &str) -> Result<Vec<u8>, FetchError> {
-    tokio::time::timeout(BUDGET, follow(url, Policy::PublicOnly))
-        .await
-        .map_err(|_| FetchError::TimedOut)?
+    Net::public().image(url).await
 }
 
-/// Which addresses this module will connect to.
-///
-/// `PublicOnly` is the only variant that exists in a built binary: the other is
-/// `#[cfg(test)]`, and `#[cfg(test)]` items are invisible even to this crate's own
-/// integration tests. There is no flag, no environment variable and no builder that turns
-/// the guard off in something that ships.
-///
-/// **`Exempt` names one address, not a range**, and that is the point. A test needs to reach
-/// a server on loopback; blanket-allowing private space would also allow the redirect target
-/// in the test that matters most, and the guard would go unexercised in exactly the case it
-/// exists for. With one address exempt, `169.254.169.254` is still refused — so the redirect
-/// test proves the check runs on every hop rather than proving the policy was disabled.
+/// Who this client will talk to. [`Net::public`] everywhere a request leaves this server; the
+/// loopback exemption exists for tests alone, so a fixture server can stand in for a site.
+#[derive(Debug, Clone, Copy)]
+pub struct Net {
+    policy: Policy,
+}
+
+/// What a request carries besides its URL. Headers go to the URL's own host and **are dropped
+/// on a redirect to another host**: a site's API key must not follow it to a CDN, or to wherever
+/// a compromised redirect points.
+#[derive(Debug, Default, Clone)]
+pub struct Ask {
+    pub headers: Vec<(String, String)>,
+    /// A JSON body, sent as `POST`. `None` is a `GET`.
+    pub json: Option<serde_json::Value>,
+    /// The most this answer may be, enforced while reading.
+    pub cap: usize,
+    /// The whole fetch, redirects included.
+    pub budget: Duration,
+}
+
+/// An answer whatever its status: a site's 401 or 404 is something its caller names.
+#[derive(Debug)]
+pub struct Answer {
+    pub status: u16,
+    pub content_type: String,
+    /// `403` with `cf-mitigated: challenge`: the site's Cloudflare will not let a server through,
+    /// which no key or retry from here can change.
+    pub cloudflare: bool,
+    pub bytes: Vec<u8>,
+}
+
+impl Net {
+    pub fn public() -> Net {
+        Net {
+            policy: Policy::PublicOnly,
+        }
+    }
+
+    /// For tests that serve a site from `127.0.0.1`: that one address is let through, and every
+    /// other refusal still applies.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn allowing_loopback() -> Net {
+        Net {
+            policy: Policy::Exempt(Ipv4Addr::LOCALHOST.into()),
+        }
+    }
+
+    /// An image, refused unless the answer is a success that says it is one.
+    pub async fn image(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        let answer = self
+            .fetch(
+                url,
+                Ask {
+                    cap: MAX_INPUT_BYTES,
+                    budget: BUDGET,
+                    ..Ask::default()
+                },
+            )
+            .await
+            .map_err(|err| match err {
+                FetchError::AnswerTooLarge { .. } => FetchError::TooLarge,
+                other => other,
+            })?;
+        if !(200..300).contains(&answer.status) {
+            return Err(FetchError::NotOk {
+                status: answer.status,
+            });
+        }
+        if !answer.content_type.is_empty() && !answer.content_type.starts_with("image/") {
+            return Err(FetchError::NotAnImage {
+                content_type: answer.content_type,
+            });
+        }
+        Ok(answer.bytes)
+    }
+
+    /// `url` with `ask`, following redirects by hand with every check on every hop.
+    pub async fn fetch(&self, url: &str, ask: Ask) -> Result<Answer, FetchError> {
+        tokio::time::timeout(ask.budget, follow(url, &ask, self.policy))
+            .await
+            .map_err(|_| FetchError::TimedOut)?
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Policy {
     PublicOnly,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     Exempt(IpAddr),
 }
 
-async fn follow(url: &str, policy: Policy) -> Result<Vec<u8>, FetchError> {
-    let mut next = Url::parse(url).map_err(|_| FetchError::NotFetchable)?;
+async fn follow(url: &str, ask: &Ask, policy: Policy) -> Result<Answer, FetchError> {
+    let first = Url::parse(url).map_err(|_| FetchError::NotFetchable)?;
+    let mut next = first.clone();
 
     for _ in 0..=MAX_REDIRECTS {
-        // Re-applied to every hop, which is the entire reason redirects are followed here
-        // rather than by the client.
-        let response = one_hop(&next, policy).await?;
+        // Credentials stay with the host they were given for.
+        let same_host = next.host_str() == first.host_str();
+        let headers: &[(String, String)] = if same_host { &ask.headers } else { &[] };
+        let response = one_hop(&next, headers, ask.json.as_ref(), policy).await?;
 
         if response.status().is_redirection() {
             let location = response
@@ -151,51 +229,49 @@ async fn follow(url: &str, policy: Policy) -> Result<Vec<u8>, FetchError> {
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .ok_or(FetchError::BadRedirect)?;
-            // Joined against the current URL, because `Location` is allowed to be relative.
             next = next.join(location).map_err(|_| FetchError::BadRedirect)?;
             continue;
         }
 
-        if !response.status().is_success() {
-            return Err(FetchError::NotOk {
-                status: response.status().as_u16(),
-            });
-        }
-
-        // Checked, and then not trusted: `images::normalize` reads the file's own header,
-        // because this string is written by the same stranger as the bytes. What it buys is
-        // a better sentence for the common mistake of pasting the page rather than the image.
         let content_type = response
             .headers()
-            .get(axum::http::header::CONTENT_TYPE)
+            .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_owned();
-        if !content_type.is_empty() && !content_type.starts_with("image/") {
-            return Err(FetchError::NotAnImage { content_type });
-        }
-
-        return read_capped(response).await;
+        let status = response.status().as_u16();
+        let cloudflare = status == 403
+            && response
+                .headers()
+                .get("cf-mitigated")
+                .is_some_and(|value| value.as_bytes() == b"challenge");
+        let bytes = read_capped(response, ask.cap).await?;
+        return Ok(Answer {
+            status,
+            content_type,
+            cloudflare,
+            bytes,
+        });
     }
 
     Err(FetchError::TooManyRedirects)
 }
 
-/// One request, to an address this function has resolved and checked itself.
-async fn one_hop(url: &Url, policy: Policy) -> Result<reqwest::Response, FetchError> {
-    // `http` and `https` only. Everything else — `file:`, `gopher:`, `ftp:`, and whatever a
-    // client library happens to support — is refused before anything else happens.
+/// One request to one address, after that address has been checked. Pinned with
+/// `Client::resolve` so the connection goes to the address checked rather than to whatever a
+/// second lookup says — the gap DNS rebinding lives in.
+async fn one_hop(
+    url: &Url,
+    headers: &[(String, String)],
+    json: Option<&serde_json::Value>,
+    policy: Policy,
+) -> Result<reqwest::Response, FetchError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(FetchError::NotFetchable);
     }
     let port = url
         .port_or_known_default()
         .ok_or(FetchError::NotFetchable)?;
-    // Matched on `Host` rather than taken as a string, and the difference is not cosmetic:
-    // `host_str()` hands back `[::1]` **with the brackets** for a literal IPv6 URL, which
-    // `lookup_host` cannot parse. That answered `Unresolvable` — still a refusal, but for
-    // the wrong reason, and it meant the address guard was never reached for a literal IPv6
-    // address at all. A literal is also not a name, so there is nothing to look up.
     let (host, addresses): (String, Vec<SocketAddr>) = match url.host() {
         Some(url::Host::Domain(name)) => {
             let name = name.to_owned();
@@ -212,42 +288,39 @@ async fn one_hop(url: &Url, policy: Policy) -> Result<reqwest::Response, FetchEr
     if addresses.is_empty() {
         return Err(FetchError::Unresolvable);
     }
-    // **Every** address, not the one we are about to use. A name answering with one public
-    // and one private address is a name whose next lookup is the attacker's to choose.
+    // Every address, not only the one used: a name answering with one public and one private
+    // address gets a different one on the next lookup.
     if !addresses.iter().all(|a| allowed(a.ip(), policy)) {
         return Err(FetchError::NotPublic);
     }
     let pinned = addresses[0];
 
-    Client::builder()
-        // The pin. Without it the client resolves the host again when it connects, and the
-        // window between this module's lookup and that one is DNS rebinding.
+    let client = Client::builder()
         .resolve(&host, pinned)
-        // The loop above is the redirect handling. A client that followed them would connect
-        // to hosts nothing here has checked.
         .redirect(redirect::Policy::none())
-        .timeout(BUDGET)
+        .user_agent(concat!("Lapidary/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| FetchError::Unreachable {
             detail: e.to_string(),
-        })?
-        .get(url.clone())
-        .send()
-        .await
-        .map_err(|e| FetchError::Unreachable {
-            detail: e.to_string(),
-        })
+        })?;
+    let mut request = match json {
+        Some(body) => client
+            .post(url.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string()),
+        None => client.get(url.clone()),
+    };
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    request.send().await.map_err(|e| FetchError::Unreachable {
+        detail: e.to_string(),
+    })
 }
 
-/// Read the body, stopping at the cap rather than after it.
-async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, FetchError> {
-    // A fast refusal for an honest server, and never the actual guard: the header is written
-    // by whoever wrote the body.
-    if response
-        .content_length()
-        .is_some_and(|n| n > MAX_INPUT_BYTES as u64)
-    {
-        return Err(FetchError::TooLarge);
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, FetchError> {
+    if response.content_length().is_some_and(|n| n > cap as u64) {
+        return Err(FetchError::AnswerTooLarge { cap });
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
@@ -257,22 +330,20 @@ async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, FetchEr
             detail: e.to_string(),
         })?
     {
-        if body.len() + chunk.len() > MAX_INPUT_BYTES {
-            return Err(FetchError::TooLarge);
+        if body.len() + chunk.len() > cap {
+            return Err(FetchError::AnswerTooLarge { cap });
         }
         body.extend_from_slice(&chunk);
     }
     Ok(body)
 }
 
-/// Whether this server will open a connection to `ip`.
-///
 /// **A deny-list of ranges, checked explicitly.** `std`'s `is_global` would be the obvious
 /// call and is still unstable, so every range is spelled out here — which is worth doing
 /// anyway for something whose failure mode is handing out cloud credentials. Each arm names
 /// its RFC so the list can be checked against one.
 fn allowed(ip: IpAddr, policy: Policy) -> bool {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if policy == Policy::Exempt(ip) {
         return true;
     }
@@ -498,12 +569,77 @@ mod http_tests {
     }
 
     async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
-        tokio::time::timeout(
-            BUDGET,
-            follow(url, Policy::Exempt(Ipv4Addr::LOCALHOST.into())),
+        Net::allowing_loopback().image(url).await
+    }
+
+    /// A site's key goes to the host it was given for and nowhere else: a redirect to another
+    /// host — a CDN, or wherever a compromised answer points — gets the request without it.
+    #[tokio::test]
+    async fn a_header_is_dropped_on_a_redirect_to_another_host() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let record = seen.clone();
+        let base = serve(
+            axum::Router::new()
+                .route(
+                    "/start",
+                    get(|req: axum::extract::Request| async move {
+                        let port = req.uri().port_u16();
+                        let _ = port;
+                        axum::response::Redirect::temporary("/same").into_response()
+                    }),
+                )
+                .route(
+                    "/same",
+                    get(move |headers: axum::http::HeaderMap| {
+                        let record = record.clone();
+                        async move {
+                            record.lock().expect("lock").push(
+                                headers
+                                    .get("authorization")
+                                    .map(|v| v.to_str().expect("ascii").to_owned()),
+                            );
+                            "ok"
+                        }
+                    }),
+                ),
         )
-        .await
-        .expect("the test server answers well inside the budget")
+        .await;
+        let ask = |url: &str| {
+            let url = url.to_owned();
+            async move {
+                Net::allowing_loopback()
+                    .fetch(
+                        &url,
+                        Ask {
+                            headers: vec![("authorization".into(), "Bearer k".into())],
+                            cap: 1024,
+                            budget: BUDGET,
+                            ..Ask::default()
+                        },
+                    )
+                    .await
+                    .expect("answers")
+            }
+        };
+        // The same host: the key comes along.
+        assert_eq!(ask(&format!("{base}/start")).await.status, 200);
+        // `localhost` and `127.0.0.1` are the same machine and different hosts: dropped.
+        let other = base.replace("127.0.0.1", "localhost");
+        let redirecting = serve(axum::Router::new().route(
+            "/start",
+            get(move || {
+                let other = other.clone();
+                async move {
+                    axum::response::Redirect::temporary(&format!("{other}/same")).into_response()
+                }
+            }),
+        ))
+        .await;
+        assert_eq!(ask(&format!("{redirecting}/start")).await.status, 200);
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            [Some("Bearer k".to_owned()), None]
+        );
     }
 
     /// A WebP header, so the bytes are the shape the caller will hand to `images::normalize`.

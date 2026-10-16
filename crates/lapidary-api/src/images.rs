@@ -78,7 +78,7 @@ pub async fn from_url(
     Path(part): Path<PartId>,
     Json(body): Json<FetchImageRequest>,
 ) -> Response {
-    let bytes = match crate::fetch::fetch_image(&body.url).await {
+    let bytes = match lapidary_sites::fetch::fetch_image(&body.url).await {
         Ok(bytes) => bytes,
         Err(err) => return not_fetched(&err),
     };
@@ -314,14 +314,14 @@ pub struct FetchImageRequest {
 /// `422` means the address will never work and pasting it again will not help, while a `502`
 /// means the other end did not answer this time. `NotPublic` is a `422` rather than a `403`
 /// — nothing was forbidden to *this* caller, the address is simply not one we fetch from.
-fn not_fetched(err: &crate::fetch::FetchError) -> Response {
-    use crate::fetch::FetchError as F;
+fn not_fetched(err: &lapidary_sites::fetch::FetchError) -> Response {
+    use lapidary_sites::fetch::FetchError as F;
     let status = match err {
         F::NotFetchable | F::NotPublic | F::TooManyRedirects | F::BadRedirect => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
         F::NotAnImage { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        F::TooLarge | F::AnswerTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
         F::TimedOut => StatusCode::GATEWAY_TIMEOUT,
         F::Unresolvable | F::NotOk { .. } | F::Unreachable { .. } => StatusCode::BAD_GATEWAY,
     };

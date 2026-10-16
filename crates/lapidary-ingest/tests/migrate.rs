@@ -38,6 +38,7 @@ fn handler_over(pool: &PgPool, store: &Path) -> WorkerHandler {
         ingest_dir: store.to_path_buf(),
         blob_root: store.to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     }
 }
 

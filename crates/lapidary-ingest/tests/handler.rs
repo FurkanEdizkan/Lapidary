@@ -55,6 +55,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     }
 }
 
@@ -179,6 +180,7 @@ async fn a_real_stl_ingests_with_its_real_measurements(pool: PgPool) {
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let outcome = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -259,6 +261,7 @@ async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPo
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let outcome = handler
@@ -305,6 +308,7 @@ async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool:
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
     let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
 
@@ -344,6 +348,7 @@ async fn an_upload_of_bytes_a_scan_already_filed_reads_them_from_that_part_direc
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
     let scanned = handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -397,6 +402,7 @@ async fn an_upload_whose_only_filed_copy_was_edited_fails_permanently_and_indexe
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
     handler
         .handle(&job_for("a/LP-1042-03.stl"))
@@ -447,6 +453,7 @@ async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
         ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let err = handler
@@ -474,6 +481,7 @@ async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let first = handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -504,6 +512,7 @@ async fn a_truncated_stl_fails_permanently_so_it_is_never_retried(pool: PgPool) 
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let error = handler
@@ -535,12 +544,14 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
     let handler_b = WorkerHandler {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     };
 
     let job_a = job_for(BRACKET);
@@ -3021,6 +3032,7 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
     let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
     let loser = WorkerHandler {
         pause: Some(pause),
+        sites: lapidary_sites::Sites::public(),
         ..handler_over(&pool, loser_dir.path(), blob_root.path())
     };
     let job = job_for_library(library, BRACKET);
@@ -3069,6 +3081,7 @@ async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPo
     let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
     let loser = WorkerHandler {
         pause: Some(pause),
+        sites: lapidary_sites::Sites::public(),
         ..handler_over(&pool, loser_dir.path(), blob_root.path())
     };
     let job = job_for(BRACKET);

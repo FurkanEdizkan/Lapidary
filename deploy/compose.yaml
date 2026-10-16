@@ -37,12 +37,14 @@ services:
     # they were three containers, `api`, `worker` and a Caddy `web`, split so the api image never
     # linked the OCCT kernel; the kernel is gone and ingest takes about 200 ms a file.
     # Resource ceiling: Lapidary must run on a modest workstation, not only on a machine with
-    # spare gigabytes. The mesh parsers are the largest user, so this is the old worker's share.
+    # spare gigabytes. The mesh parsers are the largest user. 3g since F3 (2026-10-16): with the
+    # 3MF cap at 20 M triangles, two of the owner's 11 M-triangle Bambu kits parsing at once
+    # touched 2 GiB; see docs/goals/F3.md for what 3g measured.
     # Compose v2 honours deploy.resources outside swarm.
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 3g
           cpus: "2.0"
     build:
       context: ..
@@ -71,6 +73,10 @@ services:
       # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
       # absolute path, as .env.example recommends, and the paths appear.
       LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
+      # Importing a model from its Printables, Thingiverse or MyMiniFactory page (F3). `false` turns
+      # it off — the Settings page says so and nothing contacts those sites — for an install that
+      # must make no outbound request beyond a picture somebody pastes.
+      LAPIDARY_IMPORT_LINKS: ${LAPIDARY_IMPORT_LINKS:-true}
       # Job worker knobs, passed through empty when unset, which the server reads as "use the
       # default" (`empty_str_as_none` in bin/lapidary-server/src/main.rs). The defaults live in
       # lapidary_jobs::WorkerConfig; deploy/.env.example documents each one.

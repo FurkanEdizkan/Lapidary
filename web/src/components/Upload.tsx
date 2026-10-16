@@ -49,7 +49,7 @@ export function jobsSettled(status: BatchStatus): number {
  * `enqueue` is called once per payload kind, a scan's own children are all
  * `ingest_file`, and a migration's are all `migrate_storage`.
  */
-export type BatchKind = 'scan' | 'migrate' | 'upload'
+export type BatchKind = 'scan' | 'migrate' | 'upload' | 'link'
 
 function progressText(status: BatchStatus, kind: BatchKind): string {
   if (status.finishedAt === null) {
@@ -60,6 +60,9 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     // No walk job in an upload's batch, so nothing to subtract and no walk to wait for.
     if (kind === 'upload') {
       return strings.upload.batchRunning(settled, status.total)
+    }
+    if (kind === 'link') {
+      return strings.importLink.running
     }
     // `total` counts jobs and the walk is one of them, so both halves are shifted by the
     // number of walks that have finished. While that is still 0 the batch holds nothing
@@ -75,6 +78,9 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
     // line beside it says some did not. `scan.finished` reports what happened and lets the
     // failure line qualify it; this used to assert a total.
     return strings.migrate.finished(status.failedTotal)
+  }
+  if (kind === 'link') {
+    return strings.importLink.finished(status.ingested, status.skipped, status.revised)
   }
   if (kind === 'upload') {
     return strings.upload.batchFinished(
@@ -332,7 +338,9 @@ export function ScanProgress({
         ? // Scan's per-file failure line, which never says "scan", and an unknown line of its
           // own: `scan.unknown` tells somebody who never started one about a scan.
           { failed: strings.scan.failed, unknown: strings.upload.batchUnknown }
-        : strings.scan
+        : kind === 'link'
+          ? { failed: strings.scan.failed, unknown: strings.importLink.unknown }
+          : strings.scan
   if (isError) {
     // `alert`, because this replaces the progress line rather than following it: a status poll
     // that fails leaves the page silent about a batch somebody just started, and the sentence

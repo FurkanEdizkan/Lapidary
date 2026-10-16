@@ -235,6 +235,7 @@ fn spawn_worker(
         ingest_dir,
         blob_root: blob_root.clone(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     });
 
     // The quarantine sweep rides along with the worker rather than getting a job kind of its
