@@ -166,7 +166,6 @@ impl PgFolders {
     /// from a repair script or a future writer would put a foreign model in this library's
     /// sidebar count and in the number its delete confirmation shows. The grid this count
     /// has to agree with filters on library, so this count does too.
-
     pub async fn tree(&self, library: LibraryId) -> Result<Vec<FolderRow>, DbError> {
         let rows: Vec<(Uuid, Option<Uuid>, String, String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
