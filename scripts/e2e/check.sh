@@ -156,7 +156,8 @@ echo "== every string the flows match still exists in strings.ts"
 # shape similarity. `Read from an analytic CAD entity` is still IN `strings.ts` — rows a STEP file wrote
 # before the pivot carry it — but no flow matches it any more, and this list is the flows' list, not the
 # file's. In: `View in 3D`, which is the whole of `view-original`, and `Picture of`, which is the alt text
-# `pictures` finds a card's own image by.
+# `pictures` finds a card's own image by. M3 swapped `Remove from library` and `Restore` for `Delete` and
+# the sentence that says the file stays on disk, when delete became final and `remove-restore` became `delete`.
 strings=$ROOT/web/src/lib/strings.ts
 if [ ! -f "$strings" ]; then no "no $strings to check against"; else
   gone=''
@@ -171,8 +172,8 @@ Order
 Cards per page
 Save this filter
 Name for this filter
-Remove from library
-Restore
+Delete
+The file itself stays where it is on disk.
 Scan the ingest folder
 Storage
 Upload complete —

@@ -13,8 +13,8 @@
 // asks for two runs with identical statuses:
 //
 //   * a flow that changes anything asserts a **delta**, never an absolute count, and puts back what it
-//     took (`remove-restore` restores, `saved-filter` deletes its filter, `upload` stamps its bytes so
-//     the same file is never sent twice);
+//     took (`delete` deletes only a part it uploaded itself, `saved-filter` deletes its filter, `upload`
+//     stamps its bytes so the same file is never sent twice);
 //   * every selector a flow depends on is a named entry in `S` below, so the goal's "rename one
 //     selector and watch that flow alone fail" test is a one-line edit.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -101,6 +101,42 @@ const UPLOAD_FILES = [
   ['example/parts/hex-spacer-m4x20-lp-2145-01.stl', 'hex-spacer-m4x20-lp-2145-01.stl'],
 ]
 
+/**
+ * Copies `files` ([source in the repo, name]) into `dir` with `stamp` in each 80-byte header: identical
+ * bytes would be `Skipped`, and a flow that only passes the first time fails the rig's own
+ * repeatability test. **Binary** STLs only. The stamp overwrites the first 80 bytes, which is a binary
+ * STL's header and an ASCII STL's opening `solid …` line — stamping `fixtures/cube.stl` corrupted it and
+ * the app said so, correctly ("1 file could not be read"). `fixtures/spacer-lp-2001-00.stl` and
+ * `cube.stl` are the two ASCII ones in the tree; everything under `example/parts/` is binary.
+ */
+function stampInto(dir, files, stamp, ctx) {
+  mkdirSync(dir, { recursive: true })
+  for (const [from, name] of files) {
+    const bytes = readFileSync(join(ctx.root, from))
+    Buffer.from(stamp.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
+    writeFileSync(join(dir, name), bytes)
+  }
+}
+
+/** The header's Upload button, pressed for real, because Chrome opens no file chooser without user activation. */
+function pressUpload(page, folder) {
+  return uploadThrough(
+    page,
+    async (p) => {
+      const at = await p.evaluate(`(() => {
+        const b = [...document.querySelectorAll('header button')].find((e) => e.textContent.includes(${JSON.stringify(T.uploadButton)}))
+        if (!b) return null
+        const r = b.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      expect(at !== null, `no header button reads "${T.uploadButton}"`)
+      await p.click(at.x, at.y)
+    },
+    [folder],
+    { mode: 'selectMultiple' },
+  )
+}
+
 const W = {
   upload: ['Reading ', 'Asking which files are new', 'Uploading ', 'Finishing the upload'],
   scanRunning: /Reading the folder|Scanning — [\d,]+ of/,
@@ -116,8 +152,10 @@ const T = {
   cardsPerPage: 'Cards per page',
   saveThisFilter: 'Save this filter',
   filterNameLabel: 'Name for this filter',
-  removeFromLibrary: 'Remove from library',
-  restore: 'Restore',
+  // The part menu's row and the confirmation's button carry the same word.
+  deletePart: 'Delete',
+  // The sentence the delete confirmation exists to say: delete is final, and the file is not touched.
+  deleteKeepsFile: 'The file itself stays where it is on disk.',
   uploadButton: 'Upload a folder',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
@@ -823,80 +861,62 @@ const FLOWS = [
     },
   },
   {
-    name: 'remove-restore',
-    // Stage 4's narrow set is grid, quick look, part detail and **removed**, and /removed is this
-    // flow's. Safe at both widths because it restores what it took.
-    widths: [1440, 390],
+    name: 'delete',
+    // Delete is final (owner, 2026-10-17): no restore, no removed list. So the victim is a part this
+    // flow uploads itself, stamped so every run sends new bytes, and Sweep is never touched.
     async run(page, ctx) {
-      // Removed and put back inside the flow, so a second run sees the same library.
-      //
-      // The byte-copy, not `-scaled-115`: that fixture existed to be "similar but not near" and went
-      // with shape similarity. The copy is the right victim for another reason — it is the part whose
-      // bytes another part also has, so removing it exercises a soft delete over a blob a `file` row
-      // still names, which is the half of the quarantine guard that matters.
-      const victim = await ctx.partLike(/alike\/flange-dn40-lp-3310-02-second-copy\.stl$/)
-      const before = await ctx.countParts(ctx.sweep.id)
-      let removed = false
+      const stamp = `${ctx.stamp}-${Date.now()}`
+      const file = `hex-spacer-m4x20-lp-2145-01-e2e-${stamp}.stl`
+      const folder = join(ctx.tmp, `e2e-delete-${stamp}`)
+      stampInto(folder, [['example/parts/hex-spacer-m4x20-lp-2145-01.stl', file]], `Lapidary e2e delete ${stamp}`, ctx)
+      const before = await ctx.countParts(ctx.uploaded.id)
+      await page.go(grid(ctx.uploaded.id), 'document.querySelector("#parts") !== null')
+      await pressUpload(page, folder)
+      const landed = await page.settle(
+        () => ctx.countParts(ctx.uploaded.id),
+        (n) => n === before + 1,
+        { timeout: 120_000, every: 1000 },
+      )
+      expect(landed === before + 1, `the upload to delete never landed: ${before} parts before, ${landed} after`)
+      const { parts } = await ctx.get(`/api/libraries/${ctx.uploaded.id}/parts?limit=500`)
+      const victim = parts.find((p) => (p.sourcePath ?? '').endsWith(file))
+      expect(victim !== undefined, `no part in Uploaded came from ${file}`)
+      let deleted = false
       try {
-      // Waited on the CONTROL, not the heading. The heading lands before the actions menu mounts, so this
-      // flow failed in one run and passed in the next — and stage 6 counts that as a finding, not noise.
-      await page.go(`/parts/${victim.id}`, `document.querySelector('button[popovertarget="${S.partMenu}"]') !== null`)
-      // No confirmation, deliberately: removal is reversible and the hint under the button says so.
-      // The control is in the part's own actions menu, whose children are display:none until opened.
-      await page.openMenu(S.partMenu)
-      const pressed = await page.evaluate(`(() => {
-        const b = [...document.querySelectorAll('#part-menu button')].find((e) => e.textContent.trim().startsWith(${JSON.stringify(T.removeFromLibrary)}))
-        if (!b) return false
-        b.click()
-        return true
-      })()`)
-      expect(pressed, `no "${T.removeFromLibrary}" button in #${S.partMenu}`)
-      removed = true
-      // It invalidates the grid and navigates back to it.
-      await page.waitFor(`new URL(location.href).pathname === '/'`, 20_000)
-      // Soft, never implicit — but *not* still served by the detail route: `GET /api/parts/{id}` answers
-      // 404 for a removed part, with or without `?state=removed`. What "soft" means is that the row and
-      // the bytes survive, `/removed` lists it, and a restore brings it back; a purge is the separate,
-      // explicit action that starts the 30-day countdown. So this asserts the 404 deliberately.
-      const gone = await fetch(`${args.api}/api/parts/${victim.id}`)
-      expect(
-        gone.status === 404,
-        `the detail route answered ${gone.status} for a removed part; if that changed, this flow should assert the new behaviour rather than be loosened`,
-      )
-      await page.go(`/removed?library=${ctx.sweep.id}`, `document.querySelector('h2') !== null`)
-      const listed = await page.settle(
-        () => page.evaluate('document.body.textContent'),
-        (t) => t.includes(victim.name),
-        { timeout: 20_000 },
-      )
-      expect(listed.includes(victim.name), `${JSON.stringify(victim.name)} is removed but /removed does not name it`)
-      // The restore control is a plain button in the row; there is no aria-label and no id. So it has to
-      // be found inside the row that names *this* part — the first Restore in the document belongs to
-      // whichever part /removed happens to list first, and restoring somebody else's would leave this
-      // flow's victim removed and quietly change the library for every run after it.
-      const restored = await page.evaluate(`(() => {
-        const row = [...document.querySelectorAll('li')].find((li) => li.textContent.includes(${JSON.stringify(victim.name)}))
-        if (!row) return 'no row names it'
-        const b = [...row.querySelectorAll('button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.restore)})
-        if (!b) return 'its row has no Restore button'
-        b.click()
-        return 'clicked'
-      })()`)
-      expect(restored === 'clicked', `${JSON.stringify(victim.name)} on /removed: ${restored}`)
-      const after = await page.settle(
-        () => ctx.countParts(ctx.sweep.id),
-        (n) => n === before,
-        { timeout: 30_000, every: 1000 },
-      )
-      expect(after === before, `the library held ${before} parts and holds ${after} after the restore`)
-      removed = false
-      return `${JSON.stringify(victim.name)} removed, 404 from the detail route, listed on /removed, restored (${before} parts either side)`
+        await page.go(`/parts/${victim.id}`, `document.querySelector('button[popovertarget="${S.partMenu}"]') !== null`)
+        await page.openMenu(S.partMenu)
+        const pressed = await page.evaluate(`(() => {
+          const b = [...document.querySelectorAll('#part-menu button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.deletePart)})
+          if (!b) return false
+          b.click()
+          return true
+        })()`)
+        expect(pressed, `no "${T.deletePart}" button in #${S.partMenu}`)
+        // The confirmation has to say the file stays before anything is sent.
+        const asked = await page.settle(
+          () => page.evaluate(`document.querySelector('[role="dialog"]')?.textContent ?? ''`),
+          (t) => t.includes(T.deleteKeepsFile),
+          { timeout: 10_000 },
+        )
+        expect(asked.includes(T.deleteKeepsFile), `the delete confirmation does not say "${T.deleteKeepsFile}": ${JSON.stringify(asked.slice(0, 200))}`)
+        const confirmed = await page.evaluate(`(() => {
+          const b = [...document.querySelectorAll('[role="dialog"] button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.deletePart)})
+          if (!b) return false
+          b.click()
+          return true
+        })()`)
+        expect(confirmed, `the confirmation has no "${T.deletePart}" button`)
+        // It invalidates the grid and navigates back to it, because the part no longer exists.
+        await page.waitFor(`new URL(location.href).pathname === '/'`, 20_000)
+        const gone = await fetch(`${args.api}/api/parts/${victim.id}`)
+        expect(gone.status === 404, `the detail route answered ${gone.status} for a deleted part`)
+        deleted = true
+        const after = await ctx.countParts(ctx.uploaded.id)
+        expect(after === before, `Uploaded held ${before} parts before the upload and ${after} after the delete`)
+        return `${JSON.stringify(victim.name)} uploaded, confirmation says the file stays on disk, deleted, 404 from the detail route (${before} parts either side)`
       } finally {
-        // Unconditional. Whatever went wrong above, this part goes back — otherwise one failure leaves the
-        // library changed and every later flow, and the next run, inherits it.
-        if (removed) {
-          await ctx.post(`/api/parts/${victim.id}/restore`, {}).catch(() => {})
-        }
+        // Whatever went wrong above, the part this flow made does not outlive it.
+        if (!deleted) await ctx.del(`/api/parts/${victim.id}`).catch(() => {})
       }
     },
   },
@@ -909,38 +929,12 @@ const FLOWS = [
       // instead of the directory sets nothing at all — see `setFiles`, which now says so.
       const folder = join(ctx.tmp, `e2e-upload-${ctx.stamp}`)
       const inner = join(folder, UPLOAD_CATEGORY)
-      mkdirSync(inner, { recursive: true })
-      // A per-run stamp in each 80-byte header: identical bytes would be `Skipped`, and a flow that only
-      // passes the first time fails the rig's own repeatability test.
-      // Both **binary** STLs. The stamp overwrites the first 80 bytes, which is a binary STL's header and
-      // an ASCII STL's opening `solid …` line — stamping `fixtures/cube.stl` corrupted it and the app said
-      // so, correctly ("1 file could not be read"). `fixtures/spacer-lp-2001-00.stl` and `cube.stl` are the
-      // two ASCII ones in the tree; everything under `example/parts/` is binary.
-      for (const [from, name] of UPLOAD_FILES) {
-        const bytes = readFileSync(join(ctx.root, from))
-        Buffer.from(`Lapidary e2e ${ctx.stamp}`.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
-        writeFileSync(join(inner, name), bytes)
-      }
+      stampInto(inner, UPLOAD_FILES, `Lapidary e2e ${ctx.stamp}`, ctx)
       const before = await ctx.countParts(ctx.uploaded.id)
       await page.go(grid(ctx.uploaded.id), 'document.querySelector("#parts") !== null')
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
       const before2 = before
-      // Pressed for real, because Chrome opens no file chooser without user activation.
-      const chooser = await uploadThrough(
-        page,
-        async (p) => {
-          const at = await p.evaluate(`(() => {
-            const b = [...document.querySelectorAll('header button')].find((e) => e.textContent.includes(${JSON.stringify(T.uploadButton)}))
-            if (!b) return null
-            const r = b.getBoundingClientRect()
-            return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-          })()`)
-          expect(at !== null, `no header button reads "${T.uploadButton}"`)
-          await p.click(at.x, at.y)
-        },
-        [folder],
-        { mode: 'selectMultiple' },
-      )
+      const chooser = await pressUpload(page, folder)
       // The transfer line is *transient*, and for a 1 KB fixture it can be gone before the first poll —
       // the first real run spent 30 s waiting for a line the upload had already finished with. So it is
       // reported when it appears and never required; the batch line below is the outcome that matters.
@@ -1133,11 +1127,11 @@ const ctx = {
    * paged and computes its own count line. So counting means walking the pages on `next`, and a flow
    * that compared a `.total` would be comparing `undefined` with `undefined` and passing for free.
    */
-  async countParts(library, state) {
+  async countParts(library) {
     let after
     let total = 0
     for (let page = 0; page < 40; page++) {
-      const query = `limit=500${after ? `&after=${after}` : ''}${state ? `&state=${state}` : ''}`
+      const query = `limit=500${after ? `&after=${after}` : ''}`
       const { parts, next } = await ctx.get(`/api/libraries/${library}/parts?${query}`)
       total += parts.length
       if (next === null || next === undefined) return total
