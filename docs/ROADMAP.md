@@ -4092,10 +4092,15 @@ containers, memory ceilings 3 GB (was 4.3). Seed 13 of 13 and **26 of 26 flows**
 S3; the two sharing rows went with the flow). Workspace now **8 crates and 1 binary** (was 13 and 2):
 33,448 lines of Rust under `src/`, 27,515 under `tests/` — about 14,000 and 8,000 fewer than before S1.
 
-**Left for the goals after:** F1 (embedded 3MF pictures and a snapshot from the viewer), F2 (a stable
-`/api/parts/{id}/file` link with Range), F3 (import from Printables, Thingiverse and MyMiniFactory —
-MyMiniFactory's official API reference could not be read on 2026-10-16, so F3 confirms it first), then
-P1 (creator packs). The rig's corpus was remade after `target/` was wiped at the owner's request; it is
+**Then the features (same day):** F2 `/api/parts/{id}/file`, one link per part with Range and
+`If-Range`, and a Copy link that works on plain http; F1 embedded 3MF thumbnails and a view kept from the
+viewer, which found and fixed Bambu/Orca 3MFs not ingesting at all (`p:path` components) — 84 of the
+owner's 89 3MFs then ingested with their pictures, and the last five once F3 raised the triangle cap to
+20 M (owner's call) and the app's ceiling to 3g (measured peak 2.41 GiB); F3 import by link from
+Printables (checked live), Thingiverse and MyMiniFactory (built from recorded responses; both sat behind
+Cloudflare during research), with a Settings page for their keys. Records in `docs/goals/F1–F3.md`.
+
+**Left after those:** P1 (creator packs), which opens the archives an import skips. The rig's corpus was remade after `target/` was wiped at the owner's request; it is
 the same recipe, not byte-identical.
 
 ## Phase 7 — Build graph
