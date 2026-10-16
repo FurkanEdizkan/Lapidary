@@ -31,6 +31,9 @@ export type Place = 'parts' | 'dashboard' | 'removed' | 'siteSettings'
  */
 const SETTINGS_PATH = '/settings'
 
+const HOME =
+  'ease-mechanical flex flex-none items-center gap-[9px] rounded-[var(--radius-ctl)] duration-[var(--duration-fast)] hover:opacity-80'
+
 const PLACE =
   'ease-mechanical flex min-h-7 items-center rounded-[5px] px-3 text-xs duration-[var(--duration-fast)]'
 // The border grey as a fill: the header is `surface` and the nav's well is `raised`, so a
@@ -243,14 +246,29 @@ export function AppFrame({
             <Icon name="list" />
           </button>
         )}
-        <div className="flex flex-none items-center gap-[9px]">
-          <BrandMark />
-          {/*
-            Letterspaced and uppercased in CSS, not in `strings.ts`: the application's name is
-            "Lapidary", and a screen reader should say that rather than spell it.
-          */}
-          <h1 className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</h1>
-        </div>
+        {/*
+          The mark goes home: the grid, as a logo does on every site (M1). A plain link on the crash
+          page, which cannot trust the router — and where a full reload is the point.
+        */}
+        {nav ? (
+          <Link to="/" className={HOME}>
+            <BrandMark />
+            {/*
+              Letterspaced and uppercased in CSS, not in `strings.ts`: the application's name is
+              "Lapidary", and a screen reader should say that rather than spell it.
+            */}
+            <h1 className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</h1>
+          </Link>
+        ) : (
+          <a href="/" className={HOME}>
+            <BrandMark />
+            {/*
+              Letterspaced and uppercased in CSS, not in `strings.ts`: the application's name is
+              "Lapidary", and a screen reader should say that rather than spell it.
+            */}
+            <h1 className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</h1>
+          </a>
+        )}
         {nav ? (
           <div className="max-md:hidden">
             <Places current={current} library={library} />

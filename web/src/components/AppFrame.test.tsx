@@ -123,3 +123,14 @@ test('dragging a part does not raise the drop overlay', () => {
   fireEvent.dragEnter(window, { dataTransfer: { types: ['application/x-lapidary-part'] } })
   expect(overlay()).toBeNull()
 })
+
+/** The mark goes home, as a logo does (M1: it did not, and there was no other way back but Parts). */
+test('the Lapidary mark is a link to the grid', async () => {
+  renderInRouter(() => (
+    <AppFrame current="removed">
+      <p>{strings.removal.removedLead}</p>
+    </AppFrame>
+  ), '/removed')
+  const home = await screen.findByRole('link', { name: strings.appName })
+  expect(home.getAttribute('href')).toBe('/')
+})

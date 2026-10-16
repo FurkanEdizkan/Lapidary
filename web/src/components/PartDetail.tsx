@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   addPartSource,
@@ -40,6 +40,18 @@ import type {
 } from '../lib/types'
 
 /**
+ * A part's pictures changed: its own gallery, and every grid page, whose cards show its first picture.
+ * The grid was left out once, and a picture added on the part's page did not reach its card until a
+ * reload (M1, the owner's first look).
+ */
+function picturesChanged(queryClient: QueryClient, part: PartId) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['part-images', part] }),
+    queryClient.invalidateQueries({ queryKey: ['parts'] }),
+  ])
+}
+
+/**
  * One picture in the gallery, framed the way its row says — and adjustable in place.
  *
  * **The browser does the framing.** `object-fit` and `object-position` are exactly the two
@@ -56,7 +68,7 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
   const reframe = useMutation({
     mutationFn: (framing: { fit: string; focusX: number; focusY: number }) =>
       setImageFraming(part, image.id, framing),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['part-images', part] }),
+    onSuccess: () => picturesChanged(queryClient, part),
   })
 
   /** Clamped, because the server refuses anything outside 0–1 and a rounding error is not
@@ -745,7 +757,7 @@ export function Preview({
               ? async (png) => {
                   const result = await uploadPartImage(part.id, png, 'snapshot')
                   if (result.kind === 'refused') return result.message
-                  await queryClient.invalidateQueries({ queryKey: ['part-images', part.id] })
+                  await picturesChanged(queryClient, part.id)
                   return null
                 }
               : undefined
@@ -1150,7 +1162,14 @@ export function Detail({
     columns, so it is all still on the page and findable, never behind a tab.
   */
   return (
-    <article className="mt-2 grid items-start gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
+    <article className="mt-2">
+      {/*
+        The studio is its own grid, closed before the sections under it. The stage is sticky, and a
+        sticky box travels as far as its containing block: when that block was the whole page, the
+        stage and its pictures slid down over File and Identity as the page scrolled (M1, the owner's
+        first look). Now it stops where the studio does.
+      */}
+      <div className="grid items-start gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
       {/*
         Source order is reading order on a phone: the part's name and Download, then the stage, then
         the rest. At lg the name moves to the right column beside the stage, which spans both rows.
@@ -1167,7 +1186,8 @@ export function Detail({
         <div>{geometry}</div>
         <div>{about}</div>
       </div>
-      <div className="min-w-0 border-t border-[var(--color-border)] pt-5 lg:col-span-2">
+      </div>
+      <div className="mt-6 min-w-0 border-t border-[var(--color-border)] pt-5">
         <SectionIndex within={lower} />
         <div ref={lower} className="mt-5 lg:columns-2 lg:gap-10 [&>*]:break-inside-avoid">
           {rest}
@@ -1428,7 +1448,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
       }
       setStored({ width: result.stored.width, height: result.stored.height })
       setUrl(null)
-      void queryClient.invalidateQueries({ queryKey: ['part-images', part] })
+      void picturesChanged(queryClient, part)
     },
   })
 
