@@ -95,6 +95,7 @@ export const strings = {
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
     settings: 'Settings — Lapidary',
+    profile: 'Profile — Lapidary',
     dashboard: 'Dashboard — Lapidary',
   },
   /**
@@ -136,6 +137,22 @@ export const strings = {
     remove: 'Remove',
     saveFailed: 'The key was not saved. Check that the server is running, then try again.',
     checkFailed: 'The check could not run. Check that the server is running, then try again.',
+  },
+  /** The user menu at the header's right (M2): this install's profile, and its settings. */
+  user: {
+    menu: 'Account',
+    profile: 'Profile',
+  },
+  /** This install's profile (M2). There is no sign-in: one person runs an install. */
+  profile: {
+    title: 'Profile',
+    lead: 'What this install calls you. There are no accounts or sign-in: the name is this install’s, kept on its server.',
+    nameLabel: 'Display name',
+    save: 'Save',
+    saved: 'Saved.',
+    loading: 'Loading your profile…',
+    failed: 'Could not load the profile. Check that the server is running, then reload.',
+    saveFailed: 'The name was not saved. Check that the server is running, then try again.',
   },
   /** Importing a model from the page a person pastes (F3). */
   importLink: {
