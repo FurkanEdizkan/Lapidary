@@ -259,12 +259,12 @@ unchanged.
   **Two clauses name a kind in that SQL and the second is the guard**; dropping either alone changes
   nothing, which is precisely how both come to be dropped by somebody tidying up (R4 found this by a
   mutation that survived). The finding is written into the statement where it was found.
-- **Where the bytes go.** The rows go, `ref_count` is recomputed the way purge recomputes it, and a
+- **Where the bytes go.** The rows go, `ref_count` is recomputed the way delete recomputes it, and a
   blob nothing else references enters the 30-day quarantine. The bytes leave with the hourly sweep.
 - **What it reports.** Bytes entering quarantine, never "freed", because nothing is gone on the day.
-  The quarantine clause no longer says "purged" either: after `0055` most of that figure is what
-  *Lapidary* deleted, and telling somebody who has purged nothing that their store holds purged data is
-  the data-loss reading `CLAUDE.md` forbids. It reads `N on hold for 30 days before the space comes back`.
+  The quarantine clause does not say "purged" or "deleted" either: after `0055` most of that figure is
+  what *Lapidary* deleted, and telling somebody their store holds deleted data is the data-loss reading
+  `CLAUDE.md` forbids. It reads `N on hold for 30 days before the space comes back`.
 - **What happens next.** An export is written again when it is next asked for. There is no rung to fall
   back to and no part that stops opening: a part's page shows its picture, and **view** reads the
   original file.
@@ -283,30 +283,40 @@ page query carries the first picture's inline bytes on the row, and an image ove
 `INLINE_LIMIT` arrives as a hash the card emits as `/api/blob/{hash}` — one immutable
 `<img>` load, never a second API request (R1).
 
-### 1.6 Deletion is three steps
+### 1.6 Deletion is one step
 
-1. **Delete** — sets `deleted_at`, hides the part. Nothing touches disk. Reversible
-   indefinitely.
-2. **Purge** — separate, explicitly worded action, and refused on a part that has not been
-   deleted first. Removes the part chain and **recomputes** each affected blob's
-   `ref_count` from what actually points at it.
-3. **Quarantine** — a blob whose recomputed count reaches zero gets `quarantined_at` set,
-   and is left where it is for 30 days. Reachable by hash, invisible in the UI, restorable.
-   Only then removed. A purged part's **model directory** is held the same way and for the
-   same 30 days, by path rather than by hash — see *Two quarantines, one timer* below.
+**Delete is delete** (owner, 2026-10-17: "we don't want a restore option; if it is deleted it is
+deleted"). `PgParts::delete` takes a part out of the library at once, in one transaction: its
+revisions, files, derivatives, pictures, sources and move trail, child-first because nothing
+declares `ON DELETE CASCADE`. Deleting a category does the same to every part under it, through
+the same helper, and then deletes the folders. There is no restore, no purge and no removed list;
+the confirmation in front of the button is where a person changes their mind.
 
-**Amended by slice 7, and two of these lines changed.**
+**The model file is never touched.** Delete takes rows and nothing else. No `quarantined_file`
+row is written and a source file's hash is not recounted — those two were how purge used to hand
+a part's own file to the reaper — so nothing the hourly sweep reads ever names it. The cost is a
+`blob.ref_count` that stays above the true count for those bytes, which only errs towards keeping
+them. Only the deleted part's **derivative** hashes are recounted, so a cached export nothing
+points at any more enters the ordinary 30-day quarantine cache eviction (§1.5) uses.
 
-*Purge recomputes rather than decrementing.* A counter maintained only by increments and
+A re-scan of a deleted part's file finds no row and ingests it as a new part. Until M4 reads the
+library's folders in place, that files a second copy beside the model directory the delete left
+(`model_dir_for` disambiguates against a directory that exists), and the old directory keeps a
+`metadata.json` naming a part id that no longer exists.
+
+Migration `0061` deleted every part and folder that was soft-deleted before this, the same way,
+and dropped `deleted_at` from `part` and `folder`.
+
+**What stays from the old three steps** is the quarantine machinery, because cache eviction uses it
+and because a purge from before 2026-10-17 may have queued files that are still waiting.
+
+*`recount` recomputes rather than decrementing.* A counter maintained only by increments and
 decrements drifts, and the drift is invisible until something acts on it — the thing that
-acts on it deletes bytes. Recomputing makes any accumulated drift self-heal the moment a
-purge touches that blob, and it is the reason a reference count the project has never
-fully audited is still safe to ship.
+acts on it deletes bytes. Recomputing makes any accumulated drift self-heal the moment the
+recount touches that blob.
 
-*Quarantine is a timestamp, not a `quarantine/` tree.* The bytes do not move. Restoring
-then needs no path rewrite, no reader needs a second lookup location on the hot path to
-serve a case that is meant to be rare, and the store's layout has a pending change (the
-folder-tree work) that a second tree built now would be built against.
+*Quarantine is a timestamp, not a `quarantine/` tree.* The bytes do not move until the sweep
+removes them, and no reader needs a second lookup location.
 
 *What actually keeps a referenced blob safe is neither the counter nor the reaper's own
 `WHERE` clause.* It is `file.blake3` and `derivative.blake3`, both foreign keys to `blob`:
@@ -316,33 +326,29 @@ whole sweep on it.
 
 *And the third foreign key nothing counts — `part_image.blake3`.* **Latent, with no
 reachable path found; checked rather than assumed** (R4). `recount` and `PgBlobs::reap`'s
-`DELETE` both count `file` and `derivative` alone, and `purge`'s `doomed` set is a part's
-`file` and `derivative` hashes only — so a picture's hash never reaches the recount, and a
-gallery blob is therefore never quarantined and never reaped. Nothing is lost today, and
-two parts sharing one picture are safe **for that reason rather than by design**. The trap
-is the next person's: if such a blob were ever quarantined, the reaper's delete would be
-refused by `part_image_blake3_fkey` rather than declined by its own `NOT EXISTS`, and
-because the sweep is one transaction **the whole hourly sweep would roll back, every hour,
-for ever**. The first route that removes a picture, or any widening of `purge`'s `doomed`
-set, lands in it: it wants the third term in `recount`, in `doomed` and in `reap`'s
-predicate, added together with the remove-a-picture route that would be its first caller.
+`DELETE` both count `file` and `derivative` alone, and delete recounts derivative hashes only —
+so a picture's hash never reaches the recount, and a gallery blob is therefore never
+quarantined and never reaped. The trap is the next person's: if such a blob were ever
+quarantined, the reaper's delete would be refused by `part_image_blake3_fkey` rather than
+declined by its own `NOT EXISTS`, and because the sweep is one transaction **the whole hourly
+sweep would roll back, every hour, for ever**. The first route that removes a picture lands in
+it: it wants the third term in `recount` and in `reap`'s predicate, added together with that
+route.
 
-*What the panel does not say.* A purged blob has no `file` row, no revision, no part and
-therefore no library, so quarantined bytes cannot be attributed to a library's storage
-figure — the number is library-less by construction. `LibraryStorage.removed_bytes` covers
-the deleted-but-not-purged case, which is attributable; the quarantined figure belongs to
-an instance-wide view arriving with Phase 4's tiering job.
+*What the panel does not say.* A quarantined blob has nothing pointing at it and therefore no
+library, so quarantined bytes appear only in the instance-wide view. A deleted part's model
+file, left on the disk, is in no tracked figure at all; the instance view's directory walk is
+the number that still sees it.
 
 **What `blob.stored_bytes` counts** (2026-09-15, migration `0026`).
 - It is the size of the content-addressed copy under `blobs/`, and 0 when the bytes are filed only in
   model directories.
-- A filed file's size is on its `file` row, and purge and the sweep count it there, once.
+- A filed file's size is on its `file` row, and the sweep counts it there, once.
 
-Keep the three apart in every string that reaches a user. **Delete** hides a part and
-leaves the bytes. **Purge** is a second, explicit action against data the user has already
-said they are done with. **Cache eviction** (§1.5) is neither — it drops derivatives the
-app can rebuild and never touches a source file. Wording that lets any one of them read as
-another is a defect, not a nicety.
+Keep the two apart in every string that reaches a user. **Delete** takes a part out of the
+library and leaves its file on disk. **Cache eviction** (§1.5) drops derivatives the app can
+rebuild and never touches a source file. Wording that lets either read as the other is a
+defect, not a nicety.
 
 #### Two quarantines, one timer
 
@@ -357,7 +363,7 @@ should differ.
 They are two quarantines because they are keyed on different things, and neither subsumes
 the other. `blob.quarantined_at` is per hash and enters when a recomputed `ref_count`
 reaches zero; `quarantined_file` is per store-relative path and enters when the one part
-that owned that file is purged. Source dedup is gone (§1.1), so one hash can be several
+that owned that file was purged (before 2026-10-17; delete never writes one). Source dedup is gone (§1.1), so one hash can be several
 model files with several independent lifetimes — which is exactly why the path cannot live
 on the `blob` row.
 
@@ -368,7 +374,7 @@ there the check is the only protection and is written as such.
 
 *"Reachable by hash" is true of a quarantined blob and false of a quarantined file.* Its
 bytes sit at a path no route serves once the `file` row naming them is gone. Both are
-invisible in the UI; neither has a restore yet.
+invisible in the UI, and neither has a restore.
 
 *Removing a model file removes what is around it.* The file, the `metadata.json` beside it,
 and the directory that held them — but only if nothing else is in it. A directory the
@@ -544,7 +550,6 @@ part(
   part_number text, name text NOT NULL,
   classification text,
   created_at timestamptz, created_by uuid,
-  deleted_at timestamptz,               -- soft delete
   metadata_json jsonb DEFAULT '{}',
   materials text[] NOT NULL DEFAULT '{}',   -- what a person typed, else what the file declares; GIN, `materials @> array[$n]`
   materials_typed boolean NOT NULL DEFAULT false,  -- a person typed `materials`, so a file's statement no longer replaces them (0033)

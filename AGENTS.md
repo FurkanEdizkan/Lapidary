@@ -23,9 +23,10 @@ area — these encode decisions that are expensive to reverse.
 - **We never edit geometry.** Editing happens in Rhino, Fusion, FreeCAD, Blender, Orca.
   We catalogue, picture, search, route, version. *(Was "we visualize, measure, route, version"
   until the pivot of 2026-10-03 — measuring B-rep geometry is no longer a thing this product does.)*
-- **We never delete user data implicitly.** Delete is soft. Purge is separate and
-  explicit. Blobs quarantine 30 days before removal. Derivative cache eviction is a
-  different action with different wording and must never read as data loss.
+- **Delete is delete.** Deleting removes a part from the library at once — its rows, pictures and
+  tags — and never touches the model file on disk. No restore, no purge (owner, 2026-10-17).
+  Derivative cache eviction is a different action with different wording and must never read as
+  data loss.
 - **Meshes in, meshes out.** The library takes `stl`, `obj` and `3mf`. A STEP or IGES file is
   **refused at ingest, by name**, in a sentence that says what to export instead — never skipped in
   silence. Slicers still get 3MF or STL through the `Target` negotiation. *(Until 2026-10-03 this read
