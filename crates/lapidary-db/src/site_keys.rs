@@ -17,10 +17,13 @@ pub struct SiteKeyRow {
 
 pub struct PgSiteKeys(pub PgPool);
 
+/// `list`'s SELECT, in its order.
+type KeyRow = (String, String, Option<bool>, Option<i64>, i64);
+
 impl PgSiteKeys {
     /// Every saved key, by site.
     pub async fn list(&self) -> Result<Vec<SiteKeyRow>, DbError> {
-        let rows: Vec<(String, String, Option<bool>, Option<i64>, i64)> = sqlx::query_as(
+        let rows: Vec<KeyRow> = sqlx::query_as(
             "SELECT site, right(secret, 4), checked_ok, \
                     (extract(epoch FROM checked_at) * 1000000)::bigint, \
                     (extract(epoch FROM updated_at) * 1000000)::bigint \
