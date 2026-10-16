@@ -1700,7 +1700,7 @@ async fn a_parts_own_mass_is_on_its_page_and_is_always_approximate(pool: sqlx::P
 /// The counts agree with the facet's when the grid is unfiltered — the same question asked two ways,
 /// and the reason the index is a different read at all is the facet's other two answers (narrowed by
 /// the grid, and countless past `EXACT_FACET_ROWS`). Co-occurrence earns its floor: a tag sharing one
-/// part with another is a coincidence. A removed part's tags stop counting, a tag nothing carries is
+/// part with another is a coincidence. A deleted part's tags stop counting, a tag nothing carries is
 /// absent rather than zero, and a tag holding a slash survives the round trip.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(pool: sqlx::PgPool) {
@@ -1814,8 +1814,7 @@ async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(po
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(refusal["reason"], "noTag");
 
-    // A removed part's tags stop counting. Removal is soft — the row is still there — so this is the
-    // `deleted_at IS NULL` in both statements and not the row going away.
+    // A deleted part's tags stop counting: the row is gone.
     let (status, _) = tags_request(
         pool.clone(),
         "DELETE",
@@ -1823,7 +1822,7 @@ async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(po
         None,
     )
     .await;
-    assert!(status.is_success(), "the wyrmling is removed: {status}");
+    assert!(status.is_success(), "the wyrmling is deleted: {status}");
     let (_, after) = index(pool.clone()).await;
     assert_eq!(
         after["tags"],
@@ -1834,7 +1833,7 @@ async fn the_tag_index_counts_the_whole_library_and_related_tags_earn_a_floor(po
             { "value": "pre-supported", "count": 1 },
             { "value": "terrain", "count": 1 },
         ]),
-        "three tags lost the removed part"
+        "three tags lost the deleted part"
     );
     let (_, dragon) = related(pool.clone(), "dragon").await;
     assert_eq!(dragon["parts"], 1);

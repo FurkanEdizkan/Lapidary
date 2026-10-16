@@ -263,10 +263,10 @@ async fn a_rename_alone_does_not_move_a_category_to_the_root(pool: sqlx::PgPool)
     );
 }
 
-/// Soft delete: the rows are hidden, every byte stays where it was, and the confirmation
-/// that stands in front of this route is where a person is told the difference.
+/// Delete is delete: the rows go, every byte stays where it was, and the confirmation that
+/// stands in front of this route is where a person is told so.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn deleting_a_folder_hides_its_models_and_touches_no_file(pool: sqlx::PgPool) {
+async fn deleting_a_folder_deletes_its_models_and_touches_no_file(pool: sqlx::PgPool) {
     let folders = PgFolders(pool.clone());
     let terrain = folders
         .get_or_create(library(), None, "Terrain", "Terrain")
@@ -290,18 +290,17 @@ async fn deleting_a_folder_hides_its_models_and_touches_no_file(pool: sqlx::PgPo
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["foldersHidden"], 2, "the subcategory goes too");
-    assert_eq!(body["partsHidden"], 2);
-    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE deleted_at IS NULL")
-        .fetch_one(&pool)
-        .await
-        .expect("counts");
-    assert_eq!(visible, 0);
-    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM file")
-        .fetch_one(&pool)
-        .await
-        .expect("counts");
-    assert_eq!(files, 2, "soft delete removes no file row and no bytes");
+    assert_eq!(body["foldersDeleted"], 2, "the subcategory goes too");
+    assert_eq!(body["partsDeleted"], 2);
+    let (parts, files, queued): (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM file), \
+                (SELECT count(*) FROM quarantined_file)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!((parts, files), (0, 0), "the models' rows are gone");
+    assert_eq!(queued, 0, "and none of their files is queued for removal");
     assert_eq!(
         tree(&pool).await.as_array().map(Vec::len),
         Some(0),
@@ -311,7 +310,7 @@ async fn deleting_a_folder_hides_its_models_and_touches_no_file(pool: sqlx::PgPo
 
 /// The number the delete confirmation names. Subtree-inclusive, because the delete
 /// cascades that way — a count that stopped at the folder itself would understate what is
-/// about to be hidden — and live parts only, or the dialog contradicts the grid beside it.
+/// about to be deleted — and the dialog must not contradict the grid beside it.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_tree_counts_every_model_under_a_category_and_no_deleted_one(pool: sqlx::PgPool) {
     let folders = PgFolders(pool.clone());
@@ -331,11 +330,16 @@ async fn the_tree_counts_every_model_under_a_category_and_no_deleted_one(pool: s
     seed_part(&pool, Some(rocks), "cliff", "Terrain/Rocks/cliff.stl", 0x22).await;
     seed_part(&pool, Some(rocks), "scree", "Terrain/Rocks/scree.stl", 0x33).await;
     seed_part(&pool, None, "loose", "loose.stl", 0x44).await;
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE name = $1")
-        .bind("scree")
-        .execute(&pool)
+    let scree: sqlx::types::Uuid = sqlx::query_scalar("SELECT id FROM part WHERE name = 'scree'")
+        .fetch_one(&pool)
         .await
-        .expect("hides one");
+        .expect("scree");
+    assert!(
+        lapidary_db::PgParts(pool.clone())
+            .delete(lapidary_core::PartId::from_uuid(scree))
+            .await
+            .expect("deletes one")
+    );
 
     let rows = tree(&pool).await;
 
@@ -360,9 +364,7 @@ async fn the_tree_counts_every_model_under_a_category_and_no_deleted_one(pool: s
     // The invariant the count exists for, asserted against the grid rather than against
     // itself: the number beside a category has to be the number of cards that category
     // shows. Two recursive descents in two files answer this, and only a test that reads
-    // both notices if one of them is ever "tidied up" out of step with the other — a
-    // `deleted_at` filter added to one descent alone would leave every other test green
-    // and put a number on screen contradicting the grid beside it.
+    // both notices if one of them is ever "tidied up" out of step with the other.
     let (status, grid) = send(
         &pool,
         Request::builder()

@@ -1997,54 +1997,17 @@ async fn one_filename_in_two_folders_is_two_parts_sharing_one_blob(pool: PgPool)
 /// `Path::join` resolves nothing and refuses nothing, so a payload path is a filesystem
 /// reach out of the mount unless something stops it. Nothing produces such a payload
 /// today; slice 6a's upload route will, and the guard belongs on the door.
+/// Delete is delete (owner, 2026-10-17), and a deleted part leaves no row for a scan to find. So
+/// the file a deleted part came from, scanned again, is simply a file this library does not have:
+/// it is ingested as a new part.
+///
+/// **The edge case M4 resolves, pinned until then.** The delete left the old model directory on
+/// disk, untouched, and `model_dir_for` disambiguates against a directory that exists — so the new
+/// part is filed beside it under a longer name, a second copy, and the old directory keeps a
+/// `metadata.json` naming a part that no longer exists. Nothing is overwritten. M4 reads the
+/// library's folders in place, which ends the copy.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_path_that_escapes_the_ingest_directory_is_refused_permanently(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-
-    for escape in [
-        "../bracket-lp-1042-03.stl",
-        "a/../../b.stl",
-        "/etc/passwd",
-        "",
-    ] {
-        match handler.handle(&job_for(escape)).await {
-            Err(HandlerError::Permanent { message }) => {
-                assert!(
-                    message.contains("outside the directory it belongs to"),
-                    "the message must say what was wrong with {escape:?}: {message}"
-                );
-            }
-            other => panic!(
-                "{escape:?} must be refused permanently — a payload holds the same bytes \
-                 on every attempt — got {other:?}"
-            ),
-        }
-    }
-}
-
-/// Slice 7, and the first thing anyone will try: delete a part, leave the file on disk,
-/// scan again.
-///
-/// Nothing may come back. A scan that resurrects a deleted part makes delete useless — the
-/// next scan undoes every removal a person made — and un-deleting implicitly is the same
-/// class of surprise as deleting implicitly. Restore is a button, not a side effect.
-///
-/// The two branches reach that answer by different routes and both are asserted, because
-/// they are separately breakable:
-///
-/// - unchanged bytes take the hash short-circuit, which works only because
-///   `PgBlobs::library_holds` deliberately does not filter `deleted_at`;
-/// - changed bytes get past it, and `PgRevisions::current` finds the part deleted and settles
-///   as `Skipped` before the kernel runs. Until Phase 4 slice 1 they reached
-///   `part_source_path_unique_per_library` instead, which `classify_write` maps to `Skipped`.
-///
-/// Neither behaviour is new in slice 7 — both fall out of what slice 6a built — and that
-/// is exactly why they are pinned here. Nothing else fails if either one silently stops
-/// holding.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
+async fn a_re_scan_re_ingests_a_deleted_part_as_a_new_one(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
@@ -2054,84 +2017,53 @@ async fn re_scanning_a_deleted_part_does_not_bring_it_back(pool: PgPool) {
         handler.handle(&job_for(BRACKET)).await.expect("ingests"),
         Outcome::Ingested
     );
-    let part = sqlx::query_scalar::<_, Uuid>("SELECT id FROM part")
-        .fetch_one(&pool)
-        .await
-        .expect("the one part");
+    let (first, path): (Uuid, String) = sqlx::query_as(
+        "SELECT p.id, f.storage_path FROM part p \
+         JOIN revision r ON r.part_id = p.id JOIN file f ON f.revision_id = r.id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the one part");
     assert!(
         PgParts(pool.clone())
-            .soft_delete(lapidary_core::PartId::from_uuid(part))
+            .delete(lapidary_core::PartId::from_uuid(first))
             .await
-            .expect("soft delete"),
+            .expect("delete"),
+    );
+    assert!(
+        blob_root.path().join(&path).exists(),
+        "delete never touches the model file"
     );
 
-    // Branch one: the file on disk is untouched, so the hash matches and `library_holds`
-    // answers yes for a path whose part is deleted.
     assert_eq!(
         handler
             .handle(&job_for(BRACKET))
             .await
             .expect("the re-scan succeeds"),
-        Outcome::Skipped,
-        "unchanged bytes must short-circuit, not re-ingest"
+        Outcome::Ingested,
+        "nothing is left to say this file is already here"
     );
-    assert!(
-        still_deleted(&pool, part).await,
-        "the hash short-circuit must not clear deleted_at"
+    let (again, again_path): (Uuid, String) = sqlx::query_as(
+        "SELECT p.id, f.storage_path FROM part p \
+         JOIN revision r ON r.part_id = p.id JOIN file f ON f.revision_id = r.id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("exactly one part again");
+    assert_ne!(again, first, "a new part, not the deleted one brought back");
+    assert_ne!(
+        again_path, path,
+        "filed beside the directory the delete left"
     );
-
-    // Branch two: the file changed on disk, so the hash no longer matches and the part at
-    // this path is looked up. `spacer` rather than a truncation of the bracket, so this is
-    // a real mesh the pipeline gets all the way through — a file that fails to parse would
-    // reach `Skipped` for the wrong reason entirely.
-    stage(
-        ingest_dir.path(),
-        BRACKET,
-        include_bytes!("../../../fixtures/spacer-lp-2001-00.stl"),
-    );
-    assert_eq!(
-        handler
-            .handle(&job_for(BRACKET))
-            .await
-            .expect("the re-scan succeeds"),
-        Outcome::Skipped,
-        "changed bytes at a deleted part's path must settle as Skipped"
-    );
-    assert!(
-        still_deleted(&pool, part).await,
-        "the changed-bytes path must not clear deleted_at either"
-    );
-
-    assert_eq!(
-        part_count(&pool).await,
-        1,
-        "and neither branch may insert a second part at the same path"
-    );
-
-    // Branch two is the one that could leak, and did: it reached the constraint only after
-    // writing the changed file's rung, and a `Skipped` is not reaped, so `blobs/` held two
-    // files — this count said 2 and called that "no orphan". It settles before the kernel
-    // runs now, and ingest writes no derivative at all, so the only row that may exist is
-    // the first part's source.
-    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
-        .fetch_one(&pool)
-        .await
-        .expect("blob count");
-    assert_eq!(blobs, 1, "the first part's source, and no more");
-    assert!(
-        all_files(&blob_root.path().join("blobs")).is_empty(),
-        "a re-scan of a changed file at a deleted path must not orphan its bytes on disk"
-    );
+    for kept in [&path, &again_path] {
+        assert_eq!(
+            std::fs::read(blob_root.path().join(kept)).expect("both files are on disk"),
+            BRACKET_FIXTURE
+        );
+    }
+    assert_eq!(part_count(&pool).await, 1);
 }
 
-async fn still_deleted(pool: &PgPool, part: Uuid) -> bool {
-    sqlx::query_scalar::<_, i32>("SELECT 1 FROM part WHERE id = $1 AND deleted_at IS NOT NULL")
-        .bind(part)
-        .fetch_optional(pool)
-        .await
-        .expect("deleted_at reads")
-        .is_some()
-}
 // ---------------------------------------------------------------------------------------
 // The model directory: one folder per model, holding its file and its metadata.
 // ---------------------------------------------------------------------------------------
@@ -3111,10 +3043,10 @@ async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPo
     assert_eq!(hex_of(&bytes), rows[0].3);
 }
 
-/// Purge collects every revision's file, and the sweep leaves no directory behind whichever
-/// order it reaches them in: not `revisions/1`, not `revisions`, not the model directory.
+/// Delete never touches a file: every revision's file, `revisions/1`, `revisions` and the model
+/// directory are all still there after the delete and after a sweep with no retention at all.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn purging_a_revised_part_leaves_no_file_or_directory_behind(pool: PgPool) {
+async fn deleting_a_revised_part_leaves_every_file_and_directory_in_place(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
@@ -3131,19 +3063,23 @@ async fn purging_a_revised_part_leaves_no_file_or_directory_behind(pool: PgPool)
         .fetch_one(&pool)
         .await
         .expect("the one part");
+    let before = all_files(&model_dir);
     let parts = PgParts(pool.clone());
     let part = lapidary_core::PartId::from_uuid(part);
-    assert!(parts.soft_delete(part).await.expect("soft delete"));
-    parts.purge(part).await.expect("purge");
+    assert!(parts.delete(part).await.expect("delete"));
     lapidary_ingest::reap::sweep(&pool, blob_root.path(), std::time::Duration::ZERO)
         .await
         .expect("sweep");
 
-    assert!(
-        !model_dir.exists(),
-        "the model directory must go with its last file; left behind: {:?}",
-        all_files(&model_dir)
+    assert_eq!(
+        all_files(&model_dir),
+        before,
+        "the model directory holds exactly what it held"
     );
+    for (_, _, _, hash, path) in &rows {
+        let bytes = std::fs::read(blob_root.path().join(path)).expect("each file stays");
+        assert_eq!(&hex_of(&bytes), hash);
+    }
 }
 
 /// A new part's first revision says how its bytes arrived: a scan is `ingest`, an upload is
@@ -3645,7 +3581,8 @@ async fn a_part_whose_history_began_elsewhere_is_refused_though_it_ends_on_a_bun
 }
 
 /// Goal 2's recorded state: the bracket filed under a disambiguated name, since the owner's own directory holds its
-/// plain one, then revised to the spacer, removed and purged. The spacer's bytes wait out their quarantine where the
+/// plain one, then revised to the spacer, and purged — by a purge from before delete became final, whose queue is
+/// written here by hand, since delete never queues a file. The spacer's bytes wait out their quarantine where the
 /// bracket's first file resolves again. Returns that path.
 async fn purged_bytes_in_the_way(
     pool: &PgPool,
@@ -3680,12 +3617,23 @@ async fn purged_bytes_in_the_way(
             .await
             .expect("the part"),
     );
-    let parts = PgParts(pool.clone());
-    assert!(parts.soft_delete(part).await.expect("removes"));
-    assert!(matches!(
-        parts.purge(part).await.expect("purges"),
-        lapidary_db::Purged::Done(_)
-    ));
+    let files: Vec<(String, String)> = sqlx::query_as(
+        "SELECT f.storage_path, f.blake3 FROM file f \
+         JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1",
+    )
+    .bind(part.as_uuid())
+    .fetch_all(pool)
+    .await
+    .expect("the part's files");
+    assert!(PgParts(pool.clone()).delete(part).await.expect("deletes"));
+    for (path, hash) in files {
+        sqlx::query("INSERT INTO quarantined_file (storage_path, blake3) VALUES ($1, $2)")
+            .bind(path)
+            .bind(hash)
+            .execute(pool)
+            .await
+            .expect("the old purge's queue");
+    }
     assert_eq!(
         std::fs::read(blob_root.join(&short)).expect("quarantined, still on disk"),
         SPACER_FIXTURE

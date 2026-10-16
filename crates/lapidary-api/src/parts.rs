@@ -25,7 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use lapidary_core::{BlobHash, FolderId, LibraryId, PartId, RevisionId};
-use lapidary_db::{DbError, GridQuery, PartRepository, PartRow, PgParts, Shows, Sort};
+use lapidary_db::{DbError, GridQuery, PartRepository, PartRow, PgParts, Sort};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -69,9 +69,8 @@ pub struct PartCard {
     pub name: String,
     pub part_number: Option<String>,
     /// The path this part is known by — its identity since slice 6a, carried verbatim
-    /// from `PartSummary`. The removed list names a part by this in its purge
-    /// confirmation, because two parts can share a name and only one of them is the one
-    /// being destroyed.
+    /// from `PartSummary`. A delete confirmation names a part by this, because two parts
+    /// can share a name and only one of them is the one being deleted.
     pub source_path: String,
     pub triangle_count: Option<u32>,
     /// True when *any* geometric figure on this part is mesh-derived — carried
@@ -141,9 +140,6 @@ pub struct PartCard {
     pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
-    /// When the part was removed, `None` for a live one; carried verbatim from
-    /// `PartSummary.removed_at`, which says why the removed list needs it.
-    pub removed_at: Option<Timestamp>,
 }
 
 /// A keyset page of the grid.
@@ -180,17 +176,6 @@ pub struct LibraryStorage {
     /// this is the figure that made slice 4's 92.5% drop legible (spec §4), and a second
     /// consumer dividing the other way would report the same library twice, differently.
     pub derivative_ratio: Option<f64>,
-    /// What this library's removed parts still occupy on the volume.
-    ///
-    /// Shown only when non-zero. It exists so the panel does not report a removal as a
-    /// saving: the two totals above exclude soft-deleted parts, so without this figure the
-    /// number falls the moment somebody removes a part and the disk does not.
-    ///
-    /// Quarantined bytes are deliberately absent and are not merely missing — see
-    /// `PgParts::storage_totals` for why a quarantined blob has no library to be counted
-    /// against.
-    #[ts(type = "number")]
-    pub removed_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,23 +200,10 @@ pub struct PageQuery {
     /// than saturating.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     limit: Option<i64>,
-    /// `?state=removed` lists the parts a person deleted and has not purged; anything
-    /// else, including absent, lists the library.
-    ///
-    /// A string rather than `?removed=true`, because this is the axis a third value joins
-    /// when Phase 2 adds revision states — `state=draft` reads as one more value of a
-    /// dimension, where `draft=true` beside `removed=true` reads as two independent
-    /// booleans that can both be set and mean nothing together.
-    ///
-    /// An unknown value shows the library rather than failing. The grid is a read, the
-    /// wrong answer is visible immediately, and 400ing a typo'd query string would take a
-    /// bookmark that used to work and turn it into an error page.
-    #[serde(default)]
-    state: Option<String>,
     /// Free text to search for. Absent, empty or whitespace is the unfiltered grid.
     ///
     /// A parameter on this route rather than a `/search` route of its own. A separate one
-    /// would duplicate the limit clamp, `empty_str_as_none`, the `Shows` mapping, the
+    /// would duplicate the limit clamp, `empty_str_as_none`, the
     /// folder filter, `to_card` and the `next` computation — and hand the front end a
     /// second `useInfiniteQuery` to keep in step with the first. It answers the same
     /// question about the same library and returns the same cards.
@@ -299,7 +271,6 @@ pub async fn page(
         after,
         folder_id,
         limit,
-        state,
         q,
         format,
         material,
@@ -324,12 +295,6 @@ pub async fn page(
         .unwrap_or(i64::from(DEFAULT_LIMIT))
         .clamp(1, i64::from(MAX_LIMIT)) as u16;
 
-    let shows = if state.as_deref() == Some("removed") {
-        Shows::Removed
-    } else {
-        Shows::Live
-    };
-
     let search = FilterSearch {
         q,
         folder_id,
@@ -345,7 +310,7 @@ pub async fn page(
         .as_deref()
         .and_then(Sort::parse)
         .unwrap_or(Sort::Newest);
-    match grid_rows(&app.db, library, &search, after, limit, shows, sort).await {
+    match grid_rows(&app.db, library, &search, after, limit, sort).await {
         Ok(rows) => {
             // A page shorter than `limit` proves there is no further page. A full page
             // might or might not be the last one, so it hands back the last id and lets
@@ -386,7 +351,6 @@ pub(crate) async fn grid_rows(
     search: &FilterSearch,
     after: Option<PartId>,
     limit: u16,
-    shows: Shows,
     sort: Sort,
 ) -> Result<Vec<PartRow>, GridRefusal> {
     // Trimmed, then checked for emptiness: a box holding three spaces is a box nobody has
@@ -424,7 +388,6 @@ pub(crate) async fn grid_rows(
         folder: search.folder_id,
         after,
         limit,
-        shows,
         format: format.as_deref(),
         material,
         tag,
@@ -476,8 +439,6 @@ pub struct FieldFacet {
 pub struct FacetQuery {
     #[serde(default, deserialize_with = "empty_str_as_none")]
     folder_id: Option<FolderId>,
-    #[serde(default)]
-    state: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
     q: Option<String>,
     #[serde(default, deserialize_with = "empty_str_as_none")]
@@ -511,7 +472,6 @@ pub async fn facets(
 ) -> Response {
     let FacetQuery {
         folder_id,
-        state,
         q,
         format,
         material,
@@ -543,11 +503,6 @@ pub async fn facets(
         Ok(field) => field,
         Err(refusal) => return refusal,
     };
-    let shows = if state.as_deref() == Some("removed") {
-        Shows::Removed
-    } else {
-        Shows::Live
-    };
     let q = q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let format = format
         .map(|format| format.trim().to_ascii_lowercase())
@@ -573,7 +528,6 @@ pub async fn facets(
             library,
             folder_id,
             q,
-            shows,
             material.as_deref(),
             tag.as_deref(),
             field.exact.as_deref(),
@@ -589,7 +543,6 @@ pub async fn facets(
             library,
             folder_id,
             q,
-            shows,
             format.as_deref(),
             tag.as_deref(),
             field.exact.as_deref(),
@@ -605,7 +558,6 @@ pub async fn facets(
             library,
             folder_id,
             q,
-            shows,
             format.as_deref(),
             material.as_deref(),
             field.exact.as_deref(),
@@ -636,7 +588,6 @@ pub async fn facets(
                 library,
                 folder_id,
                 q,
-                shows,
                 format.as_deref(),
                 material.as_deref(),
                 tag.as_deref(),
@@ -687,7 +638,6 @@ pub(crate) fn library_storage(totals: lapidary_db::StorageTotals) -> LibraryStor
     LibraryStorage {
         source_bytes: totals.source_bytes,
         derivative_bytes: totals.derivative_bytes,
-        removed_bytes: totals.removed_bytes,
         // Both casts are lossless below 2^53 bytes, which is 9 petabytes in one
         // library; a ratio is a display figure and does not need more than that.
         derivative_ratio: (totals.source_bytes > 0)
@@ -699,8 +649,8 @@ pub(crate) fn library_storage(totals: lapidary_db::StorageTotals) -> LibraryStor
 ///
 /// The question `LibraryStorage` cannot answer. That one is per library and deliberately
 /// **not** `du`: it charges a blob two libraries share to both of them, and it can show
-/// quarantined bytes to nobody because a quarantined blob is keyed by hash and the part
-/// that said which library it belonged to is the part that was purged. So a person adding
+/// quarantined bytes to nobody because a quarantined blob is keyed by hash and nothing
+/// points at it any more to say which library it belonged to. So a person adding
 /// up the panels and comparing the result to their disk finds a discrepancy, and
 /// `PgParts::storage_totals`'s own doc predicts it: *"someone will eventually run `du`."*
 ///
@@ -728,12 +678,10 @@ pub struct InstanceStorageView {
     /// printing a row that said nothing.
     #[ts(type = "number")]
     pub derivative_bytes: u64,
-    /// Soft-deleted parts. On the disk, and back the moment somebody restores them.
-    #[ts(type = "number")]
-    pub removed_bytes: u64,
-    /// Inside the thirty-day hold. Bytes no per-library panel can admit to — a purged part's,
-    /// or a blob that lost its last reference, which since `0055` includes the render
-    /// derivatives Lapidary deleted on its own behalf.
+    /// Inside the thirty-day hold. Bytes no per-library panel can admit to — a cached export
+    /// that lost its last reference (evicted, or its part deleted), which since `0055` also
+    /// includes the render derivatives Lapidary deleted on its own behalf. Never a deleted
+    /// part's model file: delete leaves that on the disk.
     #[ts(type = "number")]
     pub quarantined_bytes: u64,
     /// Slicer exports nobody has downloaded in 90 days, which "free cache space" would put
@@ -813,7 +761,6 @@ pub(crate) fn instance_storage_view(
     InstanceStorageView {
         source_bytes: totals.source_bytes,
         derivative_bytes: totals.derivative_bytes,
-        removed_bytes: totals.removed_bytes,
         quarantined_bytes: totals.quarantined_bytes,
         render_cache_bytes: totals.render_cache_bytes,
         on_disk_bytes: on_disk,
@@ -962,6 +909,5 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         storage_path: row.storage_path,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
-        removed_at: summary.removed_at,
     }
 }

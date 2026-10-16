@@ -660,9 +660,8 @@ fn refused(message: String) -> Response {
         .into_response()
 }
 
-/// No such revision, or its part is soft-deleted. One body for both, and honestly so: a
-/// deleted part is gone from every view the grid offers, and a URL held from before the
-/// delete must stop serving bytes rather than outlive it (spec §2.1).
+/// No such revision, or its part was deleted. A URL held from before the delete stops
+/// serving bytes rather than outliving it (spec §2.1).
 fn no_such_revision() -> Response {
     (
         StatusCode::NOT_FOUND,

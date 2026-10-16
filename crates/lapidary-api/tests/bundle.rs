@@ -421,10 +421,10 @@ async fn forty_parts_are_planned_in_two_queries(pool: sqlx::PgPool) {
     );
 }
 
-/// A removed part, and a part of another library, are refused as parts this library cannot bundle: the
+/// A deleted part, and a part of another library, are refused as parts this library cannot bundle: the
 /// selection's one query holds them back, as the reads it replaced did one part at a time.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgPool) {
+async fn a_deleted_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgPool) {
     let store = tempfile::tempdir().expect("a store");
     let root = store.path();
     let vee = filed(
@@ -445,18 +445,13 @@ async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
         b"solid flange-dn40\n",
     )
     .await;
-    assert!(
-        PgParts(pool.clone())
-            .soft_delete(flange)
-            .await
-            .expect("removes")
-    );
+    assert!(PgParts(pool.clone()).delete(flange).await.expect("deletes"));
     assert_eq!(
         plan(pool.clone(), root, serde_json::json!([vee, flange]))
             .await
             .status(),
         StatusCode::NOT_FOUND,
-        "a removed part"
+        "a deleted part"
     );
 
     let jigs = PgParts(pool.clone())

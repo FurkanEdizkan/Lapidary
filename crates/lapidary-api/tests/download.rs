@@ -651,16 +651,10 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::PgPool) {
-    let touches = lapidary_db::Touches::default();
+async fn a_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("temp dir");
     let seeded = seed(&pool, root.path(), TURKISH_NAME, "stl", &ascii_stl()).await;
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(seeded.part.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("soft delete");
-    let state = AppState {
+    let state = |touches: &lapidary_db::Touches| AppState {
         db: pool.clone(),
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
@@ -668,10 +662,28 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
         touches: touches.clone(),
     };
 
-    // Delete is soft, and a download URL is held by whoever was last shown the grid: the
-    // link must stop serving bytes rather than outlive the delete.
+    // The same request before the delete serves the bytes. Without this leg the 404 below
+    // would pass just as well against a route that never serves anything at all. Its reads
+    // go to a `Touches` that is never flushed, so the column below starts empty.
+    let (live, _, _) = get(
+        router(state(&lapidary_db::Touches::default()), Role::Api),
+        &download_uri(seeded.revision, "?variant=original"),
+    )
+    .await;
+    assert_eq!(live, StatusCode::OK);
+
+    assert!(
+        lapidary_db::PgParts(pool.clone())
+            .delete(seeded.part)
+            .await
+            .expect("delete")
+    );
+
+    // A download URL is held by whoever was last shown the grid: the link must stop serving
+    // bytes rather than outlive the delete.
+    let touches = lapidary_db::Touches::default();
     let (deleted, _, _) = get(
-        router(state.clone(), Role::Api),
+        router(state(&touches), Role::Api),
         &download_uri(seeded.revision, "?variant=original"),
     )
     .await;
@@ -681,24 +693,6 @@ async fn a_soft_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::Pg
         None,
         "a request that served nothing is not somebody reading this blob — otherwise a \
          caller could warm any blob by asking for it"
-    );
-
-    // The same request, once the part is back. Without this leg the 404 above would pass
-    // just as well against a route that never serves anything at all.
-    sqlx::query("UPDATE part SET deleted_at = NULL WHERE id = $1")
-        .bind(seeded.part.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("restore");
-    let (restored, _, _) = get(
-        router(state, Role::Api),
-        &download_uri(seeded.revision, "?variant=original"),
-    )
-    .await;
-    assert_eq!(restored, StatusCode::OK);
-    assert!(
-        last_read_us(&touches, &pool, &seeded.hash).await.is_some(),
-        "handing the bytes to somebody is what this column records"
     );
 }
 
@@ -1422,11 +1416,12 @@ async fn a_deleted_or_unknown_parts_file_link_is_a_404_that_says_what_to_do(pool
         &ascii_stl(),
     )
     .await;
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(seeded.part.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("deletes");
+    assert!(
+        lapidary_db::PgParts(pool.clone())
+            .delete(seeded.part)
+            .await
+            .expect("deletes")
+    );
     let app = app_over(&pool, root.path());
     for part in [seeded.part, PartId::new()] {
         let (status, _, body) = get(app.clone(), &file_uri(part)).await;

@@ -25,8 +25,7 @@
 //!
 //! A library with no parts is not the same as a library nothing has ever happened to. A
 //! user who deleted every part has scanned before, and re-seeding on the next restart
-//! would put back data they removed — which is the implicit write `CLAUDE.md` forbids in
-//! the other direction. A `job` row is the durable record that something has happened
+//! would put back parts they deleted — an implicit write nobody asked for. A `job` row is the durable record that something has happened
 //! here, and it survives deleting every part.
 
 use crate::handler::WorkerHandler;
@@ -107,6 +106,12 @@ pub async fn seed_examples(db: PgPool, blob_root: &Path, examples: &Path) -> u32
     }
     if added > 0 {
         tracing::info!(added, "seeded the bundled example parts");
+        // The seed is history too. Before delete became final, the deleted examples' rows
+        // made a re-seed skip every file; now nothing is left, so without this record a person
+        // who deleted the examples would have them back on the next restart.
+        if let Err(err) = PgJobs(handler.db.clone()).record_seeded(library).await {
+            tracing::warn!(error = %err, "could not record that the examples were seeded");
+        }
     }
     added
 }
