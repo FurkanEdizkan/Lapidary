@@ -74,9 +74,29 @@ pub struct AppState {
     /// confidently wrong absolute path is worse than an honest relative one, which is the
     /// same rule `ShowInFolder` already follows about not joining a path out of slugs.
     pub host_storage_root: Option<String>,
+    /// The owner's folders, mounted read-only: where a `library` file row's path is (M4). This
+    /// crate reads here, through `LibraryReader`, and never writes.
+    pub ingest_dir: std::path::PathBuf,
+    /// Where an upload is written once (M4), then indexed from there. Never inside `ingest_dir`.
+    pub inbox_dir: std::path::PathBuf,
+    /// Where `ingest_dir` is on the host, for the same reason as `host_storage_root`.
+    pub host_ingest_root: Option<String>,
+    /// Where `inbox_dir` is on the host, for the same reason as `host_storage_root`.
+    pub host_inbox_root: Option<String>,
     /// Which blobs were read since the last flush (`docs/DATA.md` §1.4). The server flushes it
     /// every five minutes and when it stops; a test flushes it itself.
     pub touches: lapidary_db::Touches,
+}
+
+impl AppState {
+    /// The three directories a `file` row's `storage_path` can be relative to.
+    pub fn roots(&self) -> lapidary_storage::Roots {
+        lapidary_storage::Roots {
+            library: self.ingest_dir.clone(),
+            inbox: self.inbox_dir.clone(),
+            store: self.blob_root.clone(),
+        }
+    }
 }
 
 /// Which process this is. `api` serves the open path and must never link the CAD kernel:

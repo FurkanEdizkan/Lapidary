@@ -734,9 +734,11 @@ async fn migration_0011_de_duplicates_pending_migrations_and_0012_drops_its_inde
         .await
         .expect("0011 must not fail against a database already holding duplicates, and 0012 must not fail after it");
 
+    // `failed` too: `0062` fails every `migrate_storage` row still queued, since the job is
+    // gone. What 0011 de-duplicated stays de-duplicated.
     let survivors: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
-          AND state = 'pending'",
+          AND state IN ('pending', 'failed')",
     )
     .bind(library)
     .fetch_all(&pool)
@@ -1337,7 +1339,7 @@ async fn removed_parts_and_folders_are_deleted_and_the_column_goes(pool: PgPool)
     .expect("the bracket's model file");
     seeded_derivative(&pool, bracket, "export_3mf", Some(&export)).await;
 
-    migrator.run(&pool).await.expect("0061 applies");
+    migrator.run_to(61, &pool).await.expect("0061 applies");
 
     let names: Vec<String> = sqlx::query_scalar("SELECT name FROM part ORDER BY name")
         .fetch_all(&pool)
@@ -1381,4 +1383,111 @@ async fn removed_parts_and_folders_are_deleted_and_the_column_goes(pool: PgPool)
     .await
     .expect("reads the catalogue");
     assert_eq!(columns, 0, "nothing can read `deleted_at` any more");
+}
+
+/// `0062` (M4): every file row from before is a `store` row, still on disk, with no recorded time —
+/// its bytes stay where they are and still download. Every library scans the whole mount, as it did.
+/// A job of a kind that went with the old store, still queued, is failed with a sentence rather than
+/// left for a worker that no longer knows it; and the reaper's path queue goes.
+#[sqlx::test(migrations = false)]
+async fn index_in_place_marks_every_old_file_as_the_stores_and_fails_the_retired_jobs(
+    pool: PgPool,
+) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator.run_to(61, &pool).await.expect("0061 applies");
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+    let revision = seeded_revision(&pool, "Bracket, LP-1042-03", "bracket-lp-1042-03.stl").await;
+    let hash = "e1".repeat(32);
+    sqlx::query(
+        "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+         VALUES ($1, 4096, 4096, 0, 1)",
+    )
+    .bind(&hash)
+    .execute(&pool)
+    .await
+    .expect("a blob row");
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, stored_bytes, \
+                           storage_path, zstd_level) \
+         VALUES ($1, $2, 'source', 'stl', $3, 4096, 4096, \
+                 'libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl', 0)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(revision)
+    .bind(&hash)
+    .execute(&pool)
+    .await
+    .expect("a file in the old store");
+    for (kind, state) in [
+        ("ingest_blob", "pending"),
+        ("describe_part", "running"),
+        ("migrate_storage", "done"),
+        ("ingest_file", "pending"),
+    ] {
+        sqlx::query(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome) \
+             VALUES ($1, $1, $2, $3, '{\"path\": \"bracket-lp-1042-03.stl\"}', $4, \
+                     CASE WHEN $4 = 'done' THEN 'migrated' END)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(library)
+        .bind(kind)
+        .bind(state)
+        .execute(&pool)
+        .await
+        .expect("a job");
+    }
+
+    migrator.run_to(62, &pool).await.expect("0062 applies");
+
+    let file: (String, bool, Option<i64>) =
+        sqlx::query_as("SELECT root, on_disk, mtime_ns FROM file")
+            .fetch_one(&pool)
+            .await
+            .expect("the file row");
+    assert_eq!(file, ("store".to_owned(), true, None));
+    let root: String = sqlx::query_scalar("SELECT root FROM library WHERE id = $1")
+        .bind(library)
+        .fetch_one(&pool)
+        .await
+        .expect("the library");
+    assert_eq!(
+        root, "",
+        "the whole mount, as every library scanned until now"
+    );
+    let jobs: Vec<(String, String, Option<String>)> =
+        sqlx::query_as("SELECT kind, state, last_error FROM job ORDER BY kind")
+            .fetch_all(&pool)
+            .await
+            .expect("jobs");
+    let states: Vec<(&str, &str, bool)> = jobs
+        .iter()
+        .map(|(kind, state, error)| (kind.as_str(), state.as_str(), error.is_some()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("describe_part", "failed", true),
+            ("ingest_blob", "failed", true),
+            ("ingest_file", "pending", false),
+            ("migrate_storage", "done", false),
+        ],
+        "only the retired kinds still queued are failed, each with its sentence"
+    );
+    assert!(
+        jobs[1]
+            .2
+            .as_deref()
+            .is_some_and(|e| e.contains("Upload this file again")),
+        "{jobs:?}"
+    );
+    let queue: Option<String> = sqlx::query_scalar("SELECT to_regclass('quarantined_file')::text")
+        .fetch_one(&pool)
+        .await
+        .expect("reads");
+    assert_eq!(queue, None, "the reaper's path queue is gone");
+    sqlx::query("UPDATE file SET root = 'elsewhere'")
+        .execute(&pool)
+        .await
+        .expect_err("a root this build does not write is refused by the schema");
 }

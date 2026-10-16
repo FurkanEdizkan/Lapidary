@@ -525,154 +525,6 @@ async fn releasing_a_workers_leases_moves_every_kind_it_holds_migrate_storage_in
 // nothing here needed a renamed replacement.
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_library_with_a_pending_migration_gets_no_second_one(pool: PgPool) {
-    let jobs = PgJobs(pool.clone());
-    jobs.enqueue_migration_if_absent(seeded())
-        .await
-        .expect("enqueues")
-        .expect("the first call wins");
-
-    let second = jobs
-        .enqueue_migration_if_absent(seeded())
-        .await
-        .expect("must not error just because one is already queued");
-    assert_eq!(second, None, "a pending migration already exists");
-
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM job WHERE kind = 'migrate_storage' AND library_id = $1",
-    )
-    .bind(seeded().as_uuid())
-    .fetch_one(&pool)
-    .await
-    .expect("counts");
-    assert_eq!(total, 1, "the second call must not have queued a duplicate");
-}
-
-/// `WHERE NOT EXISTS` in `enqueue_migration_if_absent` checks `state IN ('pending',
-/// 'running')`, not `'pending'` alone -- this is what proves the `'running'` half is
-/// load-bearing, not a vestige.
-#[sqlx::test(migrations = "./migrations")]
-async fn a_library_with_a_running_migration_gets_no_second_one(pool: PgPool) {
-    let jobs = PgJobs(pool.clone());
-    jobs.enqueue_migration_if_absent(seeded())
-        .await
-        .expect("enqueues")
-        .expect("the first call wins");
-    jobs.dequeue("worker-a", LEASE)
-        .await
-        .expect("dequeues")
-        .expect("the job is available to claim");
-
-    let second = jobs
-        .enqueue_migration_if_absent(seeded())
-        .await
-        .expect("must not error just because one is already running");
-    assert_eq!(second, None, "a running migration already exists");
-
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM job WHERE kind = 'migrate_storage' AND library_id = $1",
-    )
-    .bind(seeded().as_uuid())
-    .fetch_one(&pool)
-    .await
-    .expect("counts");
-    assert_eq!(total, 1, "the second call must not have queued a duplicate");
-}
-
-/// Fix round 1: `active_migration_batch` is what lets the manual trigger route hand back
-/// a real, pollable batch id on `queued: 0` instead of a fabricated one that can only
-/// ever 404. It must find the SAME batch whichever state the chain's current row is in
-/// -- pending or running -- since a chain's every row shares one `batch_id`.
-#[sqlx::test(migrations = "./migrations")]
-async fn active_migration_batch_finds_the_running_and_the_pending_case_alike(pool: PgPool) {
-    let jobs = PgJobs(pool.clone());
-
-    assert_eq!(
-        jobs.active_migration_batch(seeded())
-            .await
-            .expect("does not error"),
-        None,
-        "no chain exists yet"
-    );
-
-    let batch = jobs
-        .enqueue_migration_if_absent(seeded())
-        .await
-        .expect("enqueues")
-        .expect("the first call wins");
-    assert_eq!(
-        jobs.active_migration_batch(seeded())
-            .await
-            .expect("does not error"),
-        Some(batch),
-        "a pending chain is found"
-    );
-
-    jobs.dequeue("worker-a", LEASE)
-        .await
-        .expect("dequeues")
-        .expect("the job is available to claim");
-    assert_eq!(
-        jobs.active_migration_batch(seeded())
-            .await
-            .expect("does not error"),
-        Some(batch),
-        "the same chain, now running, is still found under the same batch id"
-    );
-}
-
-/// `migrate_storage`'s own re-enqueue arm. Its caller is itself the currently RUNNING
-/// job for this library, so `reenqueue_migration_if_absent` checks `state = 'pending'`
-/// only -- never `'running'`, or it would see its own caller and refuse to chain at
-/// all. `queued_elsewhere` below being `true` is what pins that: the currently running
-/// job's own row must not count as a pending successor, or every migration would
-/// silently stop after its first run while every other test in this file kept passing.
-/// The rest of the test is the race this method actually exists for: some OTHER path (a
-/// shutdown-grace release, or a second worker reclaiming an expired lease) already
-/// queued the successor while the current run was still going, and the handler's own
-/// re-enqueue call must find that and back off silently -- a no-op, not a duplicate row.
-#[sqlx::test(migrations = "./migrations")]
-async fn reenqueuing_when_a_pending_successor_already_exists_is_a_no_op_not_an_error(pool: PgPool) {
-    let jobs = PgJobs(pool.clone());
-    let batch = jobs
-        .enqueue_migration_if_absent(seeded())
-        .await
-        .expect("enqueues")
-        .expect("the first call wins");
-    jobs.dequeue("worker-a", LEASE)
-        .await
-        .expect("dequeues")
-        .expect("the job is available to claim");
-
-    let queued_elsewhere = jobs
-        .reenqueue_migration_if_absent(batch, seeded())
-        .await
-        .expect("nothing pending yet, so this queues one");
-    assert!(
-        queued_elsewhere,
-        "the running job must not see itself and refuse to chain"
-    );
-
-    // The handler's OWN re-enqueue call, arriving after that -- must be a silent no-op,
-    // not the raw unique-violation error a plain, unguarded INSERT would throw.
-    let queued_again = jobs
-        .reenqueue_migration_if_absent(batch, seeded())
-        .await
-        .expect("must not error even though a pending successor already exists");
-    assert!(!queued_again, "a pending successor already exists");
-
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM job WHERE kind = 'migrate_storage' AND library_id = $1 \
-          AND state = 'pending'",
-    )
-    .bind(seeded().as_uuid())
-    .fetch_one(&pool)
-    .await
-    .expect("counts");
-    assert_eq!(pending, 1, "exactly one pending successor, not two");
-}
-
-#[sqlx::test(migrations = "./migrations")]
 async fn batch_status_counts_only_its_own_batch(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
     let (first, _) = jobs
@@ -1050,8 +902,8 @@ async fn a_failed_upload_job_reports_its_source_path(pool: PgPool) {
     let (batch, queued) = jobs
         .enqueue(
             seeded(),
-            &[JobPayload::IngestBlob {
-                blake3: lapidary_core::BlobHash::from_bytes([0x5c; 32]),
+            &[JobPayload::IngestInbox {
+                path: "uploads/Flanges/flange-dn40-lp-3310-02 (2).stl".to_owned(),
                 source_path: "Flanges/flange-dn40-lp-3310-02.stl".to_owned(),
             }],
         )
@@ -1454,14 +1306,14 @@ async fn a_failed_migration_is_not_retried_from_the_failure_list(pool: PgPool) {
     assert_eq!(retried, 0);
 }
 
-/// A part's description asked for again while one waits is written once, by the waiting job, which reads the
-/// rows when it runs. Asked for while one runs, it is queued again: the running job may have read the rows
-/// before the change.
+/// A job asked for again while one waits is queued once. Asked for while one runs, it is queued again
+/// unless running jobs count: the running one may have read its inputs before the change.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_waiting_description_is_not_queued_twice_and_a_running_one_does_not_count(pool: PgPool) {
     let jobs = PgJobs(pool.clone());
-    let describe = lapidary_core::JobPayload::DescribePart {
-        part: lapidary_core::PartId::new(),
+    let describe = lapidary_core::JobPayload::Derive {
+        revision: lapidary_core::RevisionId::new(),
+        produce: lapidary_core::DerivativeKind::ExportStl,
     };
     let (batch, queued) = jobs
         .enqueue_if_absent(seeded(), &describe, false)
@@ -1550,6 +1402,8 @@ async fn part_written_by(
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: seeded(),
             name,
             source_path: name,

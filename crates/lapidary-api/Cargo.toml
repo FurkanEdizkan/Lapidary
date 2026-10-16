@@ -45,6 +45,8 @@ ts-rs.workspace = true
 lapidary-sites = { workspace = true, features = ["testing"] }
 # Reads the bundle route's archive back in its tests.
 zip.workspace = true
+# Writes the zstd frames a part indexed before M4 may still be stored as (`tests/download.rs`).
+zstd.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

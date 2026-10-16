@@ -41,6 +41,10 @@ fn state(pool: sqlx::PgPool, root: &std::path::Path) -> AppState {
         blob_root: root.to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     }
 }
@@ -49,6 +53,8 @@ async fn seed_part(pool: &sqlx::PgPool) -> PartId {
     PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             folder: None,
             storage_path: Some(
                 "libraries/default/idler-pulley-lp-4820-00/idler-pulley-lp-4820-00.stl",

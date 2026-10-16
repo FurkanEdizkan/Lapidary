@@ -111,7 +111,8 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
 }
 
 impl WorkerHandler {
-    /// Walks `self.ingest_dir` and enqueues one `ingest_file` job per mesh candidate
+    /// Walks the library's folder under `self.ingest_dir` — reading only: nothing under it is
+    /// written, renamed or removed (M4) — and enqueues one `ingest_file` job per mesh candidate
     /// (case-insensitive) into `batch` — the batch this job itself is in.
     ///
     /// Recursive since slice 6a. It was one `read_dir`, and a nested corpus therefore
@@ -127,7 +128,20 @@ impl WorkerHandler {
         batch: BatchId,
         library: LibraryId,
     ) -> Result<Outcome, HandlerError> {
-        let mut paths = walk(&self.ingest_dir)?;
+        // The library's own folder under the mount (`0062`); `''` is the whole of it. Each path
+        // the walk finds is relative to it, and that is the part's `source_path`.
+        let root = self.library_root(library).await?;
+        let dir = if root.trim_matches('/').is_empty() {
+            self.ingest_dir.clone()
+        } else {
+            lapidary_core::slug::reject_escaping_path(&root).map_err(|e| {
+                HandlerError::Permanent {
+                    message: format!("This library's folder {root:?} is refused: {e}"),
+                }
+            })?;
+            self.ingest_dir.join(root.trim_matches('/'))
+        };
+        let mut paths = walk(&dir)?;
 
         // Deterministic order, so the job ids a scan issues are ordered the way a person
         // reading the tree would expect. The whole relative path sorts, not the basename,

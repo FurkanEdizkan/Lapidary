@@ -34,6 +34,10 @@ async fn send(
             blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -63,6 +67,8 @@ async fn part(pool: &sqlx::PgPool, name: &str, seed: u8) -> PartId {
             source_path: &source_path,
             folder: None,
             storage_path: Some(&storage_path),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &lapidary_db::StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 48_112,
@@ -423,40 +429,4 @@ async fn a_removed_field_keeps_its_values_and_takes_no_new_ones(pool: sqlx::PgPo
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["reason"], "noSuchField");
     assert_eq!(custom(&pool, bracket).await, json!({ "stock_count": 12 }));
-}
-
-/// A value set on a part queues its `metadata.json` to be written again, since the worker is what writes
-/// into a model's directory. A second value set while that rewrite waits queues nothing more: the waiting
-/// one reads both.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn values_set_on_a_part_queue_one_description_while_it_waits(pool: sqlx::PgPool) {
-    define(
-        &pool,
-        json!({ "key": "supplier", "label": "Supplier", "kind": "text" }),
-    )
-    .await;
-    let bracket = part(&pool, "bracket-lp-1042-03", 0x61).await;
-
-    let (status, body) = send(
-        &pool,
-        "PUT",
-        &format!("/api/parts/{bracket}/fields/supplier"),
-        Some(json!({ "value": "Misumi" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    let (status, body) = send(
-        &pool,
-        "PUT",
-        &format!("/api/parts/{bracket}/fields/supplier"),
-        Some(json!({ "value": "Hoffmann" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    let queued: Vec<Value> =
-        sqlx::query_scalar("SELECT payload FROM job WHERE kind = 'describe_part'")
-            .fetch_all(&pool)
-            .await
-            .expect("reads");
-    assert_eq!(queued, [json!({ "part": bracket })]);
 }

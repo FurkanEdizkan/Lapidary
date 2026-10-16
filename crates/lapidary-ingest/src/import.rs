@@ -6,11 +6,11 @@
 //! job replays its revisions through `index`, oldest first, so every label, parent link and figure
 //! is this library's own, and the rules a scan follows (skipped, revised, unkept) apply unchanged.
 
-use crate::handler::WorkerHandler;
-use lapidary_core::{BatchId, BlobHash, JobPayload, LibraryId, Outcome, RevisionOrigin};
+use crate::handler::{FileAt, WorkerHandler};
+use lapidary_core::{BatchId, BlobHash, FileRoot, JobPayload, LibraryId, Outcome, RevisionOrigin};
 use lapidary_db::{NewPartSource, PgBlobs, PgJobs, PgParts, PgRevisions};
 use lapidary_jobs::HandlerError;
-use lapidary_storage::SourceReader;
+use lapidary_storage::{InboxWriter, LibraryReader};
 use lapidary_targets::bundle::Bundle;
 
 fn transient(err: impl std::fmt::Display) -> HandlerError {
@@ -170,8 +170,24 @@ impl WorkerHandler {
                     revision.path, revision.origin
                 ))
             })?;
+            // Each revision is written where the part's file lives in the inbox and indexed from
+            // there, oldest first, so the one before is marked no longer on disk as the next
+            // replaces it: the bundle's older revisions arrive as rows, the newest as a file.
+            let placed = InboxWriter::open(&self.inbox_dir)
+                .put(&format!("imports/bundles/{}", part.source_path), &bytes)
+                .map_err(|e| {
+                    transient(format!(
+                        "Could not write {} into the inbox: {e}",
+                        part.source_path
+                    ))
+                })?;
+            let at = FileAt {
+                root: FileRoot::Inbox,
+                path: &placed.path,
+                mtime_ns: placed.stat.mtime_ns,
+            };
             let done = self
-                .index(library, &part.source_path, bytes, hash, origin)
+                .index(library, &part.source_path, bytes, hash, origin, at)
                 .await?;
             // The part's own answer: `ingested` for a new part, `revised` when this library already
             // held the start of its history, `skipped` when it held all of it.
@@ -251,7 +267,7 @@ impl WorkerHandler {
             })?;
         // ponytail: the bundle is read whole into memory, up to the upload route's 2 GiB. Read it
         // through a temporary file if the worker's memory cannot hold that.
-        let bytes = SourceReader::open(&self.blob_root)
+        let bytes = LibraryReader::open(&self.blob_root)
             .get(&blake3, Some(stored.zstd_level))
             .map_err(|err| {
                 transient(format!("Could not read the uploaded bundle {path}: {err}"))

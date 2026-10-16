@@ -71,6 +71,10 @@ pub async fn list_libraries(State(state): State<AppState>) -> Response {
 #[serde(rename_all = "camelCase")]
 pub struct NewLibrary {
     pub name: String,
+    /// The library's own folder, relative to the owner's folders (the ingest mount); absent or
+    /// `''` is the whole mount (M4, `0062`). A scan reads there and writes nothing.
+    #[serde(default)]
+    pub root: Option<String>,
 }
 
 /// `POST /api/libraries` — make one.
@@ -99,7 +103,18 @@ pub async fn create_library(
         );
     }
 
-    match PgParts(state.db).create_library(name).await {
+    let root = body.root.as_deref().unwrap_or("").trim().trim_matches('/');
+    if !root.is_empty() && lapidary_core::path_escapes(root) {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "badRoot",
+            &format!(
+                "Refused the folder {root:?}: a library's folder is a path inside your folders, \
+                 and may not be absolute or contain `..`. Name a folder under the ingest mount."
+            ),
+        );
+    }
+    match PgParts(state.db).create_library(name, root).await {
         Ok(id) => (
             StatusCode::CREATED,
             Json(LibrarySummary {

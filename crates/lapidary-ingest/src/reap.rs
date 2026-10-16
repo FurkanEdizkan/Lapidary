@@ -1,13 +1,13 @@
 //! The thirty-day sweep: the only place in Lapidary where stored bytes actually leave.
 //!
 //! It lives in this crate rather than in `lapidary-db` or `lapidary-storage` because it
-//! needs both — the decision is a query, the removal is an unlink — and this crate is
-//! already the one place in the workspace allowed to construct a `SourceStore`. It is not
+//! needs both — the decision is a query, the removal is an unlink. It only ever removes a
+//! content-addressed blob in Lapidary's own store; it has no way to name a source file. It is not
 //! a job: there is no row to lease, nothing to retry per-item, and no progress a client
 //! would poll. It is a timer, and [`run`] is that timer.
 
 use lapidary_db::{DbError, PgBlobs, PgPool, ReapReport};
-use lapidary_storage::{SourceStore, WorkerRole};
+use lapidary_storage::DerivativeStore;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -32,92 +32,15 @@ pub async fn sweep(
     blob_root: &Path,
     retention: Duration,
 ) -> Result<ReapReport, DbError> {
-    let store = SourceStore::open(blob_root, &WorkerRole::assume());
+    // `DerivativeStore` — the content-addressed half of Lapidary's own store — is all this can
+    // reach. The reaper's other half, which unlinked purged model files by path, is gone (M4):
+    // nothing here can name a file in the owner's folders or the inbox.
+    let store = DerivativeStore::open(blob_root);
     PgBlobs(db.clone())
-        .reap(
-            retention,
-            |hash| {
-                // Source blobs and derivative rungs share one sharded tree, so one handle
-                // removes either. `SourceStore` and not `DerivativeStore` because this runs
-                // in the worker, which is the role that holds the proof — and because a
-                // rung whose row this sweep just deleted is no more evictable-cache than a
-                // source file is: by this point nothing points at either.
-                store.remove(hash).map_err(|error| error.to_string())
-            },
-            |path| remove_model_file(&store, path),
-        )
+        .reap(retention, |hash| {
+            store.remove(hash).map_err(|error| error.to_string())
+        })
         .await
-}
-
-/// A quarantined model file, its manifest, and the directory that held them. Only a file a
-/// purge queued before delete became final (2026-10-17) reaches this: delete never queues one.
-///
-/// Three removals where the hash-addressed half has one, because a model directory is a
-/// place rather than an address: `metadata.json` sits beside the file by design (the store
-/// is something the owner opens in a file manager), and a directory holding a stale
-/// manifest and nothing else is an orphan every walk of the store has to explain.
-///
-/// **The order is for the crash, not for the success.** File first means every partial
-/// state is "the bytes are gone, the tidying is unfinished", which the next sweep
-/// completes. Manifest first would leave a directory holding bytes and no manifest, which
-/// the folder-tree spec calls an orphan and which reads differently to anything walking
-/// the store.
-///
-/// The directory is the one failure that does not abort the sweep. `remove_dir_if_empty`
-/// answers `DirectoryNotEmpty` for a directory the owner has put something of their own
-/// into — a note, a photo, a re-exported STL — and removing that is the data loss reaping
-/// exists to prevent. Failing the sweep over it would be worse still: it stops every other
-/// removal for as long as their file sits there. So it is skipped, and the directory stays
-/// holding exactly what they left in it.
-fn remove_model_file(store: &SourceStore, path: &str) -> Result<(), String> {
-    store.remove_at(path).map_err(|error| error.to_string())?;
-
-    let Some((model_dir, _file)) = path.rsplit_once('/') else {
-        // A store-relative path with no directory in it names a file at the root, which no
-        // writer produces — `put_at` is only ever called with `libraries/<library>/…`.
-        // Nothing to tidy above it, and inventing a parent to remove would be the one
-        // guess in this function that could take something that is not ours.
-        return Ok(());
-    };
-
-    store
-        .remove_at(&format!("{model_dir}/metadata.json"))
-        .map_err(|error| error.to_string())?;
-
-    // An older revision's file is two levels further down, at `revisions/<label>/<name>`
-    // (Phase 4 slice 1 spec §3). Its label directory, `revisions`, and the model directory
-    // above are tried in turn, each only if empty and each only if the one below went, so
-    // whichever order the sweep reaches a model's files in, the last one takes them all.
-    if !remove_dir_if_empty(store, model_dir)? {
-        return Ok(());
-    }
-    if let Some((revisions, label)) = model_dir.rsplit_once('/')
-        && !label.is_empty()
-        && label.bytes().all(|byte| byte.is_ascii_digit())
-        && let Some((model, "revisions")) = revisions.rsplit_once('/')
-        && remove_dir_if_empty(store, revisions)?
-    {
-        remove_dir_if_empty(store, model)?;
-    }
-    Ok(())
-}
-
-/// One directory, removed only if empty. `false` means it stays because it holds something —
-/// see [`remove_model_file`] for why that is not a failure.
-fn remove_dir_if_empty(store: &SourceStore, directory: &str) -> Result<bool, String> {
-    match store.remove_dir_if_empty(directory) {
-        Ok(()) => Ok(true),
-        Err(lapidary_storage::StorageError::Io { source, .. })
-            if source.kind() == std::io::ErrorKind::DirectoryNotEmpty =>
-        {
-            tracing::info!(
-                directory,
-                "the model file is gone; its directory still holds something, so it stays"
-            );
-            Ok(false)
-        }
-        Err(error) => Err(error.to_string()),
-    }
 }
 
 /// The timer. Ticks hourly until cancelled, and never fails the process: a sweep that

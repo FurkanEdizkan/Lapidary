@@ -102,17 +102,20 @@ pub struct PartDetail {
     #[ts(type = "number | null")]
     pub stored_bytes: Option<u64>,
     pub compressed: Option<bool>,
-    /// The model's own directory in the store, relative to the storage root.
+    /// The directory holding the part's file, relative to its root (`file_root`).
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
-    /// of the filesystem is not the operator's. `LAPIDARY_HOST_STORAGE_ROOT` is what turns
-    /// this into something a person can paste, and the client joins them.
+    /// of the filesystem is not the operator's. The host root for `file_root`, when the
+    /// deployment names it, is what turns this into something a person can paste, and the
+    /// client joins them.
     ///
     /// `None` for a part whose bytes are still content-addressed — it has no directory of
     /// its own to show, and inventing one would be confidently wrong.
     pub directory: Option<String>,
     /// The directory above with the model's filename back on. `None` alongside `directory`.
     pub storage_path: Option<String>,
+    /// Which directory `storagePath` is relative to, as `PartCard::file_root`.
+    pub file_root: Option<lapidary_core::FileRoot>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -199,6 +202,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         compressed: row.compressed,
         directory: row.directory,
         storage_path: row.storage_path,
+        file_root: row.root,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }

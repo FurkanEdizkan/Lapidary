@@ -31,6 +31,10 @@ fn state_at(pool: sqlx::PgPool, blob_root: std::path::PathBuf) -> AppState {
         blob_root,
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     }
 }
@@ -75,6 +79,8 @@ async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
             // not migrated: no folder, no storage path.
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 204_800,
@@ -241,6 +247,8 @@ async fn deleting_a_part_never_touches_its_model_file(pool: sqlx::PgPool) {
             source_path: "bracket-lp-1042-03.stl",
             folder: None,
             storage_path: Some(storage_path),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()),
                 size_bytes: bytes.len() as u64,
@@ -273,11 +281,6 @@ async fn deleting_a_part_never_touches_its_model_file(pool: sqlx::PgPool) {
         bytes,
         "and it is byte for byte what it was"
     );
-    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM quarantined_file")
-        .fetch_one(&pool)
-        .await
-        .expect("counts");
-    assert_eq!(queued, 0, "nothing tells the sweep to remove it later");
 }
 
 /// Seeds a second part at a different path over the *same* blob, the way ingest does when
@@ -293,6 +296,8 @@ async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> 
             // not migrated: no folder, no storage path.
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 204_800,

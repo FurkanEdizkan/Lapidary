@@ -24,40 +24,31 @@ pub struct PartRow {
     /// card. Over the 64 KB line it carries a hash instead of bytes and the card addresses
     /// `/api/blob/{hash}`; under it the bytes ride on the row.
     pub image: Option<PartImageRow>,
-    /// The model's own directory in the store, relative to the storage root — the parent
-    /// of `file.storage_path`, never an absolute host path, because the api runs in a
-    /// container and the path the container sees is not the path the user's file manager
-    /// would open.
-    ///
-    /// `None` means the same thing `storage_path` being NULL means: this part predates the
-    /// folder layout and its bytes are still content-addressed, with no directory of its
-    /// own to show or to rename. Here for the same reason `image` is — it is a
-    /// wire concern of the grid, not a fact `PartSummary` should carry into the viewer.
+    /// The directory holding the part's file, relative to its root — the parent of
+    /// `file.storage_path`. Shown, never acted on: since M4 a move renames nothing.
     pub directory: Option<String>,
-    /// `file.storage_path` itself — the directory above with the model's filename back on.
-    ///
-    /// Both, rather than one and a split: the directory is what a *move* renames, and the
-    /// full path is what the card *shows*. Deriving either from the other in the client
-    /// would put a second definition of "the parent of a model file" in TypeScript beside
-    /// [`model_directory`]'s here, and the client is the side that cannot know when the
-    /// filename was disambiguated.
+    /// `file.storage_path`, relative to the directory `root` names.
     pub storage_path: Option<String>,
+    /// Which directory `storage_path` is relative to: the owner's folders, the inbox, or
+    /// Lapidary's store (`0062`).
+    pub root: Option<lapidary_core::FileRoot>,
 }
 
-/// Everything a `derive` job needs to re-read a revision's source bytes.
-///
-/// Two ways of naming the same file, and which one applies is `storage_path`'s
-/// nullability: a row written since ingest started writing model directories carries the
-/// path the bytes are actually at, and a row from before that carries NULL, meaning they
-/// are still at `blobs/ab/cd/<hash>`. Migration `0009` states that rule, and it stays
-/// true until the `migrate_storage` job has drained every library.
+/// Everything a `derive` job needs to re-read a revision's source bytes: where the file is
+/// (`root` and `storage_path`, or the hash for a store row from before the folder tree) and
+/// the level it was written at.
 #[derive(Debug)]
 pub struct RevisionSource {
     pub hash: BlobHash,
     /// `file.format` — lowercase, no dot. What the kernel is asked to parse.
     pub format: String,
-    /// `file.storage_path`. `None` means the bytes are still content-addressed.
+    /// `file.root`: which directory `storage_path` is relative to.
+    pub root: lapidary_core::FileRoot,
+    /// `file.storage_path`. `None` means a store row whose bytes are content-addressed.
     pub storage_path: Option<String>,
+    /// `file.on_disk`: false once a later revision's bytes replaced the file at that path, so
+    /// there is nothing left to build an export from.
+    pub on_disk: bool,
     /// `file.zstd_level` exactly as stored, for the same reason [`DownloadSource`] keeps
     /// it: a reader must follow the level that was recorded when the bytes were written,
     /// never re-derive one from the format. The `file` row's and never the `blob` row's
@@ -92,12 +83,16 @@ pub struct DownloadSource {
     /// name, which is the design decision spec §2.4 records; the byte-identity claim is
     /// about bytes, not labels.
     pub part_name: String,
-    /// `file.storage_path`. Same nullability, same meaning, as [`RevisionSource::storage_path`]:
-    /// `Some` names where the bytes actually sit, relative to the storage root; `None`
-    /// means this row predates the folder tree and the bytes are still content-addressed.
-    /// Migration `0009`'s comment states the rule and how long it holds — for as long as
-    /// `migrate_storage` takes to drain every library, which is hours on a real corpus.
+    /// `file.root`: which directory `storage_path` is relative to (`0062`).
+    pub root: lapidary_core::FileRoot,
+    /// `file.storage_path`, as [`RevisionSource::storage_path`].
     pub storage_path: Option<String>,
+    /// `file.on_disk`: false once a later revision's bytes replaced this file where it was.
+    /// The route answers 410 for such a row before it looks at the disk at all.
+    pub on_disk: bool,
+    /// `file.mtime_ns`: the modification time when the file was indexed. With `size_bytes`,
+    /// what a download checks the file against before it sends a byte. `None` for a store row.
+    pub mtime_ns: Option<i64>,
     /// `file.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
     /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
     /// a `COALESCE` could not serve a zstd frame as the file, because
@@ -173,8 +168,9 @@ pub struct StorageTotals {
 /// route serves a real directory walk beside these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstanceStorage {
-    /// Every live model file, at what it occupies. One file per model, never deduplicated —
-    /// source dedup ended with the folder tree (`DATA.md` §1.1).
+    /// Source files that are in Lapidary's own store: rows from before M4, whose bytes stayed
+    /// where they were. A file in the owner's folders or the inbox is not on this volume and is
+    /// not counted here (`0062`).
     pub source_bytes: u64,
     /// What Lapidary wrote **on the storage volume** — the slicer exports, since R3 — each
     /// blob counted once however many revisions or libraries point at it.
@@ -227,15 +223,6 @@ pub struct MoveSource {
     pub folder: Option<FolderId>,
     /// `part.name` — what a colliding sibling in the target category would share.
     pub name: String,
-    /// `file.storage_path` for the latest revision's source file, `None` while the part is
-    /// still content-addressed and the storage migration has not reached it.
-    pub storage_path: Option<String>,
-    /// The parent of `storage_path`: the model's own directory, which is what a move
-    /// renames. `None` for exactly the same rows.
-    pub directory: Option<String>,
-    /// The source hash, which `disambiguate` needs to name a colliding destination
-    /// directory the same way ingest would.
-    pub source_hash: Option<BlobHash>,
 }
 
 /// One row of a part's move history.
@@ -395,15 +382,18 @@ pub struct IngestRequest<'a> {
     /// `storage_path`, and the only one of the three a user can change afterwards
     /// (migration `0009`'s header states all three).
     pub folder: Option<FolderId>,
-    /// Where the bytes were written, relative to the storage root. Distinct from
-    /// `source_path`: that names a directory we only ever read, this names one we own.
+    /// Where the file is, relative to the directory `root` names — for a scanned file, the
+    /// library's root joined with `source_path`. Distinct from `source_path`, which is the
+    /// part's identity and never changes.
     ///
-    /// `None` writes the column NULL, which has the meaning `0009` gives it — *the bytes
-    /// are still at the old content-addressed path*. A caller that wrote through
-    /// `SourceStore::put` rather than `put_at` says `None` and is telling the truth; an
-    /// empty string would be a path that exists nowhere, and every reader would then have
-    /// to know that `""` secretly means NULL.
+    /// `None` only for a `store` row whose bytes are content-addressed, which nothing writes
+    /// since M4; fixtures for those rows still say so.
     pub storage_path: Option<&'a str>,
+    /// Which directory `storage_path` is relative to (`0062`).
+    pub root: lapidary_core::FileRoot,
+    /// The file's modification time when it was read, in nanoseconds; what a download checks
+    /// it against with the size. `None` for a store row.
+    pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     /// Where each of `measurements`' figures came from; written to the `*_source` columns.
@@ -477,44 +467,6 @@ impl PgBlobs {
                 zstd_level: zstd_level.unwrap_or(0),
             }),
         )
-    }
-
-    /// Where copies of these bytes are filed in the folder tree: each source `file` row's
-    /// `storage_path`, with the level that file was written at.
-    ///
-    /// For the upload arm, which is handed a hash rather than bytes when the probe found
-    /// them already held. A scanned file's only copy is its model directory's — the store
-    /// stopped being content-addressed for sources (`handler.rs`'s module doc) — so the
-    /// hash-addressed copy [`PgBlobs::blob`] describes is not always there to read. The
-    /// level is `file.zstd_level`, never the `blob` row's: migration `0013` moved it to the
-    /// row that knows the file. Newest first with `f.id` breaking ties, as
-    /// [`PgParts::source_for_download`] orders, so every attempt walks the same copies in
-    /// the same order.
-    ///
-    /// **This is a place where knowing a hash does stand in for the bytes**, and it only
-    /// holds because nobody owns a library yet. The upload commit queues this read for any
-    /// hash some library holds, so a client that names one gets those bytes filed into its
-    /// library without ever sending them. Phase 1 has no principal — every library is the
-    /// one operator's, as `upload.rs`'s `library_exists` also says — so that crosses no
-    /// boundary today. When libraries get owners, `CLAUDE.md`'s rule applies here in full:
-    /// the probe's "already held" answer and this lookup must both be scoped to libraries
-    /// the caller may read.
-    pub async fn source_copies(
-        &self,
-        hash: &BlobHash,
-    ) -> Result<Vec<(String, Option<i16>)>, DbError> {
-        let rows: Vec<(String, Option<i16>)> = sqlx::query_as(
-            "SELECT f.storage_path, f.zstd_level FROM file f \
-             JOIN revision r ON r.id = f.revision_id \
-             JOIN part p ON p.id = r.part_id \
-             WHERE f.blake3 = $1 AND f.role = 'source' AND f.storage_path IS NOT NULL \
-             ORDER BY f.created_at DESC, f.id DESC \
-             LIMIT 8",
-        )
-        .bind(hash.to_hex())
-        .fetch_all(&self.0)
-        .await?;
-        Ok(rows)
     }
 
     /// Record bytes that are on disk but that nothing references yet, `ref_count = 0`.
@@ -616,10 +568,6 @@ impl PgBlobs {
         // depend on `lapidary-storage` to describe a failure to unlink a file. The message
         // is the caller's; all this does is carry it out through `DbError`.
         mut remove: impl FnMut(&BlobHash) -> Result<(), String>,
-        // The path-addressed half, and a second closure rather than a widened first one:
-        // the two name different things (a hash, a store-relative path) and the caller
-        // does different work for each — one unlink against three plus a directory.
-        mut remove_file: impl FnMut(&str) -> Result<(), String>,
     ) -> Result<ReapReport, DbError> {
         let mut tx = self.0.begin().await?;
 
@@ -649,53 +597,6 @@ impl PgBlobs {
             bytes += bytes_column("blob.stored_bytes", *stored_bytes)?;
         }
 
-        // The path-addressed half, in this same transaction and under the same ordering:
-        // the unlink happens while the transaction still holds the deleted row, so a crash
-        // that loses the commit leaves a row naming bytes that are gone rather than bytes
-        // that no row will ever collect.
-        //
-        // `NOT EXISTS` is the whole guard here, not the politeness in front of one that it
-        // is above. `file.blake3` references `blob`, so a referenced blob row cannot be
-        // deleted whatever this query says and the check merely lets the sweep decline;
-        // nothing references `file.storage_path`, so this clause is the only thing standing
-        // between a live part and its bytes.
-        let doomed_files: Vec<(String, Option<i64>)> = sqlx::query_as(
-            "DELETE FROM quarantined_file q \
-             WHERE q.quarantined_at < now() - make_interval(secs => $1) \
-               AND NOT EXISTS (SELECT 1 FROM file f WHERE f.storage_path = q.storage_path) \
-             RETURNING q.storage_path, q.stored_bytes",
-        )
-        .bind(older_than.as_secs_f64())
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut removed_files = Vec::with_capacity(doomed_files.len());
-        for (path, stored_bytes) in &doomed_files {
-            remove_file(path).map_err(|message| DbError::ReapRemove {
-                hash: path.clone(),
-                message,
-            })?;
-            removed_files.push(path.clone());
-            // A row written before migration `0013` may have no recorded size. It is still
-            // removable; it just contributes nothing to the total, which is the same answer
-            // `bytes` gives for a figure nobody wrote down.
-            if let Some(stored) = stored_bytes {
-                bytes += bytes_column("quarantined_file.stored_bytes", *stored)?;
-            }
-        }
-
-        // A path a live `file` row has claimed since it was quarantined. Dropped rather than
-        // un-flagged, which is where this differs from the blob branch below: there is no
-        // `ref_count` to correct and no state to go back to, so a record saying these bytes
-        // are doomed is simply wrong and goes.
-        let revived_files: Vec<String> = sqlx::query_scalar(
-            "DELETE FROM quarantined_file q \
-             WHERE EXISTS (SELECT 1 FROM file f WHERE f.storage_path = q.storage_path) \
-             RETURNING q.storage_path",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
         // The other half, and it is not conditional on the cutoff: bytes somebody pointed
         // at again stop being candidates the moment they are pointed at, not thirty days
         // later. `ref_count` is recomputed here for the same reason [`recount`] exists —
@@ -718,9 +619,8 @@ impl PgBlobs {
         tx.commit().await?;
         Ok(ReapReport {
             removed,
-            removed_files,
             bytes,
-            un_quarantined: (revived.len() + revived_files.len()) as u32,
+            un_quarantined: revived.len() as u32,
         })
     }
 
@@ -790,19 +690,6 @@ impl PgBlobs {
         Ok(held.contains(&true))
     }
 
-    /// Whether `quarantined_file` records `storage_path`: a file a purge (before delete became final,
-    /// 2026-10-17) left waiting out its 30 days,
-    /// or, until the sweep drops the record, a path a part has claimed since. Unlike the sweep, which
-    /// deletes and so asks whether a row names the path, a caller here only writes beside it.
-    pub async fn waits_in_quarantine(&self, storage_path: &str) -> Result<bool, DbError> {
-        Ok(sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM quarantined_file WHERE storage_path = $1)",
-        )
-        .bind(storage_path)
-        .fetch_one(&self.0)
-        .await?)
-    }
-
     /// [`PgBlobs::library_holds`] for each of `files`, in one query: the question for a whole upload,
     /// answered per entry in order, so one path named twice with different bytes gets two answers.
     pub async fn library_holds_each(
@@ -844,15 +731,9 @@ impl PgBlobs {
 pub struct ReapReport {
     /// Blobs whose rows and bytes are both gone.
     pub removed: Vec<BlobHash>,
-    /// Model files whose rows and bytes are both gone, by store-relative path — which is
-    /// what identifies one, the way a hash identifies a blob. Their `metadata.json` and,
-    /// where nothing else was left in it, their directory went too.
-    pub removed_files: Vec<String>,
-    /// What all of that occupied — `stored_bytes` on both halves, so it is the space
-    /// actually recovered rather than the length the bytes decompress to.
+    /// What they occupied — `stored_bytes`, so it is the space actually recovered.
     pub bytes: u64,
-    /// Quarantined blobs something points at again, and quarantined paths a live `file`
-    /// row has claimed. Both clocks are cleared, not paused.
+    /// Quarantined blobs something points at again. Their clocks are cleared, not paused.
     pub un_quarantined: u32,
 }
 
@@ -884,6 +765,38 @@ impl PgIngest {
         let id = insert_part_chain(&mut tx, &req).await?;
         tx.commit().await?;
         Ok(id)
+    }
+
+    /// A file seen again with the bytes its current revision already holds: its recorded
+    /// modification time brought up to date, so a `touch` or a copy of the same bytes does not
+    /// leave every download refused as "changed" with no scan able to clear it. Only when the
+    /// current revision's file is at this same place — a pre-M4 store row stays as it is.
+    pub async fn refresh_seen(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        root: lapidary_core::FileRoot,
+        storage_path: &str,
+        mtime_ns: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE file f SET mtime_ns = $5 \
+             FROM part p \
+             JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
+                           ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+             WHERE p.library_id = $1 AND p.source_path = $2 \
+               AND f.revision_id = r.id AND f.role = 'source' \
+               AND f.root = $3 AND f.storage_path = $4 \
+               AND f.mtime_ns IS DISTINCT FROM $5",
+        )
+        .bind(library.as_uuid())
+        .bind(source_path)
+        .bind(root.as_str())
+        .bind(storage_path)
+        .bind(mtime_ns)
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     /// A blob we already hold: skip the blob insert, everything else is identical.
@@ -1124,6 +1037,8 @@ async fn insert_part_chain(
             parent: None,
             origin: req.origin,
             storage_path: req.storage_path,
+            root: req.root,
+            mtime_ns: req.mtime_ns,
             blob: req.blob,
             measurements: req.measurements,
             provenance: req.provenance,
@@ -1144,6 +1059,8 @@ pub(crate) struct RevisionWrite<'a> {
     pub parent: Option<Uuid>,
     pub origin: lapidary_core::RevisionOrigin,
     pub storage_path: Option<&'a str>,
+    pub root: lapidary_core::FileRoot,
+    pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
@@ -1222,7 +1139,8 @@ pub(crate) async fn insert_revision_chain(
     // inheriting whatever the shared row happened to say.
     sqlx::query(
         "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, storage_path, \
-         zstd_level, stored_bytes) VALUES ($1, $2, 'source', $3, $4, $5, $6, $7, $8)",
+         zstd_level, stored_bytes, root, mtime_ns) \
+         VALUES ($1, $2, 'source', $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(Uuid::now_v7())
     .bind(revision)
@@ -1232,6 +1150,8 @@ pub(crate) async fn insert_revision_chain(
     .bind(req.storage_path)
     .bind(req.blob.zstd_level)
     .bind(req.blob.stored_bytes as i64)
+    .bind(req.root.as_str())
+    .bind(req.mtime_ns)
     .execute(&mut **tx)
     .await?;
 
@@ -1342,6 +1262,8 @@ pub struct PartDetailRow {
     /// The directory above with the model's filename back on. `None` alongside
     /// `directory`, and for the same reason: the bytes are still content-addressed.
     pub storage_path: Option<String>,
+    /// Which directory `storage_path` is relative to, as [`PartRow::root`].
+    pub root: Option<lapidary_core::FileRoot>,
     pub created_at: jiff::Timestamp,
     pub updated_at: jiff::Timestamp,
 }
@@ -1381,6 +1303,7 @@ struct DetailColumns {
     source_stored_bytes: Option<i64>,
     source_zstd_level: Option<i16>,
     storage_path: Option<String>,
+    file_root: Option<String>,
     created_us: i64,
     updated_us: i64,
 }
@@ -1414,7 +1337,7 @@ macro_rules! grid_columns {
      p.part_number AS part_number, p.source_path AS source_path, \
      r.triangle_count AS triangle_count, \
      s.blake3 AS source_blake3, s.size_bytes AS source_bytes, s.stored_bytes AS stored_bytes, \
-     s.zstd_level AS zstd_level, s.storage_path AS storage_path, \
+     s.zstd_level AS zstd_level, s.storage_path AS storage_path, s.root AS file_root, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
      s.format AS source_format, \
@@ -1439,7 +1362,7 @@ macro_rules! grid_laterals {
     () => {
         "\
      JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-     LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level, f.format \
+     LEFT JOIN LATERAL (SELECT f.blake3, f.storage_path, f.root, f.size_bytes, f.stored_bytes, f.zstd_level, f.format \
                         FROM file f \
                         WHERE f.revision_id = r.id AND f.role = 'source' \
                         ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
@@ -1836,12 +1759,12 @@ impl PgParts {
                     s.blake3 AS source_blake3, s.format AS source_format, \
                     s.size_bytes AS source_size_bytes, \
                     s.stored_bytes AS source_stored_bytes, \
-                    s.zstd_level AS source_zstd_level, s.storage_path, \
+                    s.zstd_level AS source_zstd_level, s.storage_path, s.root AS file_root, \
                     (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
                     (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us \
              FROM part p \
              JOIN LATERAL (SELECT * FROM revision WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, f.size_bytes, f.stored_bytes, f.zstd_level \
+             LEFT JOIN LATERAL (SELECT f.blake3, f.format, f.storage_path, f.root, f.size_bytes, f.stored_bytes, f.zstd_level \
                                 FROM file f \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
@@ -1899,11 +1822,9 @@ impl PgParts {
             // Keyed off the source row's presence, never off `zstd_level`'s — see
             // `PartSummary::compressed` for the whole argument.
             compressed: source_hash.map(|_| c.source_zstd_level.is_some_and(|l| l != 0)),
-            // Derived here rather than on the client, for the reason `PartRow::directory`
-            // gives: the client cannot know when the store has not been migrated yet, and a
-            // path assembled from slugs would be confidently wrong exactly where it matters.
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
+            root: c.file_root.as_deref().map(file_root).transpose()?,
             created_at: detail_stamp("part.created_at", c.created_us)?,
             updated_at: detail_stamp("part.updated_at", c.updated_us)?,
         }))
@@ -1929,25 +1850,13 @@ impl PgParts {
         )
     }
 
-    /// This library's own directory inside `libraries/`. `None` means there is no such
-    /// library, exactly as [`PgParts::library_exists`] answers `false` for one.
-    ///
-    /// Lowercased after slugging, which is the one place in the store where case is
-    /// flattened: the seeded library is named `Default` and the layout in the spec (§1)
-    /// says `libraries/default/`. Category and model directories keep their case, because
-    /// those are names a user typed for a folder they will look at; a library directory is
-    /// one level of plumbing above that, and two libraries called `Parts` and `parts`
-    /// colliding on a case-insensitive filesystem (macOS, Windows) is a worse outcome than
-    /// a lowercase directory name.
-    ///
-    /// Read rather than stored: `library` has no slug column, and adding one would make
-    /// this the second place a library's directory name is decided.
-    pub async fn library_slug(&self, library: LibraryId) -> Result<Option<String>, DbError> {
-        let name: Option<String> = sqlx::query_scalar("SELECT name FROM library WHERE id = $1")
+    /// The library's own folder, relative to the ingest mount (`0062`): `''` is the whole mount.
+    /// `None` when there is no such library.
+    pub async fn library_root(&self, library: LibraryId) -> Result<Option<String>, DbError> {
+        Ok(sqlx::query_scalar("SELECT root FROM library WHERE id = $1")
             .bind(library.as_uuid())
             .fetch_optional(&self.0)
-            .await?;
-        Ok(name.map(|name| lapidary_core::slug::slugify(&name).to_lowercase()))
+            .await?)
     }
 
     /// Delete the part, for good: its revisions, files, derivatives, pictures, sources and
@@ -2165,8 +2074,9 @@ impl PgParts {
         library: LibraryId,
         revision: RevisionId,
     ) -> Result<Option<RevisionSource>, DbError> {
-        let row: Option<(String, String, Option<String>, Option<i16>)> = sqlx::query_as(
-            "SELECT f.blake3, f.format, f.storage_path, f.zstd_level FROM file f \
+        #[allow(clippy::type_complexity)]
+        let row: Option<(String, String, Option<String>, Option<i16>, String, bool)> = sqlx::query_as(
+            "SELECT f.blake3, f.format, f.storage_path, f.zstd_level, f.root, f.on_disk FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id AND p.library_id = $2 \
              WHERE f.revision_id = $1 AND f.role = 'source' \
@@ -2176,9 +2086,10 @@ impl PgParts {
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((hex, format, storage_path, zstd_level)) = row else {
+        let Some((hex, format, storage_path, zstd_level, root, on_disk)) = row else {
             return Ok(None);
         };
+        let root = file_root(&root)?;
         let parsed = BlobHash::parse_hex(&hex);
         let hash = parsed.map_err(|_| DbError::CorruptBlobHash {
             column: "file.blake3",
@@ -2187,8 +2098,10 @@ impl PgParts {
         Ok(Some(RevisionSource {
             hash,
             format,
+            root,
             storage_path,
             zstd_level,
+            on_disk,
         }))
     }
 
@@ -2232,21 +2145,43 @@ impl PgParts {
         revision: RevisionId,
     ) -> Result<Option<DownloadSource>, DbError> {
         #[allow(clippy::type_complexity)]
-        let row: Option<(String, String, String, Option<String>, Option<i16>, i64)> =
-            sqlx::query_as(
-                "SELECT f.blake3, f.format, p.name, f.storage_path, f.zstd_level, f.size_bytes \
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<i16>,
+            i64,
+            String,
+            bool,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT f.blake3, f.format, p.name, f.storage_path, f.zstd_level, f.size_bytes, \
+                        f.root, f.on_disk, f.mtime_ns \
              FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
              WHERE f.revision_id = $1 AND f.role = 'source' \
              ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
-            )
-            .bind(revision.as_uuid())
-            .fetch_optional(&self.0)
-            .await?;
-        let Some((hex, format, part_name, storage_path, zstd_level, size_bytes)) = row else {
+        )
+        .bind(revision.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        let Some((
+            hex,
+            format,
+            part_name,
+            storage_path,
+            zstd_level,
+            size_bytes,
+            root,
+            on_disk,
+            mtime_ns,
+        )) = row
+        else {
             return Ok(None);
         };
+        let root = file_root(&root)?;
         let hash = BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
             column: "file.blake3",
             value: hex,
@@ -2256,7 +2191,10 @@ impl PgParts {
             size_bytes,
             format,
             part_name,
+            root,
             storage_path,
+            on_disk,
+            mtime_ns,
             zstd_level,
         }))
     }
@@ -2293,10 +2231,12 @@ impl PgParts {
                     c.urls, c.vendors, c.external_ids, c.titles, c.licenses, \
                     r.id AS revision_id, r.parent_revision_id, r.rev_label, r.origin, \
                     (extract(epoch FROM r.created_at) * 1000000)::bigint AS created_us, \
-                    f.blake3, f.format, f.storage_path, f.zstd_level, f.size_bytes \
+                    f.blake3, f.format, f.storage_path, f.zstd_level, f.size_bytes, \
+                    f.root, f.on_disk, f.mtime_ns \
              FROM chosen c \
              JOIN revision r ON r.part_id = c.id \
-             LEFT JOIN LATERAL (SELECT blake3, format, storage_path, zstd_level, size_bytes FROM file \
+             LEFT JOIN LATERAL (SELECT blake3, format, storage_path, zstd_level, size_bytes, \
+                                       root, on_disk, mtime_ns FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY created_at DESC, id DESC LIMIT 1) f ON true \
              ORDER BY c.position, r.created_at, r.id",
@@ -2347,8 +2287,8 @@ impl PgParts {
                     value: c.origin.clone(),
                 }
             })?;
-            let source = match (c.blake3, c.format, c.size_bytes) {
-                (Some(hex), Some(format), Some(size_bytes)) => Some(DownloadSource {
+            let source = match (c.blake3, c.format, c.size_bytes, c.root) {
+                (Some(hex), Some(format), Some(size_bytes), Some(root)) => Some(DownloadSource {
                     hash: BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
                         column: "file.blake3",
                         value: hex,
@@ -2356,7 +2296,10 @@ impl PgParts {
                     size_bytes,
                     format,
                     part_name: part.name.clone(),
+                    root: file_root(&root)?,
                     storage_path: c.storage_path,
+                    on_disk: c.on_disk.unwrap_or(false),
+                    mtime_ns: c.mtime_ns,
                     zstd_level: c.zstd_level,
                 }),
                 _ => None,
@@ -2493,12 +2436,11 @@ impl PgParts {
             "SELECT \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
-              WHERE f.role = 'source'), \
+              WHERE f.role = 'source' AND f.root = 'store'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
               WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)), \
-             (SELECT coalesce(sum(q.stored_bytes), 0)::bigint FROM quarantined_file q) \
-             + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
-                WHERE b.quarantined_at IS NOT NULL), \
+             (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
+              WHERE b.quarantined_at IS NOT NULL), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
               WHERE b.quarantined_at IS NULL \
                 AND coalesce(b.last_accessed_at, b.created_at) < now() - interval '90 days' \
@@ -2515,7 +2457,7 @@ impl PgParts {
         Ok(InstanceStorage {
             source_bytes: bytes_column("file.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
-            quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
+            quarantined_bytes: bytes_column("blob.stored_bytes", quarantined)?,
             render_cache_bytes: bytes_column("blob.stored_bytes", cache)?,
         })
     }
@@ -2573,43 +2515,16 @@ impl PgParts {
     /// directory a move renames is the directory the card showed. `Ok(None)` is "no such
     /// live part" — a deleted or unknown id — which the route answers 404 for.
     pub async fn move_source(&self, part: PartId) -> Result<Option<MoveSource>, DbError> {
-        // Five columns off three tables, read positionally and mapped into `MoveSource`
-        // immediately below — the same shape (and the same allow) the grid page uses.
-        #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, Option<Uuid>, String, Option<String>, Option<String>)> =
-            sqlx::query_as(
-                "SELECT p.library_id, p.folder_id, p.name, s.storage_path, s.blake3 \
-                 FROM part p \
-                 LEFT JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
-                                    ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-                 LEFT JOIN LATERAL (SELECT f.storage_path, f.blake3 FROM file f \
-                                    WHERE f.revision_id = r.id AND f.role = 'source' \
-                                    ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-                 WHERE p.id = $1",
-            )
-            .bind(part.as_uuid())
-            .fetch_optional(&self.0)
-            .await?;
-
-        row.map(|(library, folder, name, storage_path, blake3)| {
-            let source_hash = blake3
-                .map(|hex| {
-                    BlobHash::parse_hex(&hex).map_err(|_| DbError::CorruptBlobHash {
-                        column: "file.blake3",
-                        value: hex,
-                    })
-                })
-                .transpose()?;
-            Ok(MoveSource {
-                library: LibraryId::from_uuid(library),
-                folder: folder.map(FolderId::from_uuid),
-                name,
-                directory: storage_path.as_deref().and_then(model_directory),
-                storage_path,
-                source_hash,
-            })
-        })
-        .transpose()
+        let row: Option<(Uuid, Option<Uuid>, String)> =
+            sqlx::query_as("SELECT library_id, folder_id, name FROM part WHERE id = $1")
+                .bind(part.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(row.map(|(library, folder, name)| MoveSource {
+            library: LibraryId::from_uuid(library),
+            folder: folder.map(FolderId::from_uuid),
+            name,
+        }))
     }
 
     /// Is another part in `folder` already called `name`?
@@ -2639,65 +2554,20 @@ impl PgParts {
         .await?)
     }
 
-    /// File a part under a different category, moving its directory on the way.
-    ///
-    /// **`rename` runs inside the transaction, and the commit happens only if it
-    /// succeeded.** A failed rename rolls the rows back and nothing moved. The remaining
-    /// window is a rename that succeeds and a commit that then fails, which leaves the disk
-    /// ahead of the database — repairable, because `metadata.json` makes every model
-    /// directory self-identifying.
-    ///
-    /// The reverse order was considered and rejected, but not because its failure is worse
-    /// in kind: both orderings can leave a `storage_path` that reads fail on — one naming a
-    /// path the rename never created, the other naming the directory the rename just
-    /// emptied. What separates them is how often each window opens. A rename fails for
-    /// ordinary reasons and this order turns every one of those into a clean refusal with
-    /// nothing moved; a commit failing after a successful rename needs the connection to
-    /// drop between `COMMIT` and its acknowledgement, which is rare. The common failure is
-    /// made total, the rare one is made repairable.
-    ///
-    /// `rename` is a closure rather than a storage handle because this crate cannot hold
-    /// one: `lapidary-db` and `lapidary-storage` are both L1, and `cargo xtask check-layers`
-    /// forbids an edge between them. So the caller — `lapidary-api`'s `moves.rs`, the one
-    /// file allowed to name `SourceRelocator` — passes the filesystem half in, and its
-    /// error text arrives here as a `String` for [`DbError::RenameFailed`].
-    ///
-    /// Every `file` row under the old directory is re-pointed, not only the latest
-    /// revision's source: the rename moves the whole directory, so a second revision's file
-    /// sitting beside the first would otherwise be left naming a path that no longer
-    /// exists. `starts_with`, not `LIKE`: a model directory disambiguated to `cliff_a1b2c3`
-    /// contains `_`, which `LIKE` reads as a wildcard.
-    pub async fn move_to_folder<F>(
+    /// File a part under a different category. **A database change and nothing else** (M4): a
+    /// category is the library's own grouping, and the file stays exactly where it is on disk.
+    pub async fn move_to_folder(
         &self,
         part: PartId,
         from: Option<FolderId>,
         to: Option<FolderId>,
-        old_directory: &str,
-        new_directory: &str,
-        rename: F,
-    ) -> Result<(), DbError>
-    where
-        F: FnOnce() -> Result<(), String>,
-    {
+    ) -> Result<(), DbError> {
         let mut tx = self.0.begin().await?;
-
         sqlx::query("UPDATE part SET folder_id = $2, updated_at = now() WHERE id = $1")
             .bind(part.as_uuid())
             .bind(to.map(|f| f.as_uuid()))
             .execute(&mut *tx)
             .await?;
-
-        sqlx::query(
-            "UPDATE file SET storage_path = $2 || substring(storage_path from length($3) + 1) \
-             WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1) \
-               AND starts_with(storage_path, $3 || '/')",
-        )
-        .bind(part.as_uuid())
-        .bind(new_directory)
-        .bind(old_directory)
-        .execute(&mut *tx)
-        .await?;
-
         sqlx::query(
             "INSERT INTO part_move (id, part_id, from_folder, to_folder) \
              VALUES (gen_random_uuid(), $1, $2, $3)",
@@ -2707,14 +2577,6 @@ impl PgParts {
         .bind(to.map(|f| f.as_uuid()))
         .execute(&mut *tx)
         .await?;
-
-        if let Err(detail) = rename() {
-            // Explicit, not by drop: a rollback that only happens because the transaction
-            // fell out of scope is a rollback nobody can see in this function.
-            tx.rollback().await?;
-            return Err(DbError::RenameFailed { detail });
-        }
-
         tx.commit().await?;
         Ok(())
     }
@@ -2745,6 +2607,13 @@ impl PgParts {
             })
             .collect()
     }
+}
+
+/// `file.root` read back. Refused rather than defaulted: a guessed root is a guessed folder.
+pub(crate) fn file_root(value: &str) -> Result<lapidary_core::FileRoot, DbError> {
+    lapidary_core::FileRoot::parse(value).ok_or_else(|| DbError::UnknownRoot {
+        value: value.to_owned(),
+    })
 }
 
 /// The directory holding a stored file, as the store-relative path it is written with.
@@ -3449,6 +3318,7 @@ struct GridRow {
     stored_bytes: Option<i64>,
     zstd_level: Option<i16>,
     storage_path: Option<String>,
+    file_root: Option<String>,
     created_us: i64,
     updated_us: i64,
     source_format: Option<String>,
@@ -3485,6 +3355,7 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         stored_bytes,
         zstd_level,
         storage_path,
+        file_root: root,
         created_us,
         updated_us,
         source_format,
@@ -3597,6 +3468,7 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
             image,
             directory: storage_path.as_deref().and_then(model_directory),
             storage_path,
+            root: root.as_deref().map(file_root).transpose()?,
         })
     }
 }
@@ -3663,17 +3535,21 @@ impl PgParts {
     /// reports. Not a technical requirement — nothing joins on it — but a switcher listing
     /// two entries called `Terrain` is a switcher nobody can use, and the cost of finding
     /// that out later is a rename plus an explanation.
-    pub async fn create_library(&self, name: &str) -> Result<LibraryId, DbError> {
+    ///
+    /// `root` is the library's folder under the ingest mount, `''` for the whole of it. The
+    /// caller has refused one that escapes the mount.
+    pub async fn create_library(&self, name: &str, root: &str) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
         // Derived here and never sent by a client, exactly as a category's is: `slugify` is
         // the one place that decides what a filesystem may hold, and a caller who could name
         // the directory could name one outside the store. Lowercased because that is what
         // `library_slug` has always returned and what every existing directory is called.
         let slug = lapidary_core::slug::slugify(name).to_lowercase();
-        sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO library (id, name, slug, root) VALUES ($1, $2, $3, $4)")
             .bind(id.as_uuid())
             .bind(name)
             .bind(&slug)
+            .bind(root)
             .execute(&self.0)
             .await
             .map_err(|err| match constraint_of(&err).as_deref() {
@@ -3750,5 +3626,8 @@ struct BundleColumns {
     format: Option<String>,
     storage_path: Option<String>,
     zstd_level: Option<i16>,
+    root: Option<String>,
+    on_disk: Option<bool>,
+    mtime_ns: Option<i64>,
     size_bytes: Option<i64>,
 }

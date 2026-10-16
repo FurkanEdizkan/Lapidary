@@ -1,7 +1,8 @@
 //! `import_link`: a model from the page a person pasted (F3, 2026-10-16).
 //!
 //! The site is read with the key saved in Settings, each of the model's mesh files is fetched and
-//! filed through [`WorkerHandler::index`] — the path a scan and an upload take, hash first — under
+//! written once into the inbox at `imports/<site>/<creator>/<model>/<file>` and indexed from there
+//! through [`WorkerHandler::index`] — the path a scan and an upload take, hash first — as the part
 //! `<site>/<creator>/<model>/<file>`, and then each part gets what the page said about it: a source
 //! row naming the page, the site, the model's id and its licence; the creator's tags when the part has
 //! none; the page's first picture when the part has none. What a person already gave a part wins.
@@ -14,12 +15,15 @@
 //! **Archives are skipped, named in the log.** A creator's pack (`.zip`, `.7z`, `.rar`) is P1's to
 //! open; a model with nothing else says so rather than importing nothing in silence.
 
-use crate::handler::WorkerHandler;
+use crate::handler::{FileAt, WorkerHandler};
 use lapidary_core::slug::slugify;
-use lapidary_core::{BlobHash, LibraryId, Outcome, RevisionOrigin, is_model_file, source_format};
+use lapidary_core::{
+    BlobHash, FileRoot, LibraryId, Outcome, RevisionOrigin, is_model_file, source_format,
+};
 use lapidary_db::{NewPartSource, PgParts, PgRevisions, PgSiteKeys};
 use lapidary_jobs::HandlerError;
 use lapidary_sites::{Site, SiteError, identify};
+use lapidary_storage::InboxWriter;
 
 /// The most tags a page gives a part; past this a creator's tag list is a keyword dump.
 const MAX_TAGS: usize = 20;
@@ -100,8 +104,27 @@ impl WorkerHandler {
                 .map_err(classify)?;
             let source_path = format!("{folder}/{}", file.name.replace(['/', '\\'], "_"));
             let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+            // Into Lapidary's own part of the inbox, once (M4), then indexed from there like any
+            // other file. A re-import of unchanged bytes leaves the file as it was.
+            let placed = InboxWriter::open(&self.inbox_dir)
+                .put(&format!("imports/{source_path}"), &bytes)
+                .map_err(|e| HandlerError::Transient {
+                    message: format!("Could not write {source_path} into the inbox: {e}"),
+                })?;
+            let at = FileAt {
+                root: FileRoot::Inbox,
+                path: &placed.path,
+                mtime_ns: placed.stat.mtime_ns,
+            };
             let filed = self
-                .index(library, &source_path, bytes, hash, RevisionOrigin::Upload)
+                .index(
+                    library,
+                    &source_path,
+                    bytes,
+                    hash,
+                    RevisionOrigin::Upload,
+                    at,
+                )
                 .await?;
             outcome = most_telling(outcome, filed);
             self.describe_from_page(library, &source_path, site, &model, picture.as_ref())

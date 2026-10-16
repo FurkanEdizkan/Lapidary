@@ -2,9 +2,9 @@
 //!
 //! What each of them promises is checked where the promise actually lives: the probe
 //! against the `blob` and `part` rows it sorts by, the chunk against the staged file's
-//! length, and the commit against the blob store and the `job` table together — the
-//! commit's whole point is that bytes reach the store *and* a row is written to point at
-//! them, and a test that read only one of the two would pass on half a commit.
+//! length, and the commit against the inbox and the `job` table together — the commit's whole
+//! point is that bytes reach the inbox *and* a job is queued to index them there (M4), and a test
+//! that read only one of the two would pass on half a commit.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,24 +20,31 @@ const BRACKET: &[u8] = include_bytes!("../../../fixtures/bracket-lp-1042-03.stl"
 /// half-transferred file must never sit inside a store whose contract is that everything
 /// in it is complete.
 struct Server {
-    _blobs: tempfile::TempDir,
+    blobs: tempfile::TempDir,
     uploads: tempfile::TempDir,
+    inbox: tempfile::TempDir,
     state: AppState,
 }
 
 fn server(pool: sqlx::PgPool) -> Server {
     let blobs = tempfile::tempdir().expect("blob root");
     let uploads = tempfile::tempdir().expect("upload dir");
+    let inbox = tempfile::tempdir().expect("inbox");
     let state = AppState {
         db: pool,
         blob_root: blobs.path().to_path_buf(),
         upload_dir: uploads.path().to_path_buf(),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: inbox.path().to_path_buf(),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
     Server {
-        _blobs: blobs,
+        blobs,
         uploads,
+        inbox,
         state,
     }
 }
@@ -149,42 +156,19 @@ async fn a_probe_of_an_empty_library_needs_every_file_and_its_bytes(pool: sqlx::
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["have"], serde_json::json!([]));
-    assert_eq!(json["needRows"], serde_json::json!([]));
     assert_eq!(
         json["needBytes"],
         serde_json::json!(["brackets/LP-1042-03.stl"]),
-        "a library that holds nothing needs both the rows and the bytes"
+        "a library that holds nothing needs the bytes"
     );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_probe_answers_need_rows_for_bytes_the_store_already_holds(pool: sqlx::PgPool) {
-    // The larger of the two dedup wins, and the one `DATA.md`'s two-list contract misses:
-    // these bytes are in the store under some other library's part, so the transfer is
-    // skipped entirely and only the rows are missing.
-    let server = server(pool.clone());
-    let hash = server.upload(BRACKET).await;
-    let (status, _) = server
-        .commit(serde_json::json!([{ "path": "a/LP-1042-03.stl", "blake3": hash.to_hex() }]))
-        .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-
-    let (status, json) = server
-        .probe(serde_json::json!([
-            { "path": "b/LP-1042-03.stl", "blake3": hash.to_hex() }
-        ]))
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json["needRows"],
-        serde_json::json!(["b/LP-1042-03.stl"]),
-        "the bytes are held, so only the rows are missing"
+    assert!(
+        json.get("needRows").is_none(),
+        "no stored copy is reused since M4, so there is no third answer: {json}"
     );
-    assert_eq!(json["needBytes"], serde_json::json!([]));
 }
 
 /// A path is held only with the bytes its part's current revision has. The same path with other bytes is a
-/// change to send, and the held bytes under another path need only rows, however the manifest orders them.
+/// change to send, and so are the held bytes under another path: there is no stored copy to reuse (M4).
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPool) {
     let held = BlobHash::from_bytes(*blake3::hash(BRACKET).as_bytes());
@@ -196,6 +180,8 @@ async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPoo
             source_path: "brackets/LP-1042-03.stl",
             folder: None,
             storage_path: Some("libraries/default/lp-1042-03/LP-1042-03.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &lapidary_db::StoredBlobRow {
                 hash: held,
                 size_bytes: BRACKET.len() as u64,
@@ -227,13 +213,9 @@ async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPoo
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["have"], serde_json::json!(["brackets/LP-1042-03.stl"]));
     assert_eq!(
-        json["needRows"],
-        serde_json::json!(["copies/LP-1042-03.stl"])
-    );
-    assert_eq!(
         json["needBytes"],
-        serde_json::json!(["brackets/LP-1042-03.stl"]),
-        "the held path with other bytes is a change to send"
+        serde_json::json!(["brackets/LP-1042-03.stl", "copies/LP-1042-03.stl"]),
+        "the held path with other bytes is a change to send, and a copy is sent too"
     );
 }
 
@@ -262,8 +244,10 @@ async fn a_chunk_at_the_wrong_offset_is_refused_and_says_where_to_resume(pool: s
     assert_eq!(json["received"], 100);
 }
 
+/// (e) An upload is written once into the inbox, at the path the browser reported, and queued to be
+/// indexed from there. Nothing goes into Lapidary's store.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn committing_stores_the_bytes_records_the_blob_and_queues_the_mesh(pool: sqlx::PgPool) {
+async fn committing_writes_the_file_into_the_inbox_and_queues_its_index(pool: sqlx::PgPool) {
     let server = server(pool.clone());
     let hash = server.upload(BRACKET).await;
     assert!(server.staged(&hash).exists(), "the transfer staged a file");
@@ -273,48 +257,62 @@ async fn committing_stores_the_bytes_records_the_blob_and_queues_the_mesh(pool: 
             { "path": "brackets/LP-1042-03.stl", "blake3": hash.to_hex() }
         ]))
         .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
     let accepted: ScanAccepted = serde_json::from_value(json).expect("body is a ScanAccepted");
     assert_eq!(accepted.queued, 1);
 
-    // 1. The bytes are in the blob store, byte-identical.
-    let stored = lapidary_db::PgBlobs(pool.clone())
-        .blob(&hash)
-        .await
-        .expect("query")
-        .expect("the commit recorded a blob row");
-    let read = lapidary_storage::SourceReader::open(&server.state.blob_root)
-        .get(&hash, Some(stored.zstd_level))
-        .expect("the blob is in the store");
-    assert_eq!(read, BRACKET);
+    // 1. The bytes are in the inbox, byte-identical, under the browser's path.
+    let placed = server.inbox.path().join("uploads/brackets/LP-1042-03.stl");
+    assert_eq!(std::fs::read(&placed).expect("in the inbox"), BRACKET);
 
-    // 2. The row exists with a zero count. That is the whole point of §4.2: the worker
-    //    has not run, so nothing references these bytes, and a blob with no row at all
-    //    would be invisible to slice 7's reaper forever.
-    let ref_count: i32 = sqlx::query_scalar("SELECT ref_count FROM blob WHERE blake3 = $1")
-        .bind(hash.to_hex())
+    // 2. Nothing went into the store: no blob row, no file.
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
         .fetch_one(&pool)
         .await
         .expect("query");
+    assert_eq!(blobs, 0, "an upload records nothing in the store");
     assert_eq!(
-        ref_count, 0,
-        "an uploaded blob is a known orphan until the worker runs"
+        std::fs::read_dir(server.blobs.path())
+            .expect("reads")
+            .count(),
+        0,
+        "and writes nothing there"
     );
 
-    // 3. The job the worker will pick up, with both facts it needs.
+    // 3. The job the worker picks up: where the file is, and which part it is.
     let (kind, payload): (String, serde_json::Value) =
         sqlx::query_as("SELECT kind, payload FROM job WHERE library_id = $1")
             .bind(library().as_uuid())
             .fetch_one(&pool)
             .await
             .expect("query");
-    assert_eq!(kind, "ingest_blob");
-    assert_eq!(payload["blake3"], hash.to_hex());
+    assert_eq!(kind, "ingest_inbox");
+    assert_eq!(payload["inbox"], "uploads/brackets/LP-1042-03.stl");
     assert_eq!(payload["path"], "brackets/LP-1042-03.stl");
 
-    // 4. The staged copy is gone. Wasted disk otherwise, and nothing else would ever
-    //    look at it.
+    // 4. The staged copy is gone.
     assert!(!server.staged(&hash).exists());
+
+    // 5. The same path again, with other bytes: a new file beside the first, never over it.
+    let changed = [BRACKET, b"\n"].concat();
+    let again = server.upload(&changed).await;
+    let (status, json) = server
+        .commit(serde_json::json!([
+            { "path": "brackets/LP-1042-03.stl", "blake3": again.to_hex() }
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    assert_eq!(std::fs::read(&placed).expect("still there"), BRACKET);
+    assert_eq!(
+        std::fs::read(
+            server
+                .inbox
+                .path()
+                .join("uploads/brackets/LP-1042-03 (2).stl")
+        )
+        .expect("beside it"),
+        changed
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -347,12 +345,14 @@ async fn committing_bytes_that_do_not_match_their_claim_stores_nothing(pool: sql
         .await
         .expect("query");
     assert_eq!(queued, 0, "a refused commit queues nothing");
-    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE blake3 = $1")
-        .bind(lie.to_hex())
-        .fetch_one(&pool)
-        .await
-        .expect("query");
-    assert_eq!(blobs, 0, "a refused commit records nothing");
+    assert!(
+        !server
+            .inbox
+            .path()
+            .join("uploads/brackets/LP-1042-03.stl")
+            .exists(),
+        "a refused commit places nothing in the inbox"
+    );
     assert!(
         !server.staged(&lie).exists(),
         "known-bad bytes must not be left for a resume to append to"
@@ -594,10 +594,10 @@ async fn committing_nothing_is_a_success_with_no_batch_to_watch(pool: sqlx::PgPo
     assert_eq!(accepted.queued, 0);
 }
 
-/// A drop's files are stored several at a time, and each set of bytes once: two copies of a file under
-/// different names stage one blob, and every file still queues its own job.
+/// A drop's files are placed several at a time: two copies of a file under different names share one
+/// staged file, each lands in the inbox under its own name, and every file queues its own job.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn committing_many_files_stores_each_blob_once_and_queues_every_file(pool: sqlx::PgPool) {
+async fn committing_many_files_places_each_and_queues_every_file(pool: sqlx::PgPool) {
     let server = server(pool.clone());
     let mut files = Vec::new();
     for n in 0..12u8 {
@@ -614,13 +614,27 @@ async fn committing_many_files_stores_each_blob_once_and_queues_every_file(pool:
     let (status, json) = server.commit(serde_json::Value::Array(files)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{json}");
     assert_eq!(json["queued"], 13);
-    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'ingest_inbox'")
         .fetch_one(&pool)
         .await
         .expect("query");
-    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'ingest_blob'")
-        .fetch_one(&pool)
-        .await
-        .expect("query");
-    assert_eq!((blobs, jobs), (12, 13));
+    assert_eq!(jobs, 13);
+    assert_eq!(
+        std::fs::read(server.inbox.path().join("spares/LP-1042-00-copy.stl"))
+            .err()
+            .map(|e| e.kind()),
+        Some(std::io::ErrorKind::NotFound),
+        "under uploads/, not loose in the inbox"
+    );
+    assert_eq!(
+        std::fs::read(
+            server
+                .inbox
+                .path()
+                .join("uploads/spares/LP-1042-00-copy.stl")
+        )
+        .expect("the copy"),
+        std::fs::read(server.inbox.path().join("uploads/brackets/LP-1042-00.stl"))
+            .expect("the original")
+    );
 }

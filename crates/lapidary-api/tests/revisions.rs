@@ -9,7 +9,8 @@ use tower::ServiceExt;
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 const PATH: &str = "flange-dn40-lp-3310-02.stl";
-const STORED: &str = "libraries/default/flange-dn40-lp-3310-02/flange-dn40-lp-3310-02.stl";
+/// Where the file is in the owner's folders; both revisions name it, and only the second is it now.
+const STORED: &str = "Flanges/flange-dn40-lp-3310-02.stl";
 
 fn library() -> LibraryId {
     LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid"))
@@ -22,6 +23,10 @@ fn state(pool: sqlx::PgPool) -> AppState {
         blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     }
 }
@@ -79,6 +84,8 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
             source_path: PATH,
             folder: None,
             storage_path: Some(STORED),
+            root: lapidary_core::FileRoot::Library,
+            mtime_ns: Some(1_760_000_000_000_000_000),
             blob: &blob_row(0x41),
             measurements: &flange(214_780.0, 150.0),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
@@ -94,18 +101,18 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
         .expect("the part")
         .revision;
     revisions
-        .record_revision(
-            RevisionRequest {
-                part,
-                parent: first,
-                origin: RevisionOrigin::Agent,
-                blob: &blob_row(0x42),
-                measurements: &flange(236_258.0, 165.0),
-                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                format: "stl",
-            },
-            |_, _| Ok(()),
-        )
+        .record_revision(RevisionRequest {
+            part,
+            parent: first,
+            origin: RevisionOrigin::Agent,
+            root: lapidary_core::FileRoot::Library,
+            storage_path: STORED,
+            mtime_ns: Some(1_760_000_100_000_000_000),
+            blob: &blob_row(0x42),
+            measurements: &flange(236_258.0, 165.0),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
         .await
         .expect("revision 2");
     part
@@ -145,6 +152,38 @@ async fn a_parts_history_lists_every_revision_newest_first_with_its_provenance(p
     );
     assert_eq!(revisions[0]["sourceHash"], "42".repeat(32));
     assert_eq!(revisions[0]["sourceBytes"], 184_342);
+    // The second replaced the first in the owner's folder (M4): the first keeps its figures and
+    // its hash, and says it is no longer on disk.
+    assert_eq!(revisions[0]["onDisk"], true);
+    assert_eq!(revisions[1]["onDisk"], false);
+    assert_eq!(revisions[1]["sourceHash"], "41".repeat(32));
+}
+
+/// (d) An old revision whose file the newer one replaced answers 410, with a sentence, before the
+/// disk is looked at — this state's folders do not even exist.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_old_revision_no_longer_on_disk_answers_gone(pool: sqlx::PgPool) {
+    let part = two_revisions(&pool).await;
+    let history = PgRevisions(pool.clone())
+        .history(part)
+        .await
+        .expect("history");
+    let (status, json) = send(
+        pool.clone(),
+        request(
+            "GET",
+            &format!("/api/revisions/{}/download?variant=original", history[1].id),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "{json}");
+    assert_eq!(json["reason"], "noLongerOnDisk");
+    assert!(
+        json["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no longer on disk")),
+        "{json}"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -205,6 +244,8 @@ async fn mass_is_volume_times_the_density_of_the_parts_one_material(pool: sqlx::
             source_path: "bracket-lp-1042-03.stl",
             folder: None,
             storage_path: Some("libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &blob_row(0x43),
             measurements: &flange(21_478.5, 60.0),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,

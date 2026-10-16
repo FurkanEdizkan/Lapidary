@@ -39,6 +39,40 @@ impl RevisionOrigin {
     }
 }
 
+/// Which directory a `file` row's `storage_path` is relative to (M4, migration `0062`).
+///
+/// - `Library`: the owner's own folders, under the ingest mount. Lapidary reads here and never
+///   writes, renames or removes anything — the mount is `:ro` as the backstop.
+/// - `Inbox`: where uploads, link imports and the seeded examples are written, once.
+/// - `Store`: Lapidary's own blob root. Every row from before M4 is one of these, and its bytes
+///   stay where they are — a path under the store, or `blobs/ab/cd/<hash>` when the path is NULL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FileRoot {
+    Library,
+    Inbox,
+    Store,
+}
+
+impl FileRoot {
+    /// The column's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Library => "library",
+            Self::Inbox => "inbox",
+            Self::Store => "store",
+        }
+    }
+
+    /// The column read back. `None` is a word this build never writes.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Library, Self::Inbox, Self::Store]
+            .into_iter()
+            .find(|root| root.as_str() == value)
+    }
+}
+
 /// The grid row, in the shape the spec calls for: identity, part number, the part's own
 /// picture, approximate flag, storage figures, timestamps. Still narrow — the open path
 /// reads metadata and derivatives only, and never a source file. The storage

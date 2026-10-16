@@ -152,161 +152,11 @@ impl PgJobs {
         self.enqueue(library, &jobs).await
     }
 
-    /// One fresh `migrate_storage` job for `library`, under a batch of its own, unless
-    /// `library` already has one pending or running.
-    ///
-    /// This is the worker startup guard (`bin/lapidary-server`, worker role only): for
-    /// every library `PgStorageMigration::libraries_needing_migration` still finds
-    /// un-migrated rows in, it calls this once, so an operator upgrading an old store
-    /// never has to hand-write `INSERT INTO job`. It is also what the optional manual
-    /// trigger route (`lapidary_ingest::migrate::migrate`) calls.
-    ///
-    /// The `WHERE NOT EXISTS` check below is best-effort, not race-free, and there is no
-    /// unique constraint backing it (migration 0012 removed the one that used to). Under
-    /// READ COMMITTED, two workers booting at the same instant against the same
-    /// un-migrated library each take their own snapshot before either commits, so both
-    /// can see "nothing exists yet" and both insert -- a library can briefly hold two
-    /// pending `migrate_storage` rows. That is acceptable: a redundant queue row is
-    /// wasteful, not harmful, because the second runner finds the work already claimed
-    /// at the execution boundary in `lapidary-ingest` and terminates rather than
-    /// repeating it. `any_pending`-shaped checks (see `reenqueue_migration_if_absent`)
-    /// are live reads, so a chain that keeps re-checking stops re-enqueueing itself once
-    /// the library is actually drained. The safety of two migrations running at once for
-    /// the same library is established at that execution boundary, not by this check.
-    ///
-    /// Checks `state IN ('pending', 'running')`, not `'pending'` alone: a library whose
-    /// migration is already RUNNING, with no pending successor queued yet, must still be
-    /// recognised, or this method would queue a second, redundant chain beside it.
-    ///
-    /// Returns the batch this job was queued under, or `None` if nothing was queued.
-    pub async fn enqueue_migration_if_absent(
-        &self,
-        library: LibraryId,
-    ) -> Result<Option<BatchId>, DbError> {
-        let batch: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO job (id, batch_id, library_id, kind, payload) \
-             SELECT uuidv7(), uuidv7(), $1, 'migrate_storage', '{}'::jsonb \
-             WHERE NOT EXISTS ( \
-                 SELECT 1 FROM job \
-                  WHERE kind = 'migrate_storage' AND library_id = $1 \
-                    AND state IN ('pending', 'running')) \
-             RETURNING batch_id",
-        )
-        .bind(library.as_uuid())
-        .fetch_optional(&self.0)
-        .await?;
-
-        let batch = batch.map(BatchId::from_uuid);
-        if batch.is_some() {
-            // Same optimization `enqueue_into` makes, and the same reason: waking every
-            // worker to find one migration job is cheap once, and not worth skipping
-            // for the no-op case above, which already returns before reaching here.
-            sqlx::query("SELECT pg_notify($1, '')")
-                .bind(JOB_CHANNEL)
-                .execute(&self.0)
-                .await?;
-        }
-        Ok(batch)
-    }
-
-    /// `migrate_storage`'s own re-enqueue arm, checked the same way
-    /// `enqueue_migration_if_absent` is -- but checking `state = 'pending'` ONLY, never
-    /// `'running'`.
-    ///
-    /// That difference is not an oversight. The caller of this method IS the currently
-    /// RUNNING `migrate_storage` job for `library` -- a `NOT EXISTS` that also excluded
-    /// `'running'` rows would see that caller's own row on every single run and refuse
-    /// to queue a successor, silently stopping the chain from ever draining. What this
-    /// guards against instead is a successor some OTHER path already queued:
-    /// `lapidary_jobs::worker`'s shutdown-grace release can put this same job's own row
-    /// back to `'pending'` while this handler is still finishing in the background (see
-    /// that module's `SHUTDOWN_GRACE` doc), and a second worker can reclaim an expired
-    /// lease and run this same re-enqueue concurrently.
-    ///
-    /// The check is best-effort, not race-free, and there is no unique constraint behind
-    /// it (migration 0012 removed the one that used to back `enqueue_migration_if_absent`
-    /// and this method alike). Two concurrent callers can each see nothing pending under
-    /// READ COMMITTED and each insert, so the library can briefly hold two pending
-    /// `migrate_storage` rows. That is acceptable: the second runner finds the work
-    /// already done at the execution boundary in `lapidary-ingest` and terminates rather
-    /// than repeating it, and this is a live read on every re-enqueue, not a one-time
-    /// check, so a chain stops re-enqueueing itself once the library is actually
-    /// drained. The safety of two migrations running at once for the same library is
-    /// established at that execution boundary, not here.
-    ///
-    /// Inserts into `batch` -- the chain's own, existing batch -- rather than minting a
-    /// fresh one, for `enqueue_into`'s reason: the browser (or whatever else is
-    /// watching) is already polling this batch, and a new one would orphan its count.
-    ///
-    /// Returns whether this call actually queued the next run. `false` is not a
-    /// failure -- it means the chain's continuation is already queued by someone else.
-    pub async fn reenqueue_migration_if_absent(
-        &self,
-        batch: BatchId,
-        library: LibraryId,
-    ) -> Result<bool, DbError> {
-        let queued: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO job (id, batch_id, library_id, kind, payload) \
-             SELECT uuidv7(), $1, $2, 'migrate_storage', '{}'::jsonb \
-             WHERE NOT EXISTS ( \
-                 SELECT 1 FROM job \
-                  WHERE kind = 'migrate_storage' AND library_id = $2 AND state = 'pending') \
-             RETURNING id",
-        )
-        .bind(batch.as_uuid())
-        .bind(library.as_uuid())
-        .fetch_optional(&self.0)
-        .await?;
-
-        let queued = queued.is_some();
-        if queued {
-            sqlx::query("SELECT pg_notify($1, '')")
-                .bind(JOB_CHANNEL)
-                .execute(&self.0)
-                .await?;
-        }
-        Ok(queued)
-    }
-
-    /// The batch id of `library`'s currently active `migrate_storage` chain, pending or
-    /// running -- whichever row already existed (or a concurrent caller just created)
-    /// when `enqueue_migration_if_absent` returned `None`. Every row in one migration's
-    /// chain shares its first row's `batch_id` (`reenqueue_migration_if_absent` always
-    /// inserts into the SAME batch, never a fresh one), so ordinarily there is exactly
-    /// one live chain per library and picking any one active row's batch id is
-    /// unambiguous. `enqueue_migration_if_absent` and `reenqueue_migration_if_absent`
-    /// are both best-effort (see their doc comments), so a library can briefly hold two
-    /// pending rows under two different batches; this query has no `ORDER BY` and
-    /// `LIMIT 1`s whichever one Postgres returns first in that window. Reporting either
-    /// batch id is fine here -- both chains resolve at the execution boundary, and an
-    /// operator polling either sees real progress, not a 404.
-    ///
-    /// Exists for the manual trigger route (`lapidary_ingest::migrate::migrate`): a
-    /// `queued: 0` response still needs a real batch id to hand back when a migration
-    /// IS running, unlike a render sweep's `queued: 0`, which means nothing is running
-    /// at all. Reporting a fabricated id there would send an operator polling a batch
-    /// that can never resolve -- a 404 for a migration genuinely in progress.
-    pub async fn active_migration_batch(
-        &self,
-        library: LibraryId,
-    ) -> Result<Option<BatchId>, DbError> {
-        let batch: Option<Uuid> = sqlx::query_scalar(
-            "SELECT batch_id FROM job \
-              WHERE kind = 'migrate_storage' AND library_id = $1 \
-                AND state IN ('pending', 'running') \
-              LIMIT 1",
-        )
-        .bind(library.as_uuid())
-        .fetch_optional(&self.0)
-        .await?;
-        Ok(batch.map(BatchId::from_uuid))
-    }
-
     /// Queue a build of `revision`'s `produce`, unless one is already pending or running.
     ///
     /// Returns the batch holding the build and whether this call queued it. A build already on
     /// its way is not a refusal: the caller watches that batch, which is the answer it got the
-    /// first time. Best-effort in `enqueue_migration_if_absent`'s way -- two callers racing can
+    /// first time. Best-effort (a `WHERE NOT EXISTS`, not race-free) -- two callers racing can
     /// each see nothing and each insert -- and the second build only rewrites the same row.
     pub async fn enqueue_derive_if_absent(
         &self,
@@ -323,7 +173,7 @@ impl PgJobs {
     /// Returns the batch holding the job and whether this call queued it. A running job stands in for a
     /// new one only when what it writes cannot depend on when it read: a rung's build does not, and a
     /// part's description does, since a running one may have read the rows before the change asking
-    /// again. Best-effort in `enqueue_migration_if_absent`'s way. `existing` reads the pending and
+    /// again. Best-effort (a `WHERE NOT EXISTS`, not race-free). `existing` reads the pending and
     /// running jobs alone, however many finished ones the table keeps, off `job_active_idx` (`0036`).
     pub async fn enqueue_if_absent(
         &self,
@@ -804,10 +654,6 @@ impl PgJobs {
     /// The batch reopens by arithmetic rather than by a flag: `batch_status` reports a finish
     /// only while nothing is pending, so the next read of it sees the batch running again.
     ///
-    /// `migrate_storage` is left out. `job_migrate_storage_pending_per_library` allows one
-    /// pending migration per library, migrations re-enqueue themselves
-    /// (`reenqueue_migration_if_absent`), and a retry here would collide with that successor.
-    ///
     /// **And a row no handler can run is left out, which R3 is why.** Migration `0054` deleted the
     /// *pending and running* `profile_shape` and render-kind `derive` rows, deliberately leaving
     /// the **failed** ones where they are — a finished batch keeps its totals. Retrying one would
@@ -827,10 +673,9 @@ impl PgJobs {
             JobPayload::INGEST_FILE,
             JobPayload::DERIVE,
             JobPayload::SCAN_DIRECTORY,
-            JobPayload::INGEST_BLOB,
+            JobPayload::INGEST_INBOX,
             JobPayload::IMPORT_BUNDLE,
             JobPayload::IMPORT_PART,
-            JobPayload::DESCRIBE_PART,
         ];
         let buildable: Vec<&str> = DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec();
         let retried = sqlx::query(

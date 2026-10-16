@@ -3,9 +3,8 @@
 
 use crate::DbError;
 use crate::repo::{RevisionWrite, StoredBlobRow, detail_hash, detail_stamp, insert_revision_chain};
-use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::{
-    BlobHash, LibraryId, MeasurementProvenance, MeshMeasurements, PartId, RevisionId,
+    BlobHash, FileRoot, LibraryId, MeasurementProvenance, MeshMeasurements, PartId, RevisionId,
     RevisionOrigin,
 };
 use sqlx::PgPool;
@@ -19,8 +18,8 @@ pub struct CurrentRevision {
     pub revision: RevisionId,
     /// The current revision's source file hash. `None` only for a half-repaired row.
     pub source_hash: Option<BlobHash>,
-    /// `None` while the file is still in the content-addressed store the storage migration
-    /// has not reached: there is no model directory to set the previous file aside in yet.
+    /// Where the current revision's file is, relative to its root. `None` for a pre-M4 store
+    /// row whose bytes are content-addressed.
     pub storage_path: Option<String>,
 }
 
@@ -30,6 +29,11 @@ pub struct RevisionRequest<'a> {
     /// The revision the job measured against. Refused if it is no longer current.
     pub parent: RevisionId,
     pub origin: RevisionOrigin,
+    /// Where the new revision's file is (M4): usually exactly where the previous one was, since
+    /// the owner overwrote it there.
+    pub root: FileRoot,
+    pub storage_path: &'a str,
+    pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
@@ -64,6 +68,9 @@ pub struct RevisionRow {
     pub source_hash: Option<BlobHash>,
     pub size_bytes: Option<i64>,
     pub storage_path: Option<String>,
+    /// `file.on_disk`: false once a later revision's bytes replaced this file where it was.
+    /// History shows such a revision's figures and says it is no longer on disk.
+    pub on_disk: bool,
 }
 
 /// Matched by column name, for `DetailColumns`' reason: more columns than sqlx implements
@@ -96,6 +103,7 @@ struct HistoryColumns {
     blake3: Option<String>,
     size_bytes: Option<i64>,
     storage_path: Option<String>,
+    on_disk: Option<bool>,
 }
 
 pub struct PgRevisions(pub PgPool);
@@ -134,28 +142,18 @@ impl PgRevisions {
         .transpose()
     }
 
-    /// The next revision of `req.part`, in one transaction shaped like
-    /// [`crate::PgParts::move_to_folder`] (spec §3.1):
+    /// Record the next revision of `req.part`, measured against `req.parent`, with its file
+    /// where it is now. **Nothing on disk is touched** (M4): the owner overwrote their file, and
+    /// Lapidary keeps no copy of the bytes that were there.
     ///
-    /// 1. The part row is locked first and held to the commit. A move takes the same row (its
-    ///    `UPDATE part`) and so does a second revision, so neither renames files under this one.
-    /// 2. The parent must still be current, checked before any file is touched.
-    /// 3. The previous file's `storage_path` moves to `revisions/<its label>/<name>`; the new
-    ///    revision, its file at the path the previous one held, and its derivatives are written
-    ///    by the same writer a part's first revision uses.
-    /// 4. `relocate(current, aside)` does the filesystem half — the previous file to `aside`, the
-    ///    new bytes to `current` — and a failure rolls the transaction back.
+    /// So every earlier revision whose file was at this same place is marked `on_disk = false`
+    /// in the same transaction — its figures and hash stay, and its download answers 410. An
+    /// earlier file somewhere else (a pre-M4 store copy, an earlier upload under another inbox
+    /// name) is still there and stays downloadable.
     ///
-    /// If this returns an error after `relocate` succeeded (the commit failed), the files have
-    /// moved and the rows have not. Undoing that is the caller's: only it holds the bytes.
-    pub async fn record_revision<F>(
-        &self,
-        req: RevisionRequest<'_>,
-        relocate: F,
-    ) -> Result<RevisionId, DbError>
-    where
-        F: FnOnce(&str, &str) -> Result<(), String>,
-    {
+    /// Refused with [`DbError::RevisionConflict`] when the part is gone or another revision
+    /// landed first: the job is retried and decides again from what is current then.
+    pub async fn record_revision(&self, req: RevisionRequest<'_>) -> Result<RevisionId, DbError> {
         let mut tx = self.0.begin().await?;
 
         // A part deleted while the file was read is not revised: the conflict sends the job back
@@ -164,19 +162,13 @@ impl PgRevisions {
             .bind(req.part.as_uuid())
             .fetch_optional(&mut *tx)
             .await?;
-        let current: Option<(Uuid, String, Option<Uuid>, Option<String>)> = sqlx::query_as(
-            "SELECT r.id, r.rev_label, f.id, f.storage_path FROM revision r \
-             LEFT JOIN LATERAL (SELECT id, storage_path FROM file \
-                                WHERE revision_id = r.id AND role = 'source' \
-                                ORDER BY id LIMIT 1) f ON true \
-             WHERE r.part_id = $1 \
-             ORDER BY r.created_at DESC, r.id DESC LIMIT 1",
+        let current: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM revision WHERE part_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
         )
         .bind(req.part.as_uuid())
         .fetch_optional(&mut *tx)
         .await?;
-        let (Some(_), Some((current, current_label, Some(file), Some(path)))) = (locked, current)
-        else {
+        let (Some(_), Some(current)) = (locked, current) else {
             tx.rollback().await?;
             return Err(DbError::RevisionConflict { part: req.part });
         };
@@ -184,13 +176,6 @@ impl PgRevisions {
             tx.rollback().await?;
             return Err(DbError::RevisionConflict { part: req.part });
         }
-
-        let Some((directory, name)) = path.rsplit_once('/') else {
-            tx.rollback().await?;
-            return Err(DbError::RevisionFilesFailed {
-                detail: format!("`{path}` names no model directory to keep the previous file in"),
-            });
-        };
 
         // Labels this build writes are whole numbers. The filter keeps a hand-written label
         // from failing the cast; `revision_label_unique_per_part` refuses a collision.
@@ -201,26 +186,27 @@ impl PgRevisions {
         .bind(req.part.as_uuid())
         .fetch_one(&mut *tx)
         .await?;
-        // Under the previous revision's own label: `revisions/1/` holds revision 1.
-        let aside = format!("{directory}/revisions/{current_label}/{name}");
 
-        sqlx::query("UPDATE file SET storage_path = $2 WHERE id = $1")
-            .bind(file)
-            .bind(&aside)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE file SET on_disk = false \
+             WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1) \
+               AND root = $2 AND storage_path = $3 AND on_disk",
+        )
+        .bind(req.part.as_uuid())
+        .bind(req.root.as_str())
+        .bind(req.storage_path)
+        .execute(&mut *tx)
+        .await?;
 
         // The source blob's row, as `PgIngest::record` writes it: these may be bytes no row
-        // names yet, or bytes an older revision already holds.
+        // names yet, or bytes an older revision already holds. It claims no content-addressed
+        // copy, because there is none (`0026`).
         sqlx::query(
             "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
-             VALUES ($1, $2, $3, $4, 0) ON CONFLICT (blake3) DO NOTHING",
+             VALUES ($1, $2, 0, $3, 0) ON CONFLICT (blake3) DO NOTHING",
         )
         .bind(req.blob.hash.to_hex())
         .bind(req.blob.size_bytes as i64)
-        // A revision is always filed in its model directory, so its blob row claims no
-        // content-addressed copy (`0026`).
-        .bind(0_i64)
         .bind(req.blob.zstd_level)
         .execute(&mut *tx)
         .await?;
@@ -234,7 +220,9 @@ impl PgRevisions {
                 rev_label: &label,
                 parent: Some(current),
                 origin: req.origin,
-                storage_path: Some(&path),
+                storage_path: Some(req.storage_path),
+                root: req.root,
+                mtime_ns: req.mtime_ns,
                 blob: req.blob,
                 measurements: req.measurements,
                 provenance: req.provenance,
@@ -242,12 +230,6 @@ impl PgRevisions {
             },
         )
         .await?;
-
-        if let Err(detail) = relocate(&path, &aside) {
-            // Explicit, for `move_to_folder`'s reason.
-            tx.rollback().await?;
-            return Err(DbError::RevisionFilesFailed { detail });
-        }
         tx.commit().await?;
         Ok(RevisionId::from_uuid(revision))
     }
@@ -293,9 +275,9 @@ impl PgRevisions {
                     (r.mass_props_json->'centre_mm'->>1)::float8 AS centre_y, \
                     (r.mass_props_json->'centre_mm'->>2)::float8 AS centre_z, \
                     r.mass_props_json->>'source' AS centre_source, \
-                    f.format, f.blake3, f.size_bytes, f.storage_path \
+                    f.format, f.blake3, f.size_bytes, f.storage_path, f.on_disk \
              FROM revision r \
-             LEFT JOIN LATERAL (SELECT format, blake3, size_bytes, storage_path FROM file \
+             LEFT JOIN LATERAL (SELECT format, blake3, size_bytes, storage_path, on_disk FROM file \
                                 WHERE revision_id = r.id AND role = 'source' \
                                 ORDER BY id LIMIT 1) f ON true \
              WHERE r.part_id = $1 \
@@ -342,96 +324,9 @@ impl PgRevisions {
                     source_hash: detail_hash("file.blake3", c.blake3)?,
                     size_bytes: c.size_bytes,
                     storage_path: c.storage_path,
+                    on_disk: c.on_disk.unwrap_or(false),
                 })
             })
             .collect()
-    }
-
-    /// `metadata.json` for `part`, read and handed to `write` while the part's row is held. A revision or a
-    /// custom value committing meanwhile waits for the file, so two writers never put an older description
-    /// over a newer one. `write` gets `None` when there is no such part.
-    pub async fn write_manifest<T>(
-        &self,
-        part: PartId,
-        write: impl FnOnce(Option<ModelManifest>) -> T,
-    ) -> Result<T, DbError> {
-        let mut held = self.0.begin().await?;
-        sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR NO KEY UPDATE")
-            .bind(part.as_uuid())
-            .execute(&mut *held)
-            .await?;
-        // On the connection holding the row, not a second one: writers each holding one and waiting for
-        // another would stall a pool that every one of them had filled.
-        let written = write(Self::manifest_on(&mut held, part).await?);
-        held.commit().await?;
-        Ok(written)
-    }
-
-    /// `metadata.json` for `part`, from its rows: every revision, oldest first, so
-    /// `revisions[0]` stays the original (spec §3.2). `None` means there is no such part.
-    pub async fn manifest(&self, part: PartId) -> Result<Option<ModelManifest>, DbError> {
-        Self::manifest_on(&mut *self.0.acquire().await?, part).await
-    }
-
-    /// [`Self::manifest`] on `conn`, for a caller already holding a connection.
-    async fn manifest_on(
-        conn: &mut sqlx::PgConnection,
-        part: PartId,
-    ) -> Result<Option<ModelManifest>, DbError> {
-        #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, String, Option<String>, Option<String>, String, String)> =
-            sqlx::query_as(
-                "SELECT library_id, name, part_number, classification, source_path, \
-                        metadata_json::text \
-                 FROM part WHERE id = $1",
-            )
-            .bind(part.as_uuid())
-            .fetch_optional(&mut *conn)
-            .await?;
-        let Some((library, name, part_number, classification, source_path, metadata)) = row else {
-            return Ok(None);
-        };
-
-        let mut revisions = Self::history_on(conn, part).await?;
-        revisions.reverse();
-        Ok(Some(ModelManifest {
-            schema: ModelManifest::SCHEMA,
-            part: ManifestPart {
-                id: part,
-                library: LibraryId::from_uuid(library),
-                name,
-                part_number,
-                classification,
-                source_path,
-                // `jsonb` rendered as text is JSON by construction; `Null` is unreachable.
-                metadata: serde_json::from_str(&metadata).unwrap_or(serde_json::Value::Null),
-            },
-            revisions: revisions
-                .into_iter()
-                .map(|r| ManifestRevision {
-                    id: r.id,
-                    rev_label: r.rev_label,
-                    origin: r.origin.as_str().to_owned(),
-                    volume_mm3: r.volume_mm3,
-                    volume_source: r.volume_source,
-                    bbox_mm: r.bbox_mm,
-                    triangle_count: r.triangle_count,
-                    is_watertight: r.is_watertight,
-                    units: r.units,
-                    files: match (r.format, r.source_hash, r.size_bytes, r.storage_path) {
-                        (Some(format), Some(blake3), Some(size_bytes), Some(path)) => {
-                            vec![ManifestFile {
-                                role: "source".to_owned(),
-                                format,
-                                blake3,
-                                size_bytes,
-                                file_name: path.rsplit('/').next().unwrap_or(&path).to_owned(),
-                            }]
-                        }
-                        _ => Vec::new(),
-                    },
-                })
-                .collect(),
-        }))
     }
 }

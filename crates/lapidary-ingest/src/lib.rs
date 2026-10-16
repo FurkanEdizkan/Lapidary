@@ -25,7 +25,6 @@ mod derive;
 mod handler;
 mod import;
 mod link;
-mod migrate;
 pub mod reap;
 mod scan;
 mod seed;
@@ -45,8 +44,7 @@ pub struct AppState {
     /// path: tests point it at a `TempDir`, and `deploy/compose.yaml` (Task 12) supplies
     /// the real `/ingest` mount.
     pub ingest_dir: PathBuf,
-    /// Root of the blob store. `SourceStore` and `DerivativeStore` both open under it;
-    /// this crate is the one place in the workspace allowed to construct the former.
+    /// Lapidary's own store.
     pub blob_root: PathBuf,
 }
 
@@ -56,9 +54,5 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/libraries/{id}/scan", post(scan::scan))
-        .route(
-            "/api/libraries/{id}/migrate-storage",
-            post(migrate::migrate),
-        )
         .with_state(state)
 }

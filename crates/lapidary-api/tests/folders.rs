@@ -31,6 +31,10 @@ fn app(pool: sqlx::PgPool) -> axum::Router {
             blob_root: blob_root(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -128,6 +132,8 @@ async fn seed_part(
             source_path,
             folder,
             storage_path: Some(&storage_path),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &blob,
             measurements: &MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
@@ -292,15 +298,12 @@ async fn deleting_a_folder_deletes_its_models_and_touches_no_file(pool: sqlx::Pg
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["foldersDeleted"], 2, "the subcategory goes too");
     assert_eq!(body["partsDeleted"], 2);
-    let (parts, files, queued): (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM file), \
-                (SELECT count(*) FROM quarantined_file)",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("counts");
+    let (parts, files): (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM file)")
+            .fetch_one(&pool)
+            .await
+            .expect("counts");
     assert_eq!((parts, files), (0, 0), "the models' rows are gone");
-    assert_eq!(queued, 0, "and none of their files is queued for removal");
     assert_eq!(
         tree(&pool).await.as_array().map(Vec::len),
         Some(0),

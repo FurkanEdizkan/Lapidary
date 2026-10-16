@@ -49,6 +49,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
     WorkerHandler {
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
+        inbox_dir: blob_root.join("inbox"),
         blob_root: blob_root.to_path_buf(),
         pause: None,
         sites: lapidary_sites::Sites::public(),

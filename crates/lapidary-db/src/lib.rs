@@ -7,7 +7,6 @@ mod densities;
 mod events;
 mod folders;
 mod jobs;
-mod migrate;
 mod profile;
 mod repo;
 mod revisions;
@@ -24,7 +23,6 @@ pub use densities::{DensityRow, PgDensities};
 pub use events::{CHANGE_CHANNEL, listen_for_changes};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
-pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
 pub use profile::PgProfile;
 pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS, FacetValue,
@@ -211,15 +209,6 @@ pub enum DbError {
     )]
     NoSuchLibrary { library: LibraryId },
 
-    /// The filesystem half of a move failed, so the transaction that had already written
-    /// the new location was rolled back and nothing moved. Carries the storage layer's own
-    /// message: this crate cannot name that error type (both crates are L1, and
-    /// `cargo xtask check-layers` forbids L1 → L1), so the caller passes the text in.
-    #[error(
-        "Could not move this model's directory, so nothing was moved and the database is unchanged: {detail}"
-    )]
-    RenameFailed { detail: String },
-
     /// The revision a job measured against stopped being the part's current one before the
     /// next could be recorded: another revision landed first. Retried, and the retry decides
     /// again from whatever is current then (slice 1 spec §2).
@@ -228,19 +217,18 @@ pub enum DbError {
     )]
     RevisionConflict { part: PartId },
 
-    /// The filesystem half of a revision failed — setting the previous file aside, or
-    /// writing the new one on top — so the transaction was rolled back and no revision was
-    /// recorded. Carries the storage layer's text, for [`DbError::RenameFailed`]'s reason.
-    #[error(
-        "Could not set the previous file aside for the new revision, so no revision was recorded: {detail}"
-    )]
-    RevisionFilesFailed { detail: String },
-
     /// `revision.origin` holds a word this build never writes.
     #[error(
         "A revision's origin column holds `{value}`, which is none of `ingest`, `upload` or `agent`. Lapidary will not guess where those bytes came from. Check what else has write access to this database."
     )]
     UnknownOrigin { value: String },
+
+    /// `file.root` holds a word this build never writes (`0062` checks it, so only a hand edit
+    /// past the constraint gets here).
+    #[error(
+        "A file row's root column holds `{value}`, which is none of `library`, `inbox` or `store`. Lapidary will not guess which folder that file is in. Check what else has write access to this database."
+    )]
+    UnknownRoot { value: String },
 }
 
 impl DbError {
@@ -316,13 +304,9 @@ impl DbError {
             | DbError::LibraryNameTaken { .. }
             | DbError::LibrarySlugTaken { .. }
             | DbError::NoSuchLibrary { .. }
-            // Composed here from the storage layer's own `Display`, which is already
-            // operator-facing and carries no connection string — the same audit the
-            // variants above pass.
-            | DbError::RenameFailed { .. }
-            | DbError::RevisionFilesFailed { .. }
             | DbError::RevisionConflict { .. }
             | DbError::UnknownOrigin { .. }
+            | DbError::UnknownRoot { .. }
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),

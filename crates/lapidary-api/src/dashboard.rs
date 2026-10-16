@@ -360,7 +360,7 @@ async fn storage(db: &PgPool, library: LibraryId) -> Result<WidgetValue, WidgetR
 async fn instance_storage(app: &AppState) -> Result<WidgetValue, WidgetRefusal> {
     match PgParts(app.db.clone()).instance_storage().await {
         Ok(totals) => Ok(WidgetValue::InstanceStorage(
-            crate::parts::instance_storage_view(totals, None, app.host_storage_root.clone()),
+            crate::parts::instance_storage_view(totals, None, app),
         )),
         Err(err) => Err(failed(&err, "dashboard instance storage read failed")),
     }

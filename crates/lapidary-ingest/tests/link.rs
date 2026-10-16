@@ -84,6 +84,7 @@ fn handler(pool: &PgPool, root: &std::path::Path, base: &str) -> WorkerHandler {
     WorkerHandler {
         db: pool.clone(),
         ingest_dir: root.join("ingest"),
+        inbox_dir: root.join("inbox"),
         blob_root: root.to_path_buf(),
         pause: None,
         sites: Sites::local(base),
@@ -113,6 +114,23 @@ async fn a_printables_link_files_its_mesh_with_its_page_and_imports_again_as_a_r
         .await
         .expect("the mesh is a part; the .f3d is not");
     let part = lapidary_core::PartId::from_uuid(part);
+    // (e) Written once into the inbox, under Lapidary's own `imports/`, and indexed from there.
+    let inbox = root.path().join("inbox/imports").join(path);
+    assert_eq!(std::fs::read(&inbox).expect("in the inbox"), STL);
+    let (file_root, stored): (String, String) =
+        sqlx::query_as("SELECT root, storage_path FROM file f JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1")
+            .bind(part.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("the file row");
+    assert_eq!(
+        (file_root.as_str(), stored),
+        ("inbox", format!("imports/{path}"))
+    );
+    assert!(
+        !root.path().join("libraries").exists(),
+        "nothing went into the store"
+    );
     let parts = PgParts(pool.clone());
     let sources = parts.part_sources(part).await.expect("sources");
     assert_eq!(sources.len(), 1);

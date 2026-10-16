@@ -2,15 +2,16 @@
 //!
 //! This is the only code in Lapidary that removes stored bytes, so the tests here are mostly
 //! about what it declines to do. Since delete became final (2026-10-17) nothing queues a model
-//! file any more — delete takes rows, never files — so what the sweep collects is evicted cache
-//! and whatever a purge queued before then. `retire` writes that legacy queue by hand.
+//! file — delete takes rows, never files — and since M4 the sweep has no way to name one: it
+//! removes content-addressed blobs in Lapidary's own store and nothing else. `retire` deletes a
+//! part and recounts its blob the way the old purge did.
 //!
 //! The retention is injected — a test that waited thirty days is a test that never runs — and the interesting cases are the ones where the database
 //! and the disk disagree about what is safe to remove.
 
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{IngestRequest, PgIngest, PgParts, PgPool, StoredBlobRow};
-use lapidary_storage::{SourceStore, WorkerRole};
+use lapidary_storage::DerivativeStore;
 use std::path::Path;
 use std::time::Duration;
 
@@ -31,9 +32,8 @@ fn hash_of(seed: u8) -> BlobHash {
 /// whose unlink is never exercised. `put` writes through the real sharded layout, so what
 /// the sweep removes is what a real ingest wrote.
 fn stage_bytes(blob_root: &Path, seed: u8) -> StoredBlobRow {
-    let store = SourceStore::open(blob_root, &WorkerRole::assume());
-    let stored = store
-        .put(&[seed; 4096], lapidary_storage::Compression::AsIs)
+    let stored = DerivativeStore::open(blob_root)
+        .put(&[seed; 4096])
         .expect("stage blob bytes");
     assert_eq!(
         stored.hash,
@@ -61,6 +61,8 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
             // is the state quarantine was built against and the one this file is about.
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &blob,
             measurements: &MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
@@ -82,8 +84,8 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
 /// half is the same one cache eviction uses.
 async fn retire(pool: &PgPool, part: PartId) {
     #[allow(clippy::type_complexity)]
-    let files: Vec<(String, Option<String>, Option<i64>)> = sqlx::query_as(
-        "SELECT f.blake3, f.storage_path, f.stored_bytes FROM file f \
+    let files: Vec<String> = sqlx::query_scalar(
+        "SELECT f.blake3 FROM file f \
          JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1",
     )
     .bind(part.as_uuid())
@@ -91,7 +93,7 @@ async fn retire(pool: &PgPool, part: PartId) {
     .await
     .expect("the part's files");
     assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
-    for (hash, path, stored) in files {
+    for hash in files {
         sqlx::query(
             "UPDATE blob SET ref_count = (SELECT count(*) FROM file WHERE blake3 = $1), \
                  quarantined_at = CASE WHEN EXISTS (SELECT 1 FROM file WHERE blake3 = $1) \
@@ -102,18 +104,6 @@ async fn retire(pool: &PgPool, part: PartId) {
         .execute(pool)
         .await
         .expect("the old purge's recount");
-        if let Some(path) = path {
-            sqlx::query(
-                "INSERT INTO quarantined_file (storage_path, blake3, stored_bytes) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(path)
-            .bind(&hash)
-            .bind(stored)
-            .execute(pool)
-            .await
-            .expect("the old purge's path queue");
-        }
     }
 }
 
@@ -346,284 +336,18 @@ async fn re_ingesting_quarantined_bytes_clears_the_flag_without_waiting_for_a_sw
     assert!(bytes_exist(blob_root.path(), 0xf1));
 }
 
-// ---------------------------------------------------------------------------------------
-// A model directory a purge queued before delete became final.
-// ---------------------------------------------------------------------------------------
-
-/// The same bytes, written where a real ingest writes them since the folder tree: inside
-/// the model's own directory, at `file.storage_path`, rather than under the hash fan-out.
-fn stage_bytes_at(blob_root: &Path, seed: u8, rel: &str) -> StoredBlobRow {
-    let store = SourceStore::open(blob_root, &WorkerRole::assume());
-    let stored = store
-        .put_at(rel, &[seed; 4096], lapidary_storage::Compression::AsIs)
-        .expect("stage a model file");
-    assert_eq!(
-        stored.hash,
-        hash_of(seed),
-        "the fixture addresses its own bytes"
-    );
+/// The same bytes at a path under `root` — a part from before M4 in the store's folder tree, or a
+/// file in the owner's folders.
+fn stage_bytes_at(root: &Path, seed: u8, rel: &str) -> StoredBlobRow {
+    let file = root.join(rel);
+    std::fs::create_dir_all(file.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(&file, [seed; 4096]).expect("stage a model file");
     StoredBlobRow {
-        hash: stored.hash,
+        hash: hash_of(seed),
         size_bytes: 4096,
-        stored_bytes: stored.stored_bytes,
+        stored_bytes: 4096,
         zstd_level: 0,
     }
-}
-
-async fn seed_part_at(pool: &PgPool, blob_root: &Path, seed: u8, path: &str, rel: &str) -> PartId {
-    let blob = stage_bytes_at(blob_root, seed, rel);
-    // Ingest writes `metadata.json` beside the file it describes (handler step 10), and a
-    // sweep that removed the file and left the manifest would leave an orphan directory.
-    // The fixture has to leave one for that to be testable at all.
-    let model_dir = rel
-        .rsplit_once('/')
-        .expect("a model path has a directory")
-        .0;
-    std::fs::write(
-        blob_root.join(model_dir).join("metadata.json"),
-        br#"{"schema":1}"#,
-    )
-    .expect("a manifest beside the model file");
-    PgIngest(pool.clone())
-        .record(IngestRequest {
-            origin: lapidary_core::RevisionOrigin::Ingest,
-            library: library(),
-            name: "Bracket, LP-1042-03",
-            source_path: path,
-            folder: None,
-            storage_path: Some(rel),
-            blob: &blob,
-            measurements: &MeshMeasurements {
-                bbox_mm: [61.0, 42.0, 18.5],
-                triangle_count: 48_112,
-                surface_area_mm2: 9_804.25,
-                volume_mm3: Some(21_478.5),
-                is_watertight: true,
-            },
-            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-            format: "stl",
-        })
-        .await
-        .expect("seed a migrated part")
-}
-
-/// A purged model directory goes, and it is the ordinary case rather than the edge one:
-/// every part ingested since the folder tree keeps its bytes at `file.storage_path`, not
-/// under the hash fan-out the sweep used to be the whole of.
-///
-/// This replaces `a_purged_model_directory_outlives_the_sweep_that_reports_removing_it`,
-/// which pinned the gap while it was open -- same fixture, opposite assertion. The file,
-/// the `metadata.json` beside it and the directory that held them all go together, because
-/// a directory holding a stale manifest and nothing else is an orphan every walk of the
-/// store has to explain.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_purged_model_directory_is_removed_once_its_thirty_days_are_up(pool: PgPool) {
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
-    let part = seed_part_at(
-        &pool,
-        blob_root.path(),
-        0xc7,
-        "brackets/LP-1042-03.stl",
-        rel,
-    )
-    .await;
-    assert!(
-        blob_root.path().join(rel).exists(),
-        "the fixture has to put a file where a migrated part keeps one"
-    );
-    assert!(
-        !bytes_exist(blob_root.path(), 0xc7),
-        "and must not also leave one under the hash, or this proves nothing"
-    );
-
-    retire(&pool, part).await;
-    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
-        .await
-        .expect("sweep");
-
-    assert_eq!(
-        report.removed_files,
-        vec![rel.to_owned()],
-        "the sweep names the path it removed, not only the hash"
-    );
-    assert!(
-        !blob_root.path().join(rel).exists(),
-        "the model file is gone"
-    );
-    assert!(
-        !blob_root
-            .path()
-            .join(model_dir(rel))
-            .join("metadata.json")
-            .exists(),
-        "and its manifest with it -- a directory holding only a stale manifest is an orphan"
-    );
-    assert!(
-        !blob_root.path().join(model_dir(rel)).exists(),
-        "and the directory that held them, because nothing else was in it"
-    );
-    assert_eq!(
-        quarantined_paths(&pool).await,
-        Vec::<String>::new(),
-        "the row is gone, not merely swept past"
-    );
-}
-
-/// The production retention against a file quarantined seconds ago: what every sweep on a
-/// new installation does, and it must do nothing at all. The hash-addressed half has the
-/// same test, and the two retentions are one constant on purpose -- a second one would be
-/// a second promise to explain in the same confirmation dialog.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_model_file_inside_its_thirty_days_is_not_touched(pool: PgPool) {
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
-    let part = seed_part_at(
-        &pool,
-        blob_root.path(),
-        0xc8,
-        "brackets/LP-1042-03.stl",
-        rel,
-    )
-    .await;
-    retire(&pool, part).await;
-    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
-
-    let report =
-        lapidary_ingest::reap::sweep(&pool, blob_root.path(), lapidary_ingest::reap::QUARANTINE)
-            .await
-            .expect("sweep");
-
-    assert!(report.removed_files.is_empty(), "{report:?}");
-    assert_eq!(report.bytes, 0);
-    assert!(
-        blob_root.path().join(rel).exists(),
-        "the bytes are the promise: still there for thirty days"
-    );
-    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
-}
-
-/// **The guard, and the one assertion that fails loudly if it is ever dropped.**
-///
-/// The hash-addressed half gets its safety from a foreign key -- `file.blake3` references
-/// `blob`, so a referenced row cannot be deleted whatever a query says, and the
-/// reachability check merely lets the sweep decline. Nothing references
-/// `file.storage_path`, so there the `NOT EXISTS` is the only thing standing between a
-/// live part and its bytes.
-///
-/// Reaching this state takes a person: `model_dir_for` disambiguates against a directory
-/// that exists, so a re-ingest after a purge lands somewhere else. What puts a quarantined
-/// path back in play is the owner removing that directory in a file manager and re-adding
-/// the file -- which a browsable store invites, and is the whole reason the layout exists.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_path_a_live_part_has_claimed_again_is_declined_rather_than_unlinked(pool: PgPool) {
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let rel = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
-    let gone = seed_part_at(
-        &pool,
-        blob_root.path(),
-        0xc9,
-        "brackets/LP-1042-03.stl",
-        rel,
-    )
-    .await;
-    retire(&pool, gone).await;
-    assert_eq!(quarantined_paths(&pool).await, vec![rel.to_owned()]);
-
-    // A second part now holds that exact path -- different bytes, same place.
-    seed_part_at(
-        &pool,
-        blob_root.path(),
-        0xca,
-        "brackets/LP-1042-03-v2.stl",
-        rel,
-    )
-    .await;
-
-    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
-        .await
-        .expect("sweep");
-
-    assert!(
-        report.removed_files.is_empty(),
-        "a path a live file row names must not be unlinked: {report:?}"
-    );
-    assert_eq!(
-        report.un_quarantined, 1,
-        "it is reported as reclaimed, the way a re-referenced blob is"
-    );
-    assert!(
-        blob_root.path().join(rel).exists(),
-        "and the live part still has its bytes"
-    );
-    assert_eq!(
-        quarantined_paths(&pool).await,
-        Vec::<String>::new(),
-        "the row is dropped rather than un-flagged: there is no ref_count to correct and \
-         no state to go back to, so a record saying these bytes are doomed is just wrong"
-    );
-}
-
-/// A model directory the owner has put something of their own into: a note beside the
-/// model, a re-exported STL, a photo. The model file goes; their file does not, the
-/// directory does not, and -- the part that matters -- the sweep does not fail over it and
-/// stop reaping everything else for as long as that file sits there.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_directory_holding_something_of_the_owners_survives_and_does_not_stop_the_sweep(
-    pool: PgPool,
-) {
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let kept = "libraries/default/brackets/lp-1042-03/lp-1042-03.stl";
-    let alone = "libraries/default/pumps/lp-5501-02/lp-5501-02.stl";
-    let with_note = seed_part_at(&pool, blob_root.path(), 0xcb, "brackets/a.stl", kept).await;
-    let plain = seed_part_at(&pool, blob_root.path(), 0xcc, "pumps/b.stl", alone).await;
-
-    let note = blob_root
-        .path()
-        .join(model_dir(kept))
-        .join("print-settings.txt");
-    std::fs::write(&note, b"0.2 mm layers, 15% gyroid, no supports\n").expect("the owner's note");
-
-    retire(&pool, with_note).await;
-    retire(&pool, plain).await;
-
-    let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
-        .await
-        .expect("a directory that will not empty must not fail the sweep");
-
-    let mut removed = report.removed_files.clone();
-    removed.sort();
-    let mut expected = vec![kept.to_owned(), alone.to_owned()];
-    expected.sort();
-    assert_eq!(
-        removed, expected,
-        "both model files are removed, including the one whose directory has to stay"
-    );
-    assert!(!blob_root.path().join(kept).exists(), "the model file goes");
-    assert!(note.exists(), "the owner's file does not");
-    assert!(
-        blob_root.path().join(model_dir(kept)).exists(),
-        "nor the directory holding it"
-    );
-    assert!(
-        !blob_root.path().join(model_dir(alone)).exists(),
-        "and the directory with nothing left in it still goes -- one awkward neighbour \
-         must not stop the tidying everywhere else"
-    );
-}
-
-/// The parent of a store-relative file path: the model's own directory.
-fn model_dir(rel: &str) -> &str {
-    rel.rsplit_once('/')
-        .expect("a model path has a directory")
-        .0
-}
-
-async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
-    sqlx::query_scalar("SELECT storage_path FROM quarantined_file ORDER BY storage_path")
-        .fetch_all(pool)
-        .await
-        .expect("quarantined paths read")
 }
 
 /// **Delete is delete, and the file stays** (owner, 2026-10-17). A filed part with a cached export
@@ -647,6 +371,8 @@ async fn a_deleted_parts_model_file_survives_every_sweep_and_only_its_export_lea
             source_path: "spacers/LP-2145-01.stl",
             folder: None,
             storage_path: Some(rel),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &source,
             measurements: &MeshMeasurements {
                 bbox_mm: [7.0, 8.1, 20.0],
@@ -700,10 +426,70 @@ async fn a_deleted_parts_model_file_survives_every_sweep_and_only_its_export_lea
         .await
         .expect("sweep");
     assert_eq!(report.bytes, rung.stored_bytes, "the export left");
-    assert!(report.removed_files.is_empty(), "{report:?}");
+
     assert_eq!(
         std::fs::read(blob_root.path().join(rel)).expect("the model file is still there"),
         vec![0xd1u8; 4096],
         "and it is byte for byte what it was"
     );
+}
+
+/// (b) A deleted part's file in the owner's folders: delete takes rows, and no sweep, however
+/// short its hold, can reach anything outside Lapidary's own store. Every file, size, time and
+/// byte under the folder is what it was.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_deleted_parts_file_in_the_owners_folders_is_beyond_every_sweep(pool: PgPool) {
+    let blob_root = tempfile::tempdir().expect("the store");
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let rel = "Spacers/LP-2145-01.stl";
+    let source = stage_bytes_at(folders.path(), 0xd2, rel);
+    let before = listing(folders.path());
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            library: library(),
+            name: "Hex spacer, M4x20, LP-2145-01",
+            source_path: rel,
+            folder: None,
+            storage_path: Some(rel),
+            root: lapidary_core::FileRoot::Library,
+            mtime_ns: Some(1_760_000_000_000_000_000),
+            blob: &source,
+            measurements: &MeshMeasurements {
+                bbox_mm: [7.0, 8.1, 20.0],
+                triangle_count: 1_204,
+                surface_area_mm2: 612.5,
+                volume_mm3: Some(1_060.0),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
+        .await
+        .expect("a part in the owner's folders");
+    retire(&pool, part).await;
+    lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
+        .await
+        .expect("sweep");
+    assert_eq!(listing(folders.path()), before);
+}
+
+/// Every file under `root` with its size, modification time and bytes.
+fn listing(root: &Path) -> Vec<(std::path::PathBuf, u64, std::time::SystemTime, Vec<u8>)> {
+    let mut seen = Vec::new();
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(dir) = queue.pop() {
+        for entry in std::fs::read_dir(&dir).expect("reads") {
+            let path = entry.expect("an entry").path();
+            let meta = std::fs::metadata(&path).expect("stats");
+            if meta.is_dir() {
+                queue.push(path);
+            } else {
+                let bytes = std::fs::read(&path).expect("reads");
+                seen.push((path, meta.len(), meta.modified().expect("mtime"), bytes));
+            }
+        }
+    }
+    seen.sort();
+    seen
 }
