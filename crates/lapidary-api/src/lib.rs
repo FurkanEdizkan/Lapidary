@@ -23,6 +23,7 @@ mod part_number;
 mod parts;
 mod revisions;
 mod scan;
+mod site_settings;
 mod sources;
 mod tags;
 mod upload;
@@ -176,6 +177,21 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // route the api serves. It enqueues a `scan_directory` job and walks
                 // nothing — see `scan.rs`.
                 .route("/api/libraries/{id}/scan", post(scan::scan))
+                // Importing a model from its page, and the Settings page's keys for the sites it
+                // reads (F3). See `site_settings.rs`.
+                .route(
+                    "/api/libraries/{id}/imports/link",
+                    post(site_settings::import),
+                )
+                .route("/api/settings/sites", get(site_settings::list))
+                .route(
+                    "/api/settings/sites/{site}",
+                    put(site_settings::set).delete(site_settings::clear),
+                )
+                .route(
+                    "/api/settings/sites/{site}/check",
+                    post(site_settings::check),
+                )
                 // Upload, in three. `Role::Api` for the same reason the scan trigger above
                 // is — nothing proxies a browser to the worker — and additionally because
                 // this is the process that mounts the blob volume read-write. See
