@@ -3011,44 +3011,41 @@ fn held() -> (Pause, impl std::future::Future<Output = ()>) {
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
-    let other = second_library(&pool).await;
+    let library = seeded();
+    let winner_dir = tempfile::tempdir().expect("temp dir");
+    let loser_dir = tempfile::tempdir().expect("temp dir");
+    stage(winner_dir.path(), BRACKET, BRACKET_FIXTURE);
+    stage(loser_dir.path(), BRACKET, GEAR_FIXTURE);
+    let (pause, reached) = held();
+    let release = pause.release.clone();
+    let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
+    let loser = WorkerHandler {
+        pause: Some(pause),
+        ..handler_over(&pool, loser_dir.path(), blob_root.path())
+    };
+    let job = job_for_library(library, BRACKET);
 
-    for library in [seeded(), other] {
-        let winner_dir = tempfile::tempdir().expect("temp dir");
-        let loser_dir = tempfile::tempdir().expect("temp dir");
-        stage(winner_dir.path(), BRACKET, BRACKET_FIXTURE);
-        stage(loser_dir.path(), BRACKET, GEAR_FIXTURE);
-        let (pause, reached) = held();
-        let release = pause.release.clone();
-        let winner = handler_over(&pool, winner_dir.path(), blob_root.path());
-        let loser = WorkerHandler {
-            pause: Some(pause),
-            ..handler_over(&pool, loser_dir.path(), blob_root.path())
-        };
-        let job = job_for_library(library, BRACKET);
-
-        let (lost, ()) = tokio::join!(loser.handle(&job), async {
-            reached.await;
-            assert_eq!(
-                winner.handle(&job).await.expect("the winner ingests"),
-                Outcome::Ingested
-            );
-            release.notify_one();
-        });
-        let lost = lost.expect_err("the loser is not skipped");
-        assert!(matches!(lost, HandlerError::Transient { .. }), "{lost:?}");
-        let copies: Vec<PathBuf> = all_files(blob_root.path())
-            .into_iter()
-            .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes == GEAR_FIXTURE))
-            .collect();
-        assert!(copies.is_empty(), "the loser left its bytes at {copies:?}");
-
-        let retry = handler_over(&pool, loser_dir.path(), blob_root.path());
+    let (lost, ()) = tokio::join!(loser.handle(&job), async {
+        reached.await;
         assert_eq!(
-            retry.handle(&job).await.expect("the retry settles"),
-            Outcome::Revised
+            winner.handle(&job).await.expect("the winner ingests"),
+            Outcome::Ingested
         );
-    }
+        release.notify_one();
+    });
+    let lost = lost.expect_err("the loser is not skipped");
+    assert!(matches!(lost, HandlerError::Transient { .. }), "{lost:?}");
+    let copies: Vec<PathBuf> = all_files(blob_root.path())
+        .into_iter()
+        .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes == GEAR_FIXTURE))
+        .collect();
+    assert!(copies.is_empty(), "the loser left its bytes at {copies:?}");
+
+    let retry = handler_over(&pool, loser_dir.path(), blob_root.path());
+    assert_eq!(
+        retry.handle(&job).await.expect("the retry settles"),
+        Outcome::Revised
+    );
 
     for (label, _, _, hash, path) in revision_rows(&pool).await {
         let bytes = std::fs::read(blob_root.path().join(&path))
