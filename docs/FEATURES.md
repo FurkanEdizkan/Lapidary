@@ -224,6 +224,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 |---|---|
 | `Target` trait with automatic format negotiation | 4 |
 | Download `variant=original` (byte-identical, hash shown) | 1 |
+| A stable link per part, `/api/parts/{id}/file`: always the current file, Range and `If-Range`, a Copy link that works on plain http. Access is whoever reaches the port | F2, built |
 | Download derivatives, `.lapidary.` infix | 3 |
 <!--
   Built: `variant=l0|l1|l2`, and since goal 4 `variant=3mf|stl` (DATA §5.1).
