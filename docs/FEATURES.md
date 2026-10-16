@@ -388,28 +388,13 @@ The largest subsystem. Detailed spec below.
 
 ## 10. Shared libraries
 
-Sharing models between people who know each other, installation to installation. Sequenced ahead of
-Phase 8; see `docs/ROADMAP.md` § Shared libraries.
+**Removed on 2026-10-16** (S3, the owner's decision): sharing between installations was built in full (S1b–S10)
+and taken out with the move to a hobbyist and creator library. Migration `0056` dropped its tables;
+`docs/ROADMAP.md` has what it was and why it went.
 
 | Feature | Phase |
 |---|---|
-| This installation's device id and name, shown to give to people | S1b, built |
-| Pair by pasting a device id and address; see who is online, and why not | S1b, built |
-| Remove somebody softly: hidden and refused, the entry kept | S1b, built |
-| Share a category, with a licence warning shown before it is offered | S2, built |
-| Browse what somebody shares, with previews and licences, while they are away | S2, built |
-| Pull a shared library into a chosen library, resumable, under `Shared/<sharer>`, naming who it came from | S3, built |
-| Open one part of a shared folder and download that one; the whole-folder pull stays | S9, built |
-| Ask me first: grant, decline, change the answer; stopping a share or removing somebody refuses their next request | S4, built |
-| Pause and resume a pull; at most two files at once to one installation and eight in all | S4, built |
-| Say who a folder goes to: pick people per folder, and change it later | S5, built |
-| The folder's owner introduces its people to each other; each accepts or declines once | S6, built |
-| A folder stays browsable while its owner is away, through another of its people, marked with whose reading it is | S7, built |
-| Everyone who holds a folder can serve its files, with a switch per folder to stop | S8, built |
-| Fetch a file from whoever has it: the owner first while online, then whoever answered most recently | S9, built |
-| Take it back: remove somebody from a folder, and their copies stay and stop being served | S10, built |
-| A public directory, tracker, or discovery of machines nobody has paired with | **[—]** people who know each other only |
-| A relay or hole punching between installations that cannot reach each other | **[—]** reachable addresses only |
+| Every sharing feature above S1b–S10 | **[—]** removed, S3 |
 
 ---
 

@@ -79,7 +79,7 @@ them into `docs/ROADMAP.md` with the first merge.
 |---|---|---|---|---|---|---|---|---|
 | [S1](S1.md) | One process, two containers | 6 | Rust + deploy | — | `bin/lapidary-server/src/main.rs`, `deploy/`, `xtask/src/{deploy,layers}.rs`, `scripts/e2e/stack.sh` | — | merged `958024f` | `chore/one-process` |
 | [S2](S2.md) | Empty crates and pgvector | 6 | Rust (small) | — | the three placeholder crates, `deploy/db/` | — | merged `89961ab` | `chore/drop-placeholders` |
-| [S3](S3.md) | Peer sharing out | 6 | Rust + web | S1 | `lapidary-peer`, the sharing modules in db/api/web, `repo.rs` (wave 6) | 0056 | open | `chore/remove-sharing` |
+| [S3](S3.md) | Peer sharing out | 6 | Rust + web | S1 | `lapidary-peer`, the sharing modules in db/api/web, `repo.rs` (wave 6) | 0056 | merged `188a830` | `chore/remove-sharing` |
 | [S4](S4.md) | Governance, locks and the desktop agent out | 6 | Rust + web | S3 | `lapidary-vcs`, `bin/lapidary`, locks/states/approvals in db/api/web | 0057 | open | `chore/remove-governance` |
 | [F1](F1.md) | Pictures without rendering | 7 | Rust + web | S4 | `lapidary-cad/src/tmf.rs` thumbnail read, `images.rs::normalize`'s new home, `Viewer.tsx` snapshot | 0058 | open | `feat/embedded-thumbnails` |
 | [F2](F2.md) | A stable file link | 7 | Rust + web | S4 | `download.rs`, the copy-link action | — | open | `feat/stable-file-link` |
