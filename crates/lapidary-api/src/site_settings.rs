@@ -103,13 +103,11 @@ fn refused(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "message": message }))).into_response()
 }
 
-fn site_of(slug: &str) -> Result<Site, Response> {
-    Site::from_slug(slug).ok_or_else(|| {
-        refused(
-            StatusCode::NOT_FOUND,
-            "Lapidary keeps keys for printables, thingiverse and myminifactory, and that is none of them.",
-        )
-    })
+fn unknown_site() -> Response {
+    refused(
+        StatusCode::NOT_FOUND,
+        "Lapidary keeps keys for printables, thingiverse and myminifactory, and that is none of them.",
+    )
 }
 
 /// `GET /api/settings/sites`
@@ -147,9 +145,8 @@ pub async fn set(
     Path(slug): Path<String>,
     body: Result<Json<SetSiteKey>, JsonRejection>,
 ) -> Response {
-    let site = match site_of(&slug) {
-        Ok(site) => site,
-        Err(response) => return response,
+    let Some(site) = Site::from_slug(&slug) else {
+        return unknown_site();
     };
     if !site.needs_key() {
         return refused(
@@ -177,9 +174,8 @@ pub async fn set(
 
 /// `DELETE /api/settings/sites/{site}` — forget the key. `204` whether or not there was one.
 pub async fn clear(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
-    let site = match site_of(&slug) {
-        Ok(site) => site,
-        Err(response) => return response,
+    let Some(site) = Site::from_slug(&slug) else {
+        return unknown_site();
     };
     match PgSiteKeys(state.db).clear(site.slug()).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -200,9 +196,8 @@ pub async fn check(
     if !enabled() {
         return switched_off();
     }
-    let site = match site_of(&slug) {
-        Ok(site) => site,
-        Err(response) => return response,
+    let Some(site) = Site::from_slug(&slug) else {
+        return unknown_site();
     };
     let offered = body
         .and_then(|Json(body)| body.key)
