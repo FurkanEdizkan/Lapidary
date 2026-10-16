@@ -100,7 +100,7 @@ uploads and imports; **delete removes from the library and never touches the fil
 
 | Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
 |---|---|---|---|---|---|---|---|---|
-| [M1](M1.md) | What the owner saw first: stale card picture, overlapping part page, home link | 8 | web | — | `PartDetail.tsx` picture mutations and layout, `AppFrame.tsx` mark | — | open | `fix/first-look` |
+| [M1](M1.md) | What the owner saw first: stale card picture, overlapping part page, home link | 8 | web | — | `PartDetail.tsx` picture mutations and layout, `AppFrame.tsx` mark | — | merged `b421948` | `fix/first-look` |
 | [M2](M2.md) | A user menu (Profile, Settings) and an MVP header | 8 | web + API | M1 | `AppFrame.tsx` places and menu, a profile route | 0060 | open | `feat/user-menu` |
 | [M3](M3.md) | Delete is delete: no restore, purge or quarantine | 8 | Rust + web | M1 | `lifecycle.rs`, `removed.tsx`, `repo.rs` delete, the reaper's quarantine | 0061 | open | `chore/delete-is-final` |
 | [M4](M4.md) | Your folders, read where they are, and an inbox | 9 | Rust + deploy | M3 | `lapidary-ingest` scan/handler, `lapidary-storage` source half, `download.rs`, `moves.rs`, compose mounts | 0062 | open | `feat/index-in-place` |
