@@ -172,6 +172,8 @@ WORK=$ROOT/target/e2e/$LANE$AS
 ENVFILE=$WORK/e2e.env
 STORE=$WORK/store
 INGEST=$WORK/ingest
+# Where the app writes uploads and link imports, once, before indexing them (M4). Never under $INGEST.
+INBOX=$WORK/inbox
 RUNS=$WORK/runs
 # One process serves the app, its API and the worker since S1, so all three names are one origin. Kept
 # as three names because the flows and the seed say which of them they mean.
@@ -197,7 +199,7 @@ CORPUS_SLICE=${CORPUS_SLICE:-400}
 # would then chown and delete.
 COMPOSE_UNSET=()
 for var in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB LAPIDARY_LOG \
-  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR \
+  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR \
   LAPIDARY_PORT_WEB LAPIDARY_PORT_API LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER \
   LAPIDARY_WORKER_CONCURRENCY LAPIDARY_JOB_LEASE_SECS LAPIDARY_KERNEL_TIMEOUT \
   LAPIDARY_JOB_POLL_SECS LAPIDARY_WORKER_ID; do
@@ -330,11 +332,13 @@ chown_store() { # owner, e.g. 10001:10001
   for candidate in "$PROJECT-app" docker.io/library/postgres:18; do
     docker image inspect "$candidate" > /dev/null 2>&1 && { image=$candidate; break; }
   done
-  [ -n "$image" ] || { echo "  no local image to chown with; leaving $STORE as it is"; return 1; }
-  mkdir -p "$STORE"
+  [ -n "$image" ] || { echo "  no local image to chown with; leaving $STORE and $INBOX as they are"; return 1; }
+  mkdir -p "$STORE" "$INBOX"
+  # The inbox too (M4): the app writes uploads there as uid 10001, exactly as it writes the store.
   docker run --rm --pull never --user 0 --entrypoint chown \
-    -v "$STORE:/var/lib/lapidary" "$image" -R "$1" /var/lib/lapidary > /dev/null &&
-    echo "  $STORE now owned by $1 (through $image)"
+    -v "$STORE:/var/lib/lapidary" -v "$INBOX:/var/lib/lapidary-inbox" "$image" \
+    -R "$1" /var/lib/lapidary /var/lib/lapidary-inbox > /dev/null &&
+    echo "  $STORE and $INBOX now owned by $1 (through $image)"
 }
 
 # `rm -rf` on a path built from variables gets its own gate. `set -u` is not a safety net for a
@@ -344,9 +348,24 @@ remove_store() {
     "$ROOT"/target/e2e/[0-4]/store | "$ROOT"/target/e2e/[0-4][abc]/store) ;;
     *) die "refusing to remove \`$STORE\`: that is not target/e2e/<lane>[a|b|c]/store." ;;
   esac
-  [ -e "$STORE" ] || return 0
-  rm -rf "$STORE" || die "could not remove $STORE. If it is still root-owned the reverse chown above
+  case "$INBOX" in
+    "$ROOT"/target/e2e/[0-4]/inbox | "$ROOT"/target/e2e/[0-4][abc]/inbox) ;;
+    *) die "refusing to remove \`$INBOX\`: that is not target/e2e/<lane>[a|b|c]/inbox." ;;
+  esac
+  local dir
+  for dir in "$STORE" "$INBOX"; do
+    [ -e "$dir" ] || continue
+    rm -rf "$dir" || die "could not remove $dir. If it is still root-owned the reverse chown above
   failed — fix that before the lead runs scripts/release-goal.sh, or the worktree cannot be deleted."
+  done
+}
+
+# Every path under the ingest tree with its size and modification time, hashed (M4). The app indexes
+# the owner's folders where they are and must never copy, rename, move, write or delete anything under
+# them; this is how the rig checks that from the host, before and after a scan, a move, a revision and
+# an upload.
+ingest_fingerprint() {
+  (cd "$INGEST" && find . -printf '%P %s %T@\n' | sort | sha256sum | cut -d' ' -f1)
 }
 
 # `e2e.env`. The password is generated **only when the file is absent**: `POSTGRES_PASSWORD` is applied
@@ -375,6 +394,7 @@ LAPIDARY_LOG=info
 # shows LAPIDARY_STORAGE_ROOT to the person as where their model is, which only means anything absolute.
 LAPIDARY_STORAGE_ROOT=$STORE
 LAPIDARY_INGEST_DIR=$INGEST
+LAPIDARY_INBOX_DIR=$INBOX
 # Interpolated into scripts/e2e/e2e.override.yaml, which is the only thing that moves the published
 # ports off deploy/compose.yaml's literals.
 LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB
@@ -401,7 +421,7 @@ verify_ports() {
   the usual cause."
   LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB LAPIDARY_PORT_API=$LAPIDARY_PORT_API \
     LAPIDARY_PORT_WORKER=$LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER=$LAPIDARY_PORT_PEER \
-    STORE=$STORE INGEST=$INGEST python3 -c '
+    STORE=$STORE INGEST=$INGEST INBOX=$INBOX python3 -c '
 import json, os, sys
 
 resolved = json.load(sys.stdin)
@@ -421,7 +441,7 @@ if published != want:
 for forbidden in ("3000", "8080", "8081", "8082"):
     if forbidden in published:
         problems.append(f"{forbidden} is published — that is deploy/compose.yaml`s literal, and the owner`s")
-for path in (os.environ["STORE"], os.environ["INGEST"]):
+for path in (os.environ["STORE"], os.environ["INGEST"], os.environ["INBOX"]):
     if path not in mounts:
         problems.append(f"nothing bind-mounts {path}; the env file is not the one compose read")
 for path in mounts:
@@ -550,7 +570,7 @@ cmd_up() {
   write_env
   # Before the directories exist, so a wrong bind source is caught before docker creates it as root.
   verify_ports
-  mkdir -p "$STORE" "$INGEST" "$RUNS"
+  mkdir -p "$STORE" "$INGEST" "$INBOX" "$RUNS"
   tag_borrowed_images
   chown_store 10001:10001
 
@@ -796,6 +816,9 @@ cmd_seed() {
   echo "== INGEST TREE"
   build_ingest_tree
 
+  local fingerprint
+  fingerprint=$(ingest_fingerprint)
+
   echo "== SWEEP, the whole tree"
   local sweep began batch
   sweep=$(library_named Sweep)
@@ -859,6 +882,8 @@ sum(1 for f in value.get("failed", [])
     "failedTotal=${failed_total:-none} of $(counter "$scanned" total)"
   seed_check "every failure explains itself" "$(holds "${unexplained:-99}" -eq 0)" \
     "${unexplained:-?} of ${failed_total:-?} failures carry no reason"
+  seed_check "the scan wrote nothing under the ingest tree" \
+    "$(holds "$(ingest_fingerprint)" = "$fingerprint")" "fingerprint $fingerprint"
 
   local parts folders formats
   parts=$(sql "SELECT count(*) FROM part WHERE library_id = '$sweep'")
@@ -1054,6 +1079,44 @@ print(count(json.load(sys.stdin)))')
   echo "  vee-block now has $revised revisions"
   seed_check "an uploaded part reached a second revision" "$(holds "${revised:-0}" -ge 2)" "$revised revisions"
 
+  echo "== OWNER, a library with its own folder: a scan, the owner's change, a re-scan (M4)"
+  # `root` names a folder under the mount, and the scan reads only there. The owner then saves other
+  # bytes over the file in place — the one change to the tree this rig makes, made from the host — and
+  # the re-scan records it as revision 2 where it is. Neither scan may write anything under the tree.
+  local owner owner_dir=$INGEST/m4-owner owner_batch owner_scanned owner_revisions before_owner
+  mkdir -p "$owner_dir"
+  [ -f "$owner_dir/flange-dn40-lp-3310-02.stl" ] ||
+    cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
+  owner=$(curl -sf "$API/api/libraries" | field "next((l['id'] for l in value if l['name'] == 'Owner'), '')")
+  [ -n "$owner" ] || owner=$(json POST "$API/api/libraries" '{"name":"Owner","root":"m4-owner"}' | field 'value["id"]')
+  [ -n "$owner" ] || die "could not create the Owner library."
+  before_owner=$(ingest_fingerprint)
+  owner_batch=$(json POST "$API/api/libraries/$owner/scan" | field 'value["batchId"]')
+  owner_scanned=$(settle "$owner" "$owner_batch" 600)
+  echo "  first scan: $owner_scanned"
+  seed_check "a library with its own folder scans only there, and writes nothing" \
+    "$(holds "$(sql "SELECT count(*) FROM part WHERE library_id = '$owner'")" -eq 1 -a "$(ingest_fingerprint)" = "$before_owner")" \
+    "$(sql "SELECT string_agg(source_path, ', ') FROM part WHERE library_id = '$owner'")"
+  # The owner's edit: the other example's bytes saved over it (alternating, so a re-seed is a change).
+  if cmp -s "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"; then
+    cp "$ROOT/example/parts/hex-spacer-m4x20-lp-2145-01.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
+  else
+    cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
+  fi
+  local edited; edited=$(ingest_fingerprint)
+  owner_batch=$(json POST "$API/api/libraries/$owner/scan" | field 'value["batchId"]')
+  owner_scanned=$(settle "$owner" "$owner_batch" 600)
+  owner_revisions=$(sql "SELECT count(*) FROM revision r JOIN part p ON p.id = r.part_id WHERE p.library_id = '$owner'")
+  echo "  after the owner's change: $owner_scanned; $owner_revisions revisions"
+  seed_check "the owner's change is a revision, and recording it wrote nothing" \
+    "$(holds "$(counter "$owner_scanned" revised)" -eq 1 -a "$(ingest_fingerprint)" = "$edited")" \
+    "$owner_revisions revisions; $(sql "SELECT count(*) FILTER (WHERE NOT on_disk) FROM file f JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id WHERE p.library_id = '$owner'") no longer on disk"
+  seed_check "uploads land in the inbox, never under the ingest tree" \
+    "$(holds "$(find "$INBOX/uploads" -type f 2>/dev/null | wc -l)" -ge 4 -a "$(sql "SELECT count(*) FROM file WHERE root = 'library' AND storage_path LIKE 'uploads/%'")" -eq 0)" \
+    "$(find "$INBOX/uploads" -type f 2>/dev/null | wc -l) files under $INBOX/uploads"
+  # What `drive` compares against: every move, upload and scan a flow makes must leave this unchanged.
+  ingest_fingerprint > "$WORK/ingest.fingerprint"
+
   echo "== EMPTY, created and never scanned"
   local empty empty_count
   empty=$(library_named Empty)
@@ -1178,6 +1241,16 @@ if bad: print("FAILED: " + ", ".join(bad))
 sys.exit(0 if (not bad and flows and flows_exit == 0) else 1)
 EOF
   local code=$?
+  # (M4) Nothing a flow did — the scans, the moves, the uploads, the deletes — wrote under the ingest
+  # tree. Compared from the host, against what the seed left.
+  if [ -f "$WORK/ingest.fingerprint" ]; then
+    if [ "$(ingest_fingerprint)" = "$(cat "$WORK/ingest.fingerprint")" ]; then
+      echo "  the ingest tree is exactly as the seed left it: nothing under it was written"
+    else
+      echo "FAILED: something wrote under $INGEST during the flows — its fingerprint changed"
+      code=1
+    fi
+  fi
 
   if [ -n "$compare" ]; then
     echo "== COMPARE against $compare"
@@ -1237,7 +1310,7 @@ cmd_down() {
   note "down $PROJECT"
   # The reverse chown FIRST, while a container can still be run and the store still exists. Skipped
   # when there is nothing there, so a second `down` is not an error.
-  if [ -d "$STORE" ]; then chown_store "$(id -u):$(id -g)"; fi
+  if [ -d "$STORE" ] || [ -d "$INBOX" ]; then chown_store "$(id -u):$(id -g)"; fi
   if [ -f "$ENVFILE" ]; then
     # -v removes THIS project's volumes and no others: lapidary-e2e-<lane>_lapidary-db and friends. The
     # owner's lapidary_lapidary-db is a different project, which is what the assertion above protects.

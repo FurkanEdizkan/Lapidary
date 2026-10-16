@@ -119,7 +119,7 @@ echo "== stack.sh still defines every function it needs"
 # produced more false positives than findings. A list catches the thing that actually goes wrong — a helper
 # disappearing under an edit to its neighbour — and costs one line when a helper is added.
 for fn in die refuse note ask_owner lane_var assert_project compose or_none free_gb ram_gib field json \
-  sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
+  sql seed_check holds counter wait_for until_true settle chown_store remove_store ingest_fingerprint write_env verify_ports \
   build_ingest_tree check_worker_sees_ingest library_named upload_file seed_picture \
   tag_borrowed_images untag_borrowed_images \
   cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status; do
@@ -132,8 +132,8 @@ done
 # And the list is the whole list: a function defined and not named here would be one this check cannot
 # protect, which is how the four helpers it was written for came to be deleted in the first place.
 defined=$(grep -cE '^[a-z_]+\(\) \{' "$HERE/stack.sh")
-if [ "$defined" = 36 ]; then ok "all 36 of stack.sh's functions are defined, and 36 is all there are"
-else no "stack.sh defines $defined functions and this check names 36 — add the new one to the list above"; fi
+if [ "$defined" = 37 ]; then ok "all 37 of stack.sh's functions are defined, and 37 is all there are"
+else no "stack.sh defines $defined functions and this check names 37 — add the new one to the list above"; fi
 
 # `skew-stl.py` is gone, and with it the block that stood here.
 #
