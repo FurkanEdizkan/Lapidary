@@ -83,13 +83,13 @@ them into `docs/ROADMAP.md` with the first merge.
 | [S4](S4.md) | Governance, locks and the desktop agent out | 6 | Rust + web | S3 | `lapidary-vcs`, `bin/lapidary`, locks/states/approvals in db/api/web | 0057 | merged `c6534a0` | `chore/remove-governance` |
 | [F1](F1.md) | Pictures without rendering | 7 | Rust + web | S4 | `lapidary-cad/src/tmf.rs` thumbnail read, `images.rs::normalize`'s new home, `Viewer.tsx` snapshot | 0058 | merged `4fc86b9` | `feat/embedded-thumbnails` |
 | [F2](F2.md) | A stable file link | 7 | Rust + web | S4 | `download.rs`, the copy-link action | — | merged `04a6087` | `feat/stable-file-link` |
-| [F3](F3.md) | Import from a creator link (Printables, Thingiverse, MyMiniFactory) | 7 | Rust + web | S1, S4 | `fetch.rs`'s new home, the link-import job and route, the paste-a-link field | — | open | `feat/link-import` |
+| [F3](F3.md) | Import from a creator link (Printables, Thingiverse, MyMiniFactory) | 7 | Rust + web | S1, S4 | `fetch.rs`'s new home, the link-import job and route, the paste-a-link field, the settings page for site keys, the triangle cap | 0059 | open | `feat/link-import` |
 
 **P1** (creator packs) follows F3 and keeps its own row above; its G2 and L3 dependencies are both merged.
 **P2 and P4** wait for the owner. **S1 and S2 are disjoint** and may run at once; everything after is sequential
 through `repo.rs` and `lib.rs`'s route list.
 
-**Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1.
+**Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1 · 0059 F3.
 
 ## Backlog — recorded, not scheduled
 
