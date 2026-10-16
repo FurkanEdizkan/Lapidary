@@ -8,6 +8,7 @@ mod events;
 mod folders;
 mod jobs;
 mod migrate;
+mod profile;
 mod repo;
 mod revisions;
 mod saved_filters;
@@ -24,6 +25,7 @@ pub use events::{CHANGE_CHANNEL, listen_for_changes};
 pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
+pub use profile::PgProfile;
 pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS, FacetValue,
     Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage, LibraryRow, MoveRow,

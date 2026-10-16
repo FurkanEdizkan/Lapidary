@@ -53,6 +53,7 @@ import type {
   UploadManifest,
   UploadPlan,
   CheckSiteKey,
+  Profile,
   ImportLink,
   SetSiteKey,
   SiteCheck,
@@ -382,6 +383,24 @@ export function fileLink(part: PartId, origin: string = window.location.origin):
 /** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
 export function exportUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`
+}
+
+/** `GET /api/profile` — this install's display name (M2). */
+export async function fetchProfile(): Promise<Profile> {
+  const response = await fetch('/api/profile')
+  if (!response.ok) throw new Error(`profile returned ${response.status}`)
+  return (await response.json()) as Profile
+}
+
+/** `PUT /api/profile` — a blank name clears it. */
+export async function saveProfile(displayName: string): Promise<Profile> {
+  const response = await fetch('/api/profile', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ displayName: displayName.trim() === '' ? null : displayName } satisfies Profile),
+  })
+  if (!response.ok) throw new Error(`saving the profile returned ${response.status}`)
+  return (await response.json()) as Profile
 }
 
 /**

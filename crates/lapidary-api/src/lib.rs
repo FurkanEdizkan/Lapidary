@@ -21,6 +21,7 @@ mod lifecycle;
 mod moves;
 mod part_number;
 mod parts;
+mod profile;
 mod revisions;
 mod scan;
 mod site_settings;
@@ -183,6 +184,8 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{id}/imports/link",
                     post(site_settings::import),
                 )
+                // This install's display name (M2). See `profile.rs`.
+                .route("/api/profile", get(profile::get).put(profile::set))
                 .route("/api/settings/sites", get(site_settings::list))
                 .route(
                     "/api/settings/sites/{site}",

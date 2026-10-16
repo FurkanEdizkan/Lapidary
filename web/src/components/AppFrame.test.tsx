@@ -22,15 +22,36 @@ function renderInRouter(ui: () => React.ReactNode, at = '/') {
 
 test('the page you are on is marked, and the other places are links', async () => {
   renderInRouter(() => (
-    <AppFrame current="removed">
-      <p>{strings.removal.removedLead}</p>
+    <AppFrame current="dashboard">
+      <p>{strings.dashboard.title}</p>
     </AppFrame>
-  ), '/removed')
+  ), '/dashboard')
   const nav = await screen.findByRole('navigation', { name: strings.frame.places })
   const marked = [...nav.querySelectorAll('[aria-current="page"]')].map((place) => place.textContent)
-  expect(marked).toEqual([strings.removal.removedTitle])
+  expect(marked).toEqual([strings.dashboard.title])
   expect(screen.getByRole('link', { name: strings.frame.parts })).toBeDefined()
-  expect(screen.queryByRole('link', { name: strings.removal.removedTitle })).toBeNull()
+})
+
+/**
+ * M2: the places are the grid and the dashboard. Profile and Settings are the user menu's, at the
+ * header's right, and the removed list is no longer a place.
+ */
+test('Profile and Settings are in the user menu, not among the places', async () => {
+  renderInRouter(() => (
+    <AppFrame current="profile">
+      <p>{strings.profile.lead}</p>
+    </AppFrame>
+  ), '/profile')
+  const nav = await screen.findByRole('navigation', { name: strings.frame.places })
+  expect(nav.textContent).not.toContain(strings.settings.title)
+  expect(nav.textContent).not.toContain(strings.removal.removedTitle)
+  expect(screen.getByRole('button', { name: strings.user.menu })).toBeDefined()
+  // A closed popover is out of jsdom's accessibility tree; it is found by the id its button names.
+  const menu = document.getElementById('user-menu') as HTMLElement
+  expect(menu.querySelector('[aria-current="page"]')?.textContent).toBe(strings.user.profile)
+  expect([...menu.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+    [strings.settings.title, '/settings'],
+  ])
 })
 
 /**
@@ -127,10 +148,10 @@ test('dragging a part does not raise the drop overlay', () => {
 /** The mark goes home, as a logo does (M1: it did not, and there was no other way back but Parts). */
 test('the Lapidary mark is a link to the grid', async () => {
   renderInRouter(() => (
-    <AppFrame current="removed">
-      <p>{strings.removal.removedLead}</p>
+    <AppFrame current="dashboard">
+      <p>{strings.dashboard.title}</p>
     </AppFrame>
-  ), '/removed')
+  ), '/dashboard')
   const home = await screen.findByRole('link', { name: strings.appName })
   expect(home.getAttribute('href')).toBe('/')
 })

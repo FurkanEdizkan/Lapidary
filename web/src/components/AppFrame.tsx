@@ -5,6 +5,7 @@ import { strings } from '../lib/strings'
 import type { LibraryId } from '../lib/types'
 import { Icon } from './Icon'
 import { JumpSearch } from './Search'
+import { Menu } from './Menu'
 
 /**
  * A square on its corner with a square inside it — the facet-and-table of a cut stone,
@@ -23,13 +24,14 @@ function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'removed' | 'siteSettings'
+export type Place = 'parts' | 'dashboard' | 'removed' | 'siteSettings' | 'profile'
 
 /**
  * Out of the JSX on purpose: `no-bare-strings` reads any attribute literal that contains a strings.ts
  * fragment as copy, and "settings" is one (`dashboard.settingsTitle`). A route path is not copy.
  */
 const SETTINGS_PATH = '/settings'
+const PROFILE_PATH = '/profile'
 
 const HOME =
   'ease-mechanical flex flex-none items-center gap-[9px] rounded-[var(--radius-ctl)] duration-[var(--duration-fast)] hover:opacity-80'
@@ -42,7 +44,8 @@ const HERE = `${PLACE} bg-[var(--color-border)] font-semibold text-[var(--color-
 const THERE = `${PLACE} text-[var(--color-muted)] hover:text-[var(--color-text)]`
 
 /**
- * Where you are, among the four places the application has.
+ * Where you are, among the application's places: the grid and the dashboard. Profile and Settings
+ * are the user menu's, at the header's right (M2).
  *
  * `current` is a prop rather than read from the router: the place is a fact the page knows,
  * and each page's tests mount it under a synthetic route tree where route matching would
@@ -53,8 +56,6 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
   const search = library === undefined || library === DEFAULT_LIBRARY_ID ? undefined : { library }
   const inParts = current === 'parts'
   const inDashboard = current === 'dashboard'
-  const inRemoved = current === 'removed'
-  const inSettings = current === 'siteSettings'
   return (
     <nav
       aria-label={strings.frame.places}
@@ -87,26 +88,41 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
           {strings.dashboard.title}
         </Link>
       )}
-      {inRemoved ? (
-        <span aria-current="page" className={HERE}>
-          {strings.removal.removedTitle}
-        </span>
-      ) : (
-        <Link to="/removed" search={search} className={THERE}>
-          {strings.removal.removedTitle}
-        </Link>
-      )}
-      {/* The whole installation's, not one library's, so it carries no library. */}
-      {inSettings ? (
-        <span aria-current="page" className={HERE}>
-          {strings.settings.title}
-        </span>
-      ) : (
-        <Link to={SETTINGS_PATH} className={THERE}>
-          {strings.settings.title}
-        </Link>
-      )}
     </nav>
+  )
+}
+
+const MENU_ITEM =
+  'ease-mechanical rounded-[var(--radius-ctl)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)]'
+
+/**
+ * The user menu, at the far right of every page's header (M2): this install's profile and its
+ * settings. The page you are on is marked and not linked, as the places are.
+ */
+function UserMenu({ current }: { current?: Place }) {
+  const inProfile = current === 'profile'
+  const inSettings = current === 'siteSettings'
+  return (
+    <Menu id="user-menu" label={strings.user.menu} icon="user">
+      {inProfile ? (
+        <span aria-current="page" className={`${MENU_ITEM} font-semibold`}>
+          {strings.user.profile}
+        </span>
+      ) : (
+        <Link to={PROFILE_PATH} className={MENU_ITEM}>
+          {strings.user.profile}
+        </Link>
+      )}
+      {inSettings ? (
+        <span aria-current="page" className={`${MENU_ITEM} font-semibold`}>
+          {strings.settings.title}
+        </span>
+      ) : (
+        <Link to={SETTINGS_PATH} className={MENU_ITEM}>
+          {strings.settings.title}
+        </Link>
+      )}
+    </Menu>
   )
 }
 
@@ -279,8 +295,11 @@ export function AppFrame({
             {search ?? <JumpSearch />}
           </div>
         )}
-        {actions === undefined ? null : (
-          <div className="ml-auto flex flex-none items-center gap-2">{actions}</div>
+        {actions === undefined && !nav ? null : (
+          <div className="ml-auto flex flex-none items-center gap-2">
+            {actions}
+            {nav ? <UserMenu current={current} /> : null}
+          </div>
         )}
       </header>
       <main className="min-h-0 flex-1 px-[18px] py-[13px]">
