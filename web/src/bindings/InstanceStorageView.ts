@@ -5,8 +5,8 @@
  *
  * The question `LibraryStorage` cannot answer. That one is per library and deliberately
  * **not** `du`: it charges a blob two libraries share to both of them, and it can show
- * quarantined bytes to nobody because a quarantined blob is keyed by hash and the part
- * that said which library it belonged to is the part that was purged. So a person adding
+ * quarantined bytes to nobody because a quarantined blob is keyed by hash and nothing
+ * points at it any more to say which library it belonged to. So a person adding
  * up the panels and comparing the result to their disk finds a discrepancy, and
  * `PgParts::storage_totals`'s own doc predicts it: *"someone will eventually run `du`."*
  *
@@ -35,13 +35,10 @@ sourceBytes: number,
  */
 derivativeBytes: number, 
 /**
- * Soft-deleted parts. On the disk, and back the moment somebody restores them.
- */
-removedBytes: number, 
-/**
- * Inside the thirty-day hold. Bytes no per-library panel can admit to — a purged part's,
- * or a blob that lost its last reference, which since `0055` includes the render
- * derivatives Lapidary deleted on its own behalf.
+ * Inside the thirty-day hold. Bytes no per-library panel can admit to — a cached export
+ * that lost its last reference (evicted, or its part deleted), which since `0055` also
+ * includes the render derivatives Lapidary deleted on its own behalf. Never a deleted
+ * part's model file: delete leaves that on the disk.
  */
 quarantinedBytes: number, 
 /**

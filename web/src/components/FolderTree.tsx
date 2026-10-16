@@ -270,18 +270,18 @@ export function FolderTree({
       if (result.kind === 'refused') {
         setDeleteOutcome(strings.folders.deleteGone)
       } else {
-        // `foldersHidden` counts the category along with its descendants, so the one is
+        // `foldersDeleted` counts the category along with its descendants, so the one is
         // taken off before it is compared against a subcategory count that never included
         // it. Both figures are checked against what the confirmation actually claimed —
         // that count was read when the dialog opened, and the library can move underneath
         // an open dialog.
-        const subcategories = result.foldersHidden === null ? null : Math.max(result.foldersHidden - 1, 0)
+        const subcategories = result.foldersDeleted === null ? null : Math.max(result.foldersDeleted - 1, 0)
         const differs =
-          (result.partsHidden !== null && result.partsHidden !== folder.partCount) ||
+          (result.partsDeleted !== null && result.partsDeleted !== folder.partCount) ||
           (subcategories !== null && subcategories !== subcategoryCount(folders.data ?? [], folder.id))
         setDeleteOutcome(
           differs
-            ? strings.folders.deleteCountsDiffered(result.partsHidden ?? 0, subcategories ?? 0)
+            ? strings.folders.deleteCountsDiffered(result.partsDeleted ?? 0, subcategories ?? 0)
             : null,
         )
       }
@@ -451,7 +451,7 @@ function isWithin(folders: readonly FolderNode[], node: FolderId, root: FolderId
  * How many categories sit under `root`, not counting `root` itself.
  *
  * `FolderNode` carries a part count and no folder count, and the delete confirmation has to
- * name both — `soft_delete_subtree` marks every descendant folder deleted as well. The tree
+ * name both — the delete takes every descendant folder as well. The tree
  * is already in hand, so this is a walk over what one request answered rather than a second
  * request per folder, and it reuses `isWithin` so there is one definition of "under" here
  * and not two that can disagree.
@@ -962,9 +962,8 @@ function DuplicateDialog({
 
 /**
  * The destructive confirmation, which has to say what it destroys — and, here, what it
- * does not. This is a soft delete: the models inside are marked deleted and hidden, every
- * byte stays where it is on disk, and neither this nor `DATA.md` §1.6's purge is the
- * other.
+ * does not. The models inside leave the library for good, and every model file stays where
+ * it is on disk.
  *
  * Two counts, because a delete takes two kinds of thing. The models come from
  * `FolderNode.partCount`, which the one tree request already carried and which counts the

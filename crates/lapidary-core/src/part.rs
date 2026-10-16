@@ -66,11 +66,9 @@ pub struct PartSummary {
     /// The path this part is known by, which since slice 6a is its identity in the
     /// library — two parts called `bracket` in two folders are one name and two paths.
     ///
-    /// Carried on the summary and not only on `PartDetail` because the removed list needs
-    /// it: that page names a part in a purge confirmation, purge is the one irreversible
-    /// action in the product, and a confirmation reading "Purge “bracket” permanently?"
-    /// against two identically named parts is a confirmation that cannot be answered
-    /// correctly.
+    /// Carried on the summary and not only on `PartDetail` because a delete confirmation
+    /// names the part, delete cannot be undone, and a confirmation reading "Delete
+    /// “bracket”?" against two identically named parts cannot be answered correctly.
     pub source_path: String,
     pub triangle_count: Option<u32>,
     /// True when any geometric figure on this part is mesh-derived.
@@ -119,14 +117,6 @@ pub struct PartSummary {
     pub compressed: Option<bool>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
-    /// When the part was removed, or `None` for a part still in its library.
-    ///
-    /// `part.deleted_at`, read by the grid queries whichever list they serve. The removed
-    /// list shows it because purge starts a 30-day countdown the page describes, and a row
-    /// that cannot say when it was removed leaves somebody guessing how long a part has sat
-    /// there. Not `updated_at`: a rename or a revision also moves that, so it was never a
-    /// removal time.
-    pub removed_at: Option<Timestamp>,
 }
 
 /// Would this relative source path leave the directory it is relative to?

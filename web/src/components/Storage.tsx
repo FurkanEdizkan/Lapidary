@@ -26,13 +26,6 @@ export function StorageTotals({ storage, isError }: { storage?: LibraryStorage; 
   return (
     <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
       {strings.storage.totals(storage.sourceBytes, storage.derivativeBytes, storage.derivativeRatio)}
-      {/*
-        Only when there is something to say. A permanent "0 B removed" would be noise on
-        every library that has never removed anything, which is most of them — but the
-        moment one exists, the totals above stop describing the whole volume and this is
-        what says so.
-      */}
-      {storage.removedBytes > 0 ? strings.storage.removed(storage.removedBytes) : null}
     </p>
   )
 }
@@ -84,13 +77,13 @@ export function InstanceStorage({
     return null
   }
 
-  const { sourceBytes, derivativeBytes, removedBytes, quarantinedBytes, renderCacheBytes, onDiskBytes } =
+  const { sourceBytes, derivativeBytes, quarantinedBytes, renderCacheBytes, onDiskBytes } =
     instance
   // Every figure above, and that is all of them since R4: `inlinePreviewBytes` was the one
   // that was in Postgres rather than in the storage folder, and had to be left out of a total
   // compared against a walk of it — included, it put the tracked figure above the disk by
   // exactly its size on a real library, which reads as loss. `0055` deleted those rows.
-  const tracked = sourceBytes + derivativeBytes + removedBytes + quarantinedBytes
+  const tracked = sourceBytes + derivativeBytes + quarantinedBytes
   // Narrowed here and not in the JSX, for the reason `ShowInFolder` narrows where it does:
   // a `typeof x === 'number'` inside a child expression puts the literal `'number'` in a
   // position `no-bare-strings.test.ts` reads — correctly — as a label reaching the screen.
@@ -100,7 +93,7 @@ export function InstanceStorage({
   return (
     <div className="mt-1 max-w-prose text-xs text-[var(--color-muted)]">
       <p>
-        {strings.storage.everything(sourceBytes, derivativeBytes, removedBytes, quarantinedBytes)}
+        {strings.storage.everything(sourceBytes, derivativeBytes, quarantinedBytes)}
       </p>
       {free.data !== undefined ? (
         <p className="mt-1">{strings.storage.cacheFreed(free.data.removed, free.data.quarantinedBytes)}</p>

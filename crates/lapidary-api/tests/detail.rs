@@ -202,11 +202,12 @@ async fn a_deleted_part_and_a_part_that_never_existed_answer_alike(pool: sqlx::P
     // Undistinguished on purpose: telling them apart confirms a part exists to someone
     // who cannot see it.
     let part = seed(&pool, true, Some(21478.5), Some("tessellated")).await;
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(part.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("soft delete");
+    assert!(
+        lapidary_db::PgParts(pool.clone())
+            .delete(part)
+            .await
+            .expect("delete")
+    );
 
     let (deleted, _) = get(pool.clone(), &part.to_string()).await;
     let (absent, _) = get(pool, "01931b6e-0000-7000-8000-00000000dead").await;

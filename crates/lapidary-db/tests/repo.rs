@@ -1,7 +1,7 @@
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, MeshMeasurements, PartId, RevisionId};
 use lapidary_db::{
     DbError, FacetValue, GridQuery, IngestRequest, PartRepository, PgBlobs, PgFolders, PgIngest,
-    PgParts, Purged, Shows, Sort, StoredBlobRow,
+    PgParts, Sort, StoredBlobRow,
 };
 
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
@@ -370,7 +370,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
+async fn a_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
     let id = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
@@ -386,20 +386,13 @@ async fn a_soft_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
         })
         .await
         .expect("records");
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(id.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("soft delete");
+    assert!(PgParts(pool.clone()).delete(id).await.expect("deletes"));
 
     let page = PgParts(pool)
         .page(&GridQuery::new(library(), 50), Sort::Newest)
         .await
         .expect("page");
-    assert!(
-        page.is_empty(),
-        "delete is soft, but soft-deleted parts are still hidden"
-    );
+    assert!(page.is_empty(), "a deleted part is gone from the grid");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1697,20 +1690,10 @@ async fn a_file_row_of_another_role_is_not_part_of_the_source_total(pool: sqlx::
     );
 }
 
+/// Delete takes a part out of the library at once, so the panel over the grid drops by its size —
+/// the panel counts what the library catalogues, and still matches the cards under it.
 #[sqlx::test(migrations = "./migrations")]
-async fn soft_deleting_a_part_moves_its_bytes_across_the_panel_and_not_off_it(pool: sqlx::PgPool) {
-    // The panel answers one question -- what is on the volume -- and a soft delete puts
-    // nothing on the volume and takes nothing off it. The dialog that hides a category
-    // says so in as many words ("nothing is removed from your storage folder and no file
-    // moves on disk"), and it renders on the same screen as this figure, so a total that
-    // simply dropped by the bytes still sitting there would be contradicting the sentence
-    // beside it. `DATA.md` §1.6's purge is the action that moves bytes off this volume.
-    //
-    // What the figure does is move, not fall: out of the two live totals and into
-    // `removed_bytes`, which `strings.storage.removed` renders as "still on disk". That
-    // split is what lets the two live figures keep matching the grid they sit over --
-    // a total counting cards the grid does not show could not be checked against it --
-    // while the sum of all three stays exactly where it was.
+async fn deleting_a_part_takes_its_bytes_off_the_library_panel(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let id = seed_part(&ingest, library(), "Impeller, LP-5501-02", 0xf4).await;
 
@@ -1725,16 +1708,8 @@ async fn soft_deleting_a_part_moves_its_bytes_across_the_panel_and_not_off_it(po
         (0, 0),
         "the fixture has to cost something, or the comparison below proves nothing"
     );
-    assert_eq!(
-        before.removed_bytes, 0,
-        "nothing has been removed yet, so that figure starts at zero"
-    );
 
-    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
-        .bind(id.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("soft-delete the part, exactly as `soft_delete_subtree` does");
+    assert!(parts.delete(id).await.expect("deletes"));
 
     let after = parts
         .storage_totals(library())
@@ -1744,13 +1719,7 @@ async fn soft_deleting_a_part_moves_its_bytes_across_the_panel_and_not_off_it(po
     assert_eq!(
         (after.source_bytes, after.derivative_bytes),
         (0, 0),
-        "the live figures follow the grid, and the grid no longer shows this part"
-    );
-    assert_eq!(
-        after.source_bytes + after.derivative_bytes + after.removed_bytes,
-        before.source_bytes + before.derivative_bytes + before.removed_bytes,
-        "and not one byte left the volume: the panel's three figures still add up to \
-         what they added up to before the delete"
+        "the figures follow the grid, and the grid no longer shows this part"
     );
 }
 
@@ -1776,18 +1745,16 @@ async fn an_empty_library_costs_nothing_and_an_absent_one_has_no_answer(pool: sq
     );
 }
 
-/// **Purging a part that has ever been moved.**
+/// **Deleting a part that has ever been moved.**
 ///
-/// `part_move` references `part` and arrived a slice after `purge`'s delete list was
+/// `part_move` references `part` and arrived a slice after the (then purge's) delete list was
 /// written, so this raised `part_move_part_id_fkey` and answered 500 for any part with a
-/// move behind it. Neither side's suite could see it: slice 7's purge tests never move a
-/// part and the folder tree's move tests never purge one, so the combination existed only
-/// on a running stack — which is where it was found.
+/// move behind it — found on a running stack rather than by either suite.
 ///
 /// The move goes through `move_to_folder`, not a hand-written `INSERT`, so the row this
 /// deletes is the row the product writes.
 #[sqlx::test(migrations = "./migrations")]
-async fn purging_a_part_that_has_been_moved_takes_its_move_history_with_it(pool: sqlx::PgPool) {
+async fn deleting_a_part_that_has_been_moved_takes_its_move_history_with_it(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let parts = PgParts(pool.clone());
     let folders = PgFolders(pool.clone());
@@ -1814,10 +1781,9 @@ async fn purging_a_part_that_has_been_moved_takes_its_move_history_with_it(pool:
         "the fixture has to leave a move behind, or this proves nothing"
     );
 
-    assert!(parts.soft_delete(id).await.expect("soft delete"));
     assert!(
-        matches!(parts.purge(id).await.expect("purge"), Purged::Done(_)),
-        "a purge must not fail on the audit trail of a move"
+        parts.delete(id).await.expect("delete"),
+        "a delete must not fail on the audit trail of a move"
     );
 
     let orphans: i64 = sqlx::query_scalar("SELECT count(*) FROM part_move WHERE part_id = $1")
@@ -1827,32 +1793,32 @@ async fn purging_a_part_that_has_been_moved_takes_its_move_history_with_it(pool:
         .expect("move rows count");
     assert_eq!(
         orphans, 0,
-        "and the trail goes with the part: a purged part is filed nowhere, so a row saying \
+        "and the trail goes with the part: a deleted part is filed nowhere, so a row saying \
          where it was filed points at an id nothing else in the database knows"
     );
 }
 
 /// **The class, not the instance.**
 ///
-/// `purge` brings the part chain down child-first by hand, because nothing in the schema
+/// Delete brings the part chain down child-first by hand, because nothing in the schema
 /// declares `ON DELETE CASCADE` — a property worth keeping, since a stray `DELETE FROM
 /// part` should fail loudly rather than quietly take four tables with it. The cost is that
 /// the list is maintained by hand, and a table added later that references the chain
-/// breaks purge with a foreign key violation the moment anyone purges a row it points at.
+/// breaks delete with a foreign key violation the moment anyone deletes a row it points at.
 ///
 /// That already happened once. `part_move` arrived with the folder tree, a slice after the
 /// list was written, and purging any part anyone had ever moved answered 500 — found on a
-/// running stack rather than by either suite, because slice 7's purge tests never move a
-/// part and the folder tree's move tests never purge one. `part_image` is named in
+/// running stack rather than by either suite, because the purge tests of the day never moved a
+/// part and the folder tree's move tests never purged one. `part_image` is named in
 /// `PgParts::revisions_missing`'s own doc as coming in slice 5, and Phase 4's lineage will
 /// add more.
 ///
-/// So this asks the database what references the chain and compares it against what purge
+/// So this asks the database what references the chain and compares it against what delete
 /// knows about. A new table fails here, at the point it is added, with a message saying
-/// what to do — rather than in front of whoever first purges a part that uses it.
+/// what to do — rather than in front of whoever first deletes a part that uses it.
 #[sqlx::test(migrations = "./migrations")]
-async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: sqlx::PgPool) {
-    // What `PgParts::purge`'s statement list covers. `revision` appears because it
+async fn every_table_referencing_the_part_chain_is_one_delete_deletes_from(pool: sqlx::PgPool) {
+    // What `delete_parts`'s statement list (`repo.rs`) covers. `revision` appears because it
     // references `part`; its self-reference through `parent_revision_id` is settled by the
     // same single `DELETE FROM revision WHERE part_id`, which removes a parent and its
     // child in one statement.
@@ -1886,15 +1852,15 @@ async fn every_table_referencing_the_part_chain_is_one_purge_deletes_from(pool: 
 
     assert!(
         missing.is_empty(),
-        "{missing:?} reference the part chain and `PgParts::purge` does not delete from \
-         them, so purging a part they point at will fail on a foreign key. Add a `DELETE \
-         FROM <table> WHERE …` to purge's statement list above the row it references, and \
+        "{missing:?} reference the part chain and `delete_parts` does not delete from \
+         them, so deleting a part they point at will fail on a foreign key. Add a `DELETE \
+         FROM <table> WHERE …` to its statement list above the row it references, and \
          add the table here. If a table genuinely should outlive the part it names, say so \
          here in a comment rather than removing the assertion."
     );
     assert_eq!(
         referencing, purged,
-        "and nothing purge deletes from has stopped referencing the chain — a statement \
+        "and nothing delete deletes from has stopped referencing the chain — a statement \
          kept for a table that no longer points at a part is a delete nobody can justify"
     );
 }
@@ -1996,54 +1962,64 @@ async fn the_instance_total_counts_a_shared_derivative_once_where_two_libraries_
     );
 }
 
-/// Quarantined bytes are on the disk and belong to no library, so an instance total that
-/// omitted them would under-report by everything anyone had purged in the last thirty days
-/// — and no other panel in the application can show them (`DATA.md` §1.6).
+/// **Delete never queues a model file for removal.** The old purge recounted the part's source
+/// hash and wrote a `quarantined_file` row, which is how the reaper came to unlink the file; delete
+/// does neither, so nothing the hourly sweep reads ever names it.
 #[sqlx::test(migrations = "./migrations")]
-async fn purged_bytes_waiting_out_the_hold_are_in_the_instance_total_and_no_library_total(
-    pool: sqlx::PgPool,
-) {
+async fn deleting_a_part_queues_nothing_for_removal_and_leaves_no_row_behind(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let parts = PgParts(pool.clone());
     let part = seed_part(&ingest, library(), "Hex spacer, M4x20", 0xb4).await;
     let before = parts.instance_storage().await.expect("instance totals");
 
-    parts.soft_delete(part).await.expect("removes the part");
-    parts.purge(part).await.expect("purges it");
+    assert!(parts.delete(part).await.expect("deletes the part"));
+    assert!(
+        !parts.delete(part).await.expect("asks again"),
+        "a second delete finds nothing, so the route answers 404"
+    );
 
     let after = parts.instance_storage().await.expect("instance totals");
-    let library_total = parts
-        .storage_totals(library())
-        .await
-        .expect("totals")
-        .expect("library");
-
+    assert_eq!(after.source_bytes, 0, "the part is gone from every library");
     assert_eq!(
-        after.source_bytes, 0,
-        "the part is gone, so it is nobody's live bytes any more"
+        after.quarantined_bytes, before.quarantined_bytes,
+        "and none of its bytes started a removal clock"
     );
+    let (quarantined_files, quarantined_blob): (i64, bool) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM quarantined_file), \
+                (SELECT quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1)",
+    )
+    .bind(blob_row(0xb4).hash.to_hex())
+    .fetch_one(&pool)
+    .await
+    .expect("reads the quarantine");
     assert_eq!(
-        after.quarantined_bytes, before.source_bytes,
-        "and its bytes are here instead — still on the disk, for thirty days"
+        (quarantined_files, quarantined_blob),
+        (0, false),
+        "no model file row and no source blob is queued for the reaper"
     );
-    assert_eq!(
-        library_total.source_bytes + library_total.removed_bytes,
-        0,
-        "no library can be charged for them: the part that said which library is the part \
-         that was purged"
-    );
+    let left: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM part WHERE id = $1) \
+              + (SELECT count(*) FROM revision WHERE part_id = $1) \
+              + (SELECT count(*) FROM file f JOIN revision r ON r.id = f.revision_id \
+                 WHERE r.part_id = $1)",
+    )
+    .bind(part.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(left, 0, "no row of the part is left behind");
 }
 
 /// The regression the catalogue guard predicted, driven rather than asserted.
 ///
-/// `part_image` and `part_source` reference `part`, so a purge of a part carrying either
+/// `part_image` and `part_source` reference `part`, so a delete of a part carrying either
 /// would have failed on a foreign key — the same way `part_move` did when it arrived a
-/// slice after purge's delete list was written, and was found on a running stack rather
+/// slice after the delete list was written, and was found on a running stack rather
 /// than by any test. This time the guard failed the moment the tables were created and
 /// named both of them; this is the other half, proving the fix works rather than that the
 /// list was edited.
 #[sqlx::test(migrations = "./migrations")]
-async fn purging_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx::PgPool) {
+async fn deleting_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx::PgPool) {
     let ingest = PgIngest(pool.clone());
     let parts = PgParts(pool.clone());
     let part = seed_part(&ingest, library(), "Idler pulley, LP-4820-00", 0xc1).await;
@@ -2069,11 +2045,12 @@ async fn purging_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx:
     .await
     .expect("where it came from");
 
-    parts.soft_delete(part).await.expect("removes the part");
-    parts
-        .purge(part)
-        .await
-        .expect("and purges it, foreign keys and all");
+    assert!(
+        parts
+            .delete(part)
+            .await
+            .expect("deletes it, foreign keys and all")
+    );
 
     let orphans: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM part_image WHERE part_id = $1) \
@@ -2274,13 +2251,12 @@ async fn a_two_word_query_finds_a_name_holding_both_words_apart(pool: sqlx::PgPo
     );
 }
 
-/// Search reads the removed list through the same `Shows` predicate the grid uses, so a
-/// part somebody deleted is findable there and nowhere else.
+/// A deleted part is found by no search.
 #[sqlx::test(migrations = "./migrations")]
-async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::PgPool) {
+async fn search_never_finds_a_deleted_part(pool: sqlx::PgPool) {
     let part = seed_named(&pool, 0xdc, "vee-block-lp-3072-02", None).await;
     let parts = PgParts(pool.clone());
-    parts.soft_delete(part).await.expect("removes it");
+    assert!(parts.delete(part).await.expect("deletes it"));
 
     assert!(
         parts
@@ -2289,78 +2265,6 @@ async fn search_respects_which_side_of_deleted_at_it_was_asked_for(pool: sqlx::P
             .expect("searches")
             .is_empty(),
         "gone from the library"
-    );
-    assert_eq!(
-        parts
-            .search(
-                &GridQuery {
-                    shows: Shows::Removed,
-                    ..GridQuery::new(library(), 50)
-                },
-                "vee-block"
-            )
-            .await
-            .expect("searches")
-            .len(),
-        1,
-        "and present on the list that exists to get it back"
-    );
-}
-
-/// The removed list says when each part was removed, and only a removed part says it at all.
-///
-/// `removed_at` is `part.deleted_at`, not `updated_at`: the part is renamed after it is removed
-/// here, which moves `updated_at` and must leave the removal time where it was. Restoring clears
-/// it, so a part brought back does not carry the date of a removal that no longer applies.
-#[sqlx::test(migrations = "./migrations")]
-async fn a_removed_part_says_when_it_was_removed_and_a_live_one_says_nothing(pool: sqlx::PgPool) {
-    let removed = seed_named(&pool, 0xe1, "flange-dn40-lp-3310-02", None).await;
-    let live = seed_named(&pool, 0xe2, "spur-gear-m2-20t-lp-5140-00", None).await;
-    let parts = PgParts(pool.clone());
-    parts.soft_delete(removed).await.expect("removes it");
-    sqlx::query("UPDATE part SET deleted_at = '2026-09-10T08:30:00Z', updated_at = '2026-09-12T16:00:00Z' WHERE id = $1")
-        .bind(removed.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("pins both times, a rename after the removal moving updated_at");
-
-    let on_removed = parts
-        .page(
-            &GridQuery {
-                shows: Shows::Removed,
-                ..GridQuery::new(library(), 50)
-            },
-            Sort::Newest,
-        )
-        .await
-        .expect("reads the removed list");
-    assert_eq!(on_removed.len(), 1);
-    assert_eq!(
-        on_removed[0].summary.removed_at,
-        Some("2026-09-10T08:30:00Z".parse().expect("a timestamp")),
-        "the removal time, not the later update"
-    );
-
-    let in_library = parts
-        .page(&GridQuery::new(library(), 50), Sort::Newest)
-        .await
-        .expect("reads the grid");
-    assert_eq!(
-        in_library
-            .iter()
-            .map(|row| (row.summary.id, row.summary.removed_at))
-            .collect::<Vec<_>>(),
-        vec![(live, None)]
-    );
-
-    parts.restore(removed).await.expect("restores it");
-    let restored = parts
-        .page(&GridQuery::new(library(), 50), Sort::Newest)
-        .await
-        .expect("reads the grid");
-    assert!(
-        restored.iter().all(|row| row.summary.removed_at.is_none()),
-        "a restored part carries no removal date"
     );
 }
 
@@ -2518,21 +2422,12 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
     let parts = PgParts(pool.clone());
 
     let facet = parts
-        .format_facet(library(), None, None, Shows::Live, None, None, None, None)
+        .format_facet(library(), None, None, None, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [("step", Some(1)), ("stl", Some(2))]);
     let searched = parts
-        .format_facet(
-            library(),
-            None,
-            Some("bracket"),
-            Shows::Live,
-            None,
-            None,
-            None,
-            None,
-        )
+        .format_facet(library(), None, Some("bracket"), None, None, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -2567,30 +2462,16 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
         .expect("search");
     assert_eq!(found.len(), 2, "a search narrows the same way");
 
-    parts.soft_delete(plate).await.expect("removes");
+    assert!(parts.delete(plate).await.expect("deletes"));
     let live = parts
-        .format_facet(library(), None, None, Shows::Live, None, None, None, None)
+        .format_facet(library(), None, None, None, None, None, None)
         .await
         .expect("facet");
     assert_eq!(
         pairs(&live),
         [("stl", Some(2))],
-        "a removed part leaves the count"
+        "a deleted part leaves the count"
     );
-    let removed = parts
-        .format_facet(
-            library(),
-            None,
-            None,
-            Shows::Removed,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("facet");
-    assert_eq!(pairs(&removed), [("step", Some(1))]);
 }
 
 async fn seed_measured(
@@ -2795,21 +2676,12 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
     }
 
     let facet = parts
-        .material_facet(library(), None, None, Shows::Live, None, None, None, None)
+        .material_facet(library(), None, None, None, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [(aluminium, Some(1)), (steel, Some(2))]);
     let chosen_stl = parts
-        .material_facet(
-            library(),
-            None,
-            None,
-            Shows::Live,
-            Some("stl"),
-            None,
-            None,
-            None,
-        )
+        .material_facet(library(), None, None, Some("stl"), None, None, None)
         .await
         .expect("facet");
     assert!(
@@ -2817,16 +2689,7 @@ async fn the_material_facet_counts_what_the_grid_shows_and_the_filter_narrows_it
         "narrowed by the chosen format: an STL declares no material"
     );
     let formats = parts
-        .format_facet(
-            library(),
-            None,
-            None,
-            Shows::Live,
-            Some(steel),
-            None,
-            None,
-            None,
-        )
+        .format_facet(library(), None, None, Some(steel), None, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -2903,21 +2766,12 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         .expect("records the material");
 
     let facet = parts
-        .tag_facet(library(), None, None, Shows::Live, None, None, None, None)
+        .tag_facet(library(), None, None, None, None, None, None)
         .await
         .expect("facet");
     assert_eq!(pairs(&facet), [(spare, Some(2)), (jig, Some(2))]);
     let chosen_stl = parts
-        .tag_facet(
-            library(),
-            None,
-            None,
-            Shows::Live,
-            Some("stl"),
-            None,
-            None,
-            None,
-        )
+        .tag_facet(library(), None, None, Some("stl"), None, None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -2926,16 +2780,7 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "narrowed by the chosen format"
     );
     let chosen_steel = parts
-        .tag_facet(
-            library(),
-            None,
-            None,
-            Shows::Live,
-            None,
-            Some(steel),
-            None,
-            None,
-        )
+        .tag_facet(library(), None, None, None, Some(steel), None, None)
         .await
         .expect("facet");
     assert_eq!(
@@ -2944,16 +2789,7 @@ async fn tags_are_a_facet_a_filter_and_words_search_finds(pool: sqlx::PgPool) {
         "and by the chosen material"
     );
     let formats = parts
-        .format_facet(
-            library(),
-            None,
-            None,
-            Shows::Live,
-            None,
-            Some(spare),
-            None,
-            None,
-        )
+        .format_facet(library(), None, None, None, Some(spare), None, None)
         .await
         .expect("facet");
     assert_eq!(

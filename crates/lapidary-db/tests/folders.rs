@@ -100,11 +100,21 @@ async fn deleting_a_folder_cascades_through_subfolders(pool: sqlx::PgPool) {
         .await
         .expect("Cliffs");
 
-    let (folders, _parts) = f.soft_delete_subtree(terrain).await.expect("deletes");
+    let (folders, _parts) = f.delete_subtree(terrain).await.expect("deletes");
     assert_eq!(folders, 3, "Terrain, Rocks and Cliffs — not just Terrain");
     assert!(
         f.tree(library()).await.expect("tree").is_empty(),
-        "all hidden"
+        "all deleted"
+    );
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM folder")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(left, 0, "the rows are gone, not hidden");
+    assert_eq!(
+        f.delete_subtree(terrain).await.expect("asks again"),
+        (0, 0),
+        "a second delete finds nothing, so the route answers 404"
     );
 }
 
@@ -406,7 +416,7 @@ async fn deleting_a_deep_category_hides_the_models_below_the_old_walk_cap(pool: 
     .expect("a model filed under the deepest category");
 
     let (folders, parts) = PgFolders(pool)
-        .soft_delete_subtree(chain[0])
+        .delete_subtree(chain[0])
         .await
         .expect("deletes");
     assert_eq!(folders, 17, "every category under the one deleted");
@@ -453,5 +463,47 @@ async fn a_part_in_another_library_is_not_counted_under_this_librarys_category(p
         terrain_row.part_count, 0,
         "the count beside a category is the number of cards this library's grid shows \
          for it, and the grid filters on library"
+    );
+}
+
+/// A part moved *out of* a category outlives that category's delete; the trail entry naming the
+/// deleted category goes with it, since `part_move` references `folder`.
+#[sqlx::test(migrations = "./migrations")]
+async fn deleting_a_folder_keeps_a_part_moved_out_of_it(pool: sqlx::PgPool) {
+    let f = PgFolders(pool.clone());
+    let terrain = f
+        .get_or_create(library(), None, "Terrain", "Terrain")
+        .await
+        .expect("Terrain");
+    let part = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO part (id, library_id, name, source_path) \
+         VALUES ($1, $2, 'Cliff face, LP-7712-04', 'cliff-face-lp-7712-04.stl')",
+    )
+    .bind(part)
+    .bind(library().as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a part at the library root");
+    sqlx::query(
+        "INSERT INTO part_move (id, part_id, from_folder, to_folder) VALUES ($1, $2, $3, NULL)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(part)
+    .bind(terrain.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("it was moved out of Terrain");
+
+    assert_eq!(f.delete_subtree(terrain).await.expect("deletes"), (1, 0));
+    let (parts, moves): (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM part_move)")
+            .fetch_one(&pool)
+            .await
+            .expect("counts");
+    assert_eq!(
+        (parts, moves),
+        (1, 0),
+        "the part stays; the trail naming Terrain goes"
     );
 }

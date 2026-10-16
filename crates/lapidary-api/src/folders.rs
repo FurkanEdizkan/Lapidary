@@ -15,9 +15,9 @@
 //! `RELOCATE_MODULE` exists to refuse. Re-pathing a subtree belongs to a job that walks it
 //! the way `migrate_storage` does, not to an HTTP handler holding a rename open.
 //!
-//! Delete is soft and cascading, and says so in its own body: the folder, its
-//! subcategories and every model in any of them are marked deleted. Nothing leaves the
-//! disk — `DATA.md` §1.6's purge is a separate, explicit action.
+//! Delete is final and cascading, and says so in its own body: the folder, its
+//! subcategories and every model in any of them are deleted from the library. No model
+//! file leaves the disk — delete takes rows, never files (owner, 2026-10-17).
 
 use crate::AppState;
 use axum::Json;
@@ -245,19 +245,19 @@ pub async fn patch(
     StatusCode::OK.into_response()
 }
 
-/// `DELETE /api/folders/{id}` — soft-delete the category and everything under it.
+/// `DELETE /api/folders/{id}` — delete the category and everything under it, for good.
 ///
 /// The counts come back so the caller can check what it warned about against what
 /// happened. Nothing here removes a file, and the wording says so in the one place a user
 /// might reasonably fear otherwise.
 pub async fn delete(State(state): State<AppState>, Path(folder): Path<FolderId>) -> Response {
-    match PgFolders(state.db).soft_delete_subtree(folder).await {
-        // Nothing hidden at all means there was nothing there to hide: an unknown id, or a
-        // folder somebody else already deleted.
+    match PgFolders(state.db).delete_subtree(folder).await {
+        // Nothing deleted at all means there was nothing there: an unknown id, or a folder
+        // somebody else already deleted.
         Ok((0, 0)) => no_such_folder(),
         Ok((folders, parts)) => Json(serde_json::json!({
-            "foldersHidden": folders,
-            "partsHidden": parts,
+            "foldersDeleted": folders,
+            "partsDeleted": parts,
         }))
         .into_response(),
         Err(err) => internal_error(&err, "folder delete failed"),

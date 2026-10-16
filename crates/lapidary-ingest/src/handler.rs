@@ -16,7 +16,8 @@
 //!    hold these bytes? yes -> `Skipped`, no further work at all: not a parse, not a raster,
 //!    not a query beyond this one
 //!    3b. `revisions.current(library, source_path)` — a part already here, with other bytes:
-//!    deleted -> `Skipped`, live -> on to 5a. Nothing is written before that refusal
+//!    on to 5a. A deleted part has no rows left, so a file whose part was deleted is not
+//!    "already here" and is ingested again as a new part
 //!    3a. `parts.library_exists(library)` — the library is still there;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
 //! 4. `lapidary_cad::parse(bytes, format)` then `measure(&mesh)` — and nothing else
@@ -243,7 +244,7 @@ impl WorkerHandler {
                 else {
                     return Err(HandlerError::Permanent {
                         message: format!(
-                            "There is no part {part} in this library to describe. It may have been purged; nothing needs doing."
+                            "There is no part {part} in this library to describe. It may have been deleted; nothing needs doing."
                         ),
                     });
                 };
@@ -514,18 +515,14 @@ impl WorkerHandler {
             return Ok(Outcome::Skipped);
         }
 
-        // 3b. A part already at this path, with other bytes (Phase 4 slice 1 spec §1). Only a
-        // live part goes on, to become its next revision at step 5a;
-        // everything this decides against, it decides before the kernel, so it writes nothing.
+        // 3b. A part already at this path, with other bytes (Phase 4 slice 1 spec §1), goes on to
+        // become its next revision at step 5a; everything this decides against, it decides
+        // before the kernel, so it writes nothing.
         let existing = PgRevisions(self.db.clone())
             .current(library, source_path)
             .await
             .map_err(classify_db)?;
         if let Some(existing) = &existing {
-            // A deleted part stays deleted: restore is a button, not a side effect of a scan.
-            if existing.deleted {
-                return Ok(Outcome::Skipped);
-            }
             // The same bytes, committed by another job between step 3's question and this one. Two
             // queries leave that window open, and without this a lease-expiry duplicate of one file
             // was told it was a change nobody keeps.

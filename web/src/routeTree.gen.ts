@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as ProfileRouteImport } from './routes/profile'
-import { Route as RemovedRouteImport } from './routes/removed'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
@@ -31,11 +30,6 @@ const DashboardRoute = DashboardRouteImport.update({
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RemovedRoute = RemovedRouteImport.update({
-  id: '/removed',
-  path: '/removed',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -63,7 +57,6 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/profile': typeof ProfileRoute
-  '/removed': typeof RemovedRoute
   '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -73,7 +66,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/profile': typeof ProfileRoute
-  '/removed': typeof RemovedRoute
   '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -84,7 +76,6 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/profile': typeof ProfileRoute
-  '/removed': typeof RemovedRoute
   '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
@@ -96,7 +87,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/profile'
-    | '/removed'
     | '/settings'
     | '/tags'
     | '/parts/$partId'
@@ -106,7 +96,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/profile'
-    | '/removed'
     | '/settings'
     | '/tags'
     | '/parts/$partId'
@@ -116,7 +105,6 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/profile'
-    | '/removed'
     | '/settings'
     | '/tags'
     | '/parts/$partId'
@@ -127,7 +115,6 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
   ProfileRoute: typeof ProfileRoute
-  RemovedRoute: typeof RemovedRoute
   SettingsRoute: typeof SettingsRoute
   TagsRoute: typeof TagsRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
@@ -155,13 +142,6 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/removed': {
-      id: '/removed'
-      path: '/removed'
-      fullPath: '/removed'
-      preLoaderRoute: typeof RemovedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -199,7 +179,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
   ProfileRoute: ProfileRoute,
-  RemovedRoute: RemovedRoute,
   SettingsRoute: SettingsRoute,
   TagsRoute: TagsRoute,
   PartsPartIdRoute: PartsPartIdRoute,

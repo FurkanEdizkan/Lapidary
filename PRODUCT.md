@@ -86,9 +86,10 @@ Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
   is approximate and **labelled so in the UI, always**, wherever it appears. There is no
   analytic half any more, which makes the rule simpler rather than weaker: if a number
   reaches a person without its `≈`, that is a bug.
-- **Deletion is three steps.** Delete is soft, purge is separate and explicit, blobs
-  quarantine 30 days before removal. Derivative cache eviction is a different action with
-  different wording and must never read as data loss.
+- **Delete is delete.** Deleting removes a part from the library at once — its rows, pictures and
+  tags — and never touches the model file on disk. No restore, no purge (owner, 2026-10-17).
+  Derivative cache eviction is a different action with different wording and must never read as
+  data loss.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
   ingested bytes; anything produced is named `*.lapidary.*`.
 - **A part keeps its file history; no locks, states or approvals.** A changed file becomes the

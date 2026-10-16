@@ -1,12 +1,15 @@
 //! The thirty-day sweep.
 //!
-//! This is the only code in Lapidary that destroys user data, so the tests here are mostly
-//! about what it declines to do. The retention is injected — a test that waited thirty days
-//! is a test that never runs — and the interesting cases are the ones where the database
+//! This is the only code in Lapidary that removes stored bytes, so the tests here are mostly
+//! about what it declines to do. Since delete became final (2026-10-17) nothing queues a model
+//! file any more — delete takes rows, never files — so what the sweep collects is evicted cache
+//! and whatever a purge queued before then. `retire` writes that legacy queue by hand.
+//!
+//! The retention is injected — a test that waited thirty days is a test that never runs — and the interesting cases are the ones where the database
 //! and the disk disagree about what is safe to remove.
 
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId};
-use lapidary_db::{IngestRequest, PgIngest, PgParts, PgPool, Purged, StoredBlobRow};
+use lapidary_db::{IngestRequest, PgIngest, PgParts, PgPool, StoredBlobRow};
 use lapidary_storage::{SourceStore, WorkerRole};
 use std::path::Path;
 use std::time::Duration;
@@ -73,14 +76,45 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
         .expect("seed part")
 }
 
-/// Delete then purge, which is the only way a blob reaches quarantine.
+/// What a purge left behind before delete became final: the part's rows gone, its bytes
+/// queued for the sweep. Delete itself never queues a source file, so the queue is written here
+/// by hand, exactly as the old purge wrote it — the sweep still drains such rows, and its blob
+/// half is the same one cache eviction uses.
 async fn retire(pool: &PgPool, part: PartId) {
-    let parts = PgParts(pool.clone());
-    assert!(parts.soft_delete(part).await.expect("soft delete"));
-    assert!(matches!(
-        parts.purge(part).await.expect("purge"),
-        Purged::Done(_)
-    ));
+    #[allow(clippy::type_complexity)]
+    let files: Vec<(String, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT f.blake3, f.storage_path, f.stored_bytes FROM file f \
+         JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1",
+    )
+    .bind(part.as_uuid())
+    .fetch_all(pool)
+    .await
+    .expect("the part's files");
+    assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
+    for (hash, path, stored) in files {
+        sqlx::query(
+            "UPDATE blob SET ref_count = (SELECT count(*) FROM file WHERE blake3 = $1), \
+                 quarantined_at = CASE WHEN EXISTS (SELECT 1 FROM file WHERE blake3 = $1) \
+                                       THEN NULL ELSE coalesce(quarantined_at, now()) END \
+             WHERE blake3 = $1",
+        )
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("the old purge's recount");
+        if let Some(path) = path {
+            sqlx::query(
+                "INSERT INTO quarantined_file (storage_path, blake3, stored_bytes) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(path)
+            .bind(&hash)
+            .bind(stored)
+            .execute(pool)
+            .await
+            .expect("the old purge's path queue");
+        }
+    }
 }
 
 fn bytes_exist(blob_root: &Path, seed: u8) -> bool {
@@ -313,7 +347,7 @@ async fn re_ingesting_quarantined_bytes_clears_the_flag_without_waiting_for_a_sw
 }
 
 // ---------------------------------------------------------------------------------------
-// A purged model directory, which the sweep does not reach.
+// A model directory a purge queued before delete became final.
 // ---------------------------------------------------------------------------------------
 
 /// The same bytes, written where a real ingest writes them since the folder tree: inside
@@ -592,14 +626,12 @@ async fn quarantined_paths(pool: &PgPool) -> Vec<String> {
         .expect("quarantined paths read")
 }
 
-/// The double count the purge-removes-the-model-directory design recorded and left open (its §6):
-/// a filed source was counted once as the model file and again as a content-addressed copy that no
-/// longer exists. One filed source and one derivative: purge, the instance figure and the sweep
-/// must all say the same number, and it must be the number that actually leaves the disk.
+/// **Delete is delete, and the file stays** (owner, 2026-10-17). A filed part with a cached export
+/// is deleted and the sweep then runs with no retention at all: the export, which Lapidary wrote
+/// and can write again, enters quarantine and leaves the disk; the model file is never queued and
+/// is still there, byte for byte.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_filed_source_and_its_rung_are_counted_once_by_purge_the_instance_figure_and_the_sweep(
-    pool: PgPool,
-) {
+async fn a_deleted_parts_model_file_survives_every_sweep_and_only_its_export_leaves(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
     let rel = "libraries/default/spacers/lp-2145-01/lp-2145-01.stl";
     let source = stage_bytes_at(blob_root.path(), 0xd1, rel);
@@ -651,33 +683,27 @@ async fn a_filed_source_and_its_rung_are_counted_once_by_purge_the_instance_figu
         )
         .await
         .expect("the export lands");
-    let on_disk = 4_096 + rung.stored_bytes;
 
     let parts = PgParts(pool.clone());
-    assert!(parts.soft_delete(part).await.expect("soft delete"));
-    let Purged::Done(purged) = parts.purge(part).await.expect("purge") else {
-        panic!("the part was deleted, so it purges");
-    };
-    assert_eq!(
-        purged.quarantined_bytes, on_disk,
-        "purge counts each file once"
-    );
+    assert!(parts.delete(part).await.expect("delete"));
     assert_eq!(
         parts
             .instance_storage()
             .await
             .expect("totals")
             .quarantined_bytes,
-        on_disk,
-        "so does the instance figure"
+        rung.stored_bytes,
+        "only the export is queued, never the model file"
     );
 
     let report = lapidary_ingest::reap::sweep(&pool, blob_root.path(), Duration::ZERO)
         .await
         .expect("sweep");
+    assert_eq!(report.bytes, rung.stored_bytes, "the export left");
+    assert!(report.removed_files.is_empty(), "{report:?}");
     assert_eq!(
-        report.bytes, on_disk,
-        "and the sweep reports what actually left"
+        std::fs::read(blob_root.path().join(rel)).expect("the model file is still there"),
+        vec![0xd1u8; 4096],
+        "and it is byte for byte what it was"
     );
-    assert!(!blob_root.path().join(rel).exists());
 }

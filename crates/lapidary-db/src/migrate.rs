@@ -42,11 +42,6 @@
 //!
 //! # What is deliberately not filtered
 //!
-//! **Not `deleted_at`.** A soft-deleted part's bytes are still on the volume and must stay
-//! readable — delete is soft and purge is separate (CLAUDE.md). Skipping its row would also
-//! leave a hash whose group can never complete, so the level could never go to 0 and a
-//! migrated sibling would stay broken forever.
-//!
 //! **Not `role`.** Only `'source'` rows exist today, but a row of any role with a null
 //! `storage_path` reads through the same blob row and would be broken by the same level
 //! change.

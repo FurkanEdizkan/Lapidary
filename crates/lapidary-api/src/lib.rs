@@ -225,16 +225,13 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{id}/uploads/{blake3}",
                     put(upload::chunk).layer(DefaultBodyLimit::max(upload::MAX_CHUNK_BYTES)),
                 )
-                // The page a card links to, and the two steps that take the card away and
-                // bring it back. One route entry rather than two: `DELETE` on the thing
-                // `GET` returns is the same resource, and giving the removal a verb of its
-                // own in the path would invite a second one that forgets to be soft.
+                // The page a card links to, and the delete that takes the part out of the
+                // library for good (its model file stays on disk). One route entry: `DELETE`
+                // on the thing `GET` returns is the same resource.
                 .route(
                     "/api/parts/{id}",
                     get(detail::detail).delete(lifecycle::remove),
                 )
-                .route("/api/parts/{id}/restore", post(lifecycle::restore))
-                .route("/api/parts/{id}/purge", post(lifecycle::purge))
                 // A part's mesh as a 3MF or an STL, for a slicer, built when first asked for.
                 // The only thing a worker still builds on demand. `Role::Api` out of necessity
                 // rather than preference: nothing proxies a browser to the worker, so a route

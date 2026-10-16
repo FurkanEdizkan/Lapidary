@@ -1259,3 +1259,126 @@ async fn the_renders_leave_the_table_and_only_their_own_blobs_are_quarantined(po
             .expect("counts");
     assert_eq!((parts, files), (2, 1), "both parts and the model file stay");
 }
+
+/// `0061`: every removed part and folder is deleted for good, rows only, and `deleted_at` goes.
+///
+/// A removed bracket with an export, a live spacer filed in a removed category, and a live
+/// washer that must come through untouched. The bracket's model file row goes and its source
+/// blob is **not** recounted (that is what used to hand the file to the reaper); its export's
+/// blob is, and enters quarantine.
+#[sqlx::test(migrations = false)]
+async fn removed_parts_and_folders_are_deleted_and_the_column_goes(pool: PgPool) {
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run_to(60, &pool)
+        .await
+        .expect("migrations up to 0060 apply");
+    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
+
+    let fixtures = Uuid::now_v7();
+    let jigs = Uuid::now_v7();
+    for (id, parent, name) in [(fixtures, None, "Fixtures"), (jigs, Some(fixtures), "Jigs")] {
+        sqlx::query(
+            "INSERT INTO folder (id, library_id, parent_id, name, slug, deleted_at) \
+             VALUES ($1, $2, $3, $4, lower($4), CASE WHEN $3::uuid IS NULL THEN now() END)",
+        )
+        .bind(id)
+        .bind(library)
+        .bind(parent)
+        .bind(name)
+        .execute(&pool)
+        .await
+        .expect("a folder");
+    }
+
+    let bracket = seeded_revision(&pool, "Bracket, LP-1042-03", "bracket-lp-1042-03.stl").await;
+    let spacer = seeded_revision(&pool, "Hex spacer, LP-2145-01", "jigs/hex-spacer.stl").await;
+    seeded_revision(&pool, "Washer, M8, LP-3001-02", "washer-m8.stl").await;
+    sqlx::query(
+        "UPDATE part SET deleted_at = now() \
+         WHERE id = (SELECT part_id FROM revision WHERE id = $1)",
+    )
+    .bind(bracket)
+    .execute(&pool)
+    .await
+    .expect("the bracket was removed");
+    sqlx::query(
+        "UPDATE part SET folder_id = $2 WHERE id = (SELECT part_id FROM revision WHERE id = $1)",
+    )
+    .bind(spacer)
+    .bind(jigs)
+    .execute(&pool)
+    .await
+    .expect("the spacer is filed under Jigs");
+
+    let source = "e0".repeat(32);
+    let export = "f0".repeat(32);
+    for hash in [&source, &export] {
+        sqlx::query(
+            "INSERT INTO blob (blake3, size_bytes, stored_bytes, zstd_level, ref_count) \
+             VALUES ($1, 4096, 4096, 0, 1)",
+        )
+        .bind(hash)
+        .execute(&pool)
+        .await
+        .expect("a blob row");
+    }
+    sqlx::query(
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, stored_bytes, \
+                           storage_path) \
+         VALUES ($1, $2, 'source', 'stl', $3, 4096, 4096, \
+                 'libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(bracket)
+    .bind(&source)
+    .execute(&pool)
+    .await
+    .expect("the bracket's model file");
+    seeded_derivative(&pool, bracket, "export_3mf", Some(&export)).await;
+
+    migrator.run(&pool).await.expect("0061 applies");
+
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM part ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .expect("reads parts");
+    assert_eq!(
+        names,
+        ["Washer, M8, LP-3001-02"],
+        "only the live part outside the removed tree stays"
+    );
+    let left: (i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM folder), (SELECT count(*) FROM revision), \
+                (SELECT count(*) FROM file), (SELECT count(*) FROM derivative), \
+                (SELECT count(*) FROM quarantined_file)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert_eq!(
+        left,
+        (0, 1, 0, 0, 0),
+        "rows only, and no model file is queued for removal"
+    );
+
+    assert_eq!(
+        blob_state(&pool, &source).await,
+        (1, false),
+        "the model file's blob is not recounted, so nothing ever schedules it for removal"
+    );
+    assert_eq!(
+        blob_state(&pool, &export).await,
+        (0, true),
+        "the export nothing points at any more enters the cache quarantine"
+    );
+
+    let columns: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns \
+         WHERE table_name IN ('part', 'folder') AND column_name = 'deleted_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("reads the catalogue");
+    assert_eq!(columns, 0, "nothing can read `deleted_at` any more");
+}

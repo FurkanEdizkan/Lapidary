@@ -30,7 +30,6 @@ import type {
   PartImageId,
   PartSource,
   PartsPage,
-  PurgeResult,
   RetryAccepted,
   RevisionId,
   ExportReady,
@@ -97,7 +96,6 @@ export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-0000000000
 export async function fetchParts(
   library: LibraryId,
   after?: PartId,
-  state?: 'removed',
   folderId?: FolderId | null,
   q?: string,
   limit?: number,
@@ -117,7 +115,6 @@ export async function fetchParts(
   // whole library".
   const query = new URLSearchParams()
   if (after !== undefined) query.set('after', after)
-  if (state !== undefined) query.set('state', state)
   if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
   // Same rule again: omitted rather than sent empty. The route reads `q=` as no filter, so
   // an empty one would work — but a URL carrying a parameter that means nothing is a URL
@@ -312,45 +309,17 @@ export async function setFieldValue(
 }
 
 /**
- * `DELETE /api/parts/{id}` — remove a part from the library.
+ * `DELETE /api/parts/{id}` — delete a part from the library, for good.
  *
- * Not a deletion, and the whole client is built so nobody has to take that on trust: the
- * part reappears intact from {@link restorePart}, its bytes never moved, and the only
- * thing that changed is a column. See `strings.removal` for the wording rules this pairs
- * with.
+ * Its rows, pictures and tags go; the model file on disk is never touched. There is no
+ * restore (owner, 2026-10-17), so every caller puts a confirmation in front of this that
+ * says both halves — see `strings.removal`.
  */
 export async function removePart(part: PartId): Promise<void> {
   const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, { method: 'DELETE' })
   if (!response.ok) {
-    throw new Error(`remove returned ${response.status}`)
+    throw new Error(`delete returned ${response.status}`)
   }
-}
-
-/** `POST /api/parts/{id}/restore` — undo of {@link removePart}, indefinitely available. */
-export async function restorePart(part: PartId): Promise<void> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/restore`, {
-    method: 'POST',
-  })
-  if (!response.ok) {
-    throw new Error(`restore returned ${response.status}`)
-  }
-}
-
-/**
- * `POST /api/parts/{id}/purge` — the permanent one, and only for a part already removed.
- *
- * The route answers 409 for a live part rather than purging it, so a client cannot make
- * this the first click even by accident. The returned counts are of blobs entering
- * quarantine, never of bytes freed: nothing is freed today.
- */
-export async function purgePart(part: PartId): Promise<PurgeResult> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/purge`, {
-    method: 'POST',
-  })
-  if (!response.ok) {
-    throw new Error(`purge returned ${response.status}`)
-  }
-  return (await response.json()) as PurgeResult
 }
 
 /**
@@ -779,30 +748,29 @@ export async function movePart(
 }
 
 /**
- * What a delete actually did, as the route counts it. `foldersHidden` counts the category
- * itself along with its descendants — `soft_delete_subtree` reports `rows_affected` over
- * the whole subtree — so a leaf category with no models answers `{ foldersHidden: 1,
- * partsHidden: 0 }`. Subtracting the one is the caller's job, and the one place that
- * compares these against what the confirmation warned about says so where it does it.
+ * What a delete actually did, as the route counts it. `foldersDeleted` counts the category
+ * itself along with its descendants, so a leaf category with no models answers
+ * `{ foldersDeleted: 1, partsDeleted: 0 }`. Subtracting the one is the caller's job, and the
+ * one place that compares these against what the confirmation warned about says so where it
+ * does it.
  *
  * `null` where a figure did not arrive, never 0. A body this client could not read is not
- * evidence that nothing was hidden, and the caller compares these against the counts its
+ * evidence that nothing was deleted, and the caller compares these against the counts its
  * confirmation showed — a missing figure read as 0 would report every successful delete as
  * having done something other than what it warned about.
  */
 export type FolderDeleted = {
   kind: 'deleted'
-  foldersHidden: number | null
-  partsHidden: number | null
+  foldersDeleted: number | null
+  partsDeleted: number | null
 }
 
 /**
- * `DELETE /api/folders/{id}` — soft-delete a category and everything under it.
+ * `DELETE /api/folders/{id}` — delete a category and everything under it, for good.
  *
- * Soft, and cascading: the category, its subcategories and the models in any of them are
- * marked deleted. Nothing leaves the disk — `DATA.md` §1.6's purge is a separate,
- * explicit action, and evicting the derivative cache is a third thing again. The
- * confirmation this route sits behind is where that distinction is spelled out for a user.
+ * Cascading: the category, its subcategories and the models in any of them leave the
+ * library. No model file leaves the disk, and evicting the derivative cache is a different
+ * thing again. The confirmation this route sits behind is where that is spelled out.
  *
  * `404 noSuchFolder` is an answer and not a failure, the same way the move's `409` is: the
  * category was already deleted somewhere else, nothing here is broken, and retrying can
@@ -826,15 +794,15 @@ export async function deleteFolder(
   // Read defensively rather than cast: a `200` whose body is empty, null or not JSON is
   // still a delete that happened, and the counts are a bonus the caller can do without.
   const body: unknown = await response.json().catch(() => null)
-  const counted = (field: 'foldersHidden' | 'partsHidden'): number | null => {
+  const counted = (field: 'foldersDeleted' | 'partsDeleted'): number | null => {
     if (body === null || typeof body !== 'object') return null
     const value = (body as Record<string, unknown>)[field]
     return typeof value === 'number' ? value : null
   }
   return {
     kind: 'deleted',
-    foldersHidden: counted('foldersHidden'),
-    partsHidden: counted('partsHidden'),
+    foldersDeleted: counted('foldersDeleted'),
+    partsDeleted: counted('partsDeleted'),
   }
 }
 

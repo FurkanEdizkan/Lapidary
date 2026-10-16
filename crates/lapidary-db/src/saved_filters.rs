@@ -33,11 +33,11 @@ pub struct PgSavedFilters(pub PgPool);
 impl PgSavedFilters {
     /// A library's saved filters, in their order. An id naming no library has none.
     ///
-    /// Read on every list, so a category that is restored clears its filters' mark again.
+    /// A filter whose category was deleted is marked, read on every list.
     pub async fn list(&self, library: LibraryId) -> Result<Vec<SavedFilterRow>, DbError> {
         let rows: Vec<(Uuid, String, String, bool)> = sqlx::query_as(
             "SELECT s.id, s.name, s.search::text, \
-                    (s.search ? 'folderId') AND (f.id IS NULL OR f.deleted_at IS NOT NULL) \
+                    (s.search ? 'folderId') AND f.id IS NULL \
              FROM saved_filter s \
              LEFT JOIN folder f ON f.id = (s.search->>'folderId')::uuid \
              WHERE s.library_id = $1 \

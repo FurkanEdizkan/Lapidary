@@ -70,10 +70,9 @@ async fn a_library_with_history_but_no_parts_is_not_seeded(pool: PgPool) {
     // it is isolated deliberately: a library that has been scanned and holds no parts.
     //
     // An earlier version of this test seeded, soft-deleted every part, and asserted no
-    // re-seed — and it passed with the guard replaced by an is-it-empty check, because
-    // `library_holds` does not filter `deleted_at`, so the hash short-circuit settled
-    // every file as `Skipped` and the count was zero either way. It was testing the
-    // short-circuit while claiming to test the guard.
+    // re-seed — and it passed with the guard replaced by an is-it-empty check, because the
+    // hash short-circuit of the day settled every file as `Skipped` and the count was zero
+    // either way. It was testing the short-circuit while claiming to test the guard.
     //
     // A job row with no parts behind it cannot be answered by the short-circuit at all,
     // so this can only pass if the guard is the thing reading it.
@@ -107,15 +106,23 @@ async fn a_library_with_history_but_no_parts_is_not_seeded(pool: PgPool) {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn deleting_every_seeded_part_does_not_bring_them_back(pool: PgPool) {
-    // The user-facing half of the rule above. Two things stop this independently — the
-    // history guard, and `library_holds` not filtering `deleted_at` — and both are
-    // deliberate, so this asserts the outcome rather than which one did it.
+    // The user-facing half of the rule above. Delete leaves no row for a short-circuit to
+    // find, so the history guard is the only thing that stops this.
     let blobs = tempfile::tempdir().expect("temp dir");
     seed_examples(pool.clone(), blobs.path(), &examples()).await;
-    sqlx::query("UPDATE part SET deleted_at = now()")
-        .execute(&pool)
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM part")
+        .fetch_all(&pool)
         .await
-        .expect("soft delete every part");
+        .expect("the seeded parts");
+    assert!(!ids.is_empty());
+    for id in ids {
+        assert!(
+            lapidary_db::PgParts(pool.clone())
+                .delete(lapidary_core::PartId::from_uuid(id))
+                .await
+                .expect("delete")
+        );
+    }
 
     let again = seed_examples(pool.clone(), blobs.path(), &examples()).await;
 

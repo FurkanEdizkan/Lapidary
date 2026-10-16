@@ -1251,19 +1251,6 @@ function SectionIndex({ within }: { within: RefObject<HTMLDivElement | null> }) 
 }
 
 /**
- * The first of the three steps, and the only one reachable from a part's own page.
- *
- * On success this navigates to the grid rather than staying: every read path filters
- * `deleted_at`, so this route would 404 on the next render and show "could not open this
- * part" for a part the user just successfully removed. Leaving is the honest response to a
- * page that no longer describes anything.
- *
- * No confirmation dialog. The action is reversible indefinitely, changes nothing on disk,
- * and `strings.removal.removeHint` says so next to the button before it is pressed —
- * confirming it would teach people to click through the dialog that purge actually needs.
- */
-
-/**
  * Every revision of the part, newest first (Phase 4 slice 1). Drawn once there is more than
  * one: a history of one revision is the Identity row above it, said twice.
  *

@@ -861,7 +861,7 @@ sum(1 for f in value.get("failed", [])
     "${unexplained:-?} of ${failed_total:-?} failures carry no reason"
 
   local parts folders formats
-  parts=$(sql "SELECT count(*) FROM part WHERE library_id = '$sweep' AND deleted_at IS NULL")
+  parts=$(sql "SELECT count(*) FROM part WHERE library_id = '$sweep'")
   # **The thumbnail wait loop is gone, and nothing replaces it.** It waited for a `thumbnail` derivative
   # per part, because thumbnails were their own jobs that landed after the ingest batch settled. Nothing
   # renders (R3) and `0055` deleted every such row (R4), so the loop would have waited out its full 600 s
@@ -963,7 +963,7 @@ print(count(json.load(sys.stdin)))')
   # again, which leaves the library with no derivatives at all — what a freshly seeded one has.
   plant_rev=$(sql "SELECT r.id FROM revision r JOIN part p ON p.id = r.part_id
                      JOIN file f ON f.revision_id = r.id AND f.role = 'source' AND f.format = 'stl'
-                    WHERE p.library_id = '$sweep' AND p.deleted_at IS NULL
+                    WHERE p.library_id = '$sweep'
                       AND NOT EXISTS (SELECT 1 FROM derivative d
                                        WHERE d.revision_id = r.id AND d.kind = 'export_stl')
                     LIMIT 1")
@@ -1027,7 +1027,7 @@ print(count(json.load(sys.stdin)))')
   # Measured: a stack seeded three times had three revisions on that part, and the fixture is "two".
   for name in flange-dn40-lp-3310-02 hex-spacer-m4x20-lp-2145-01 mounting-plate-lp-1180-01 vee-block-lp-3072-02; do
     local held
-    held=$(sql "SELECT count(*) FROM part WHERE library_id = '$uploaded' AND source_path = 'uploads/$name.stl' AND deleted_at IS NULL")
+    held=$(sql "SELECT count(*) FROM part WHERE library_id = '$uploaded' AND source_path = 'uploads/$name.stl'")
     if [ "${held:-0}" -gt 0 ]; then
       echo "  upload $name.stl: already a part at uploads/$name.stl; not uploading over it"
       continue

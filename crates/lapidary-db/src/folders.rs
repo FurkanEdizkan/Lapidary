@@ -19,12 +19,11 @@ pub struct FolderRow {
     pub parent_id: Option<FolderId>,
     pub name: String,
     pub slug: String,
-    /// Live parts in this folder **and every folder under it**. Subtree-inclusive because
-    /// a delete cascades through subcategories, so a count that stopped at the folder
-    /// itself would understate what the confirmation is about to hide. Counts only
-    /// `deleted_at IS NULL` rows, for the same reason: the number beside a category has to
-    /// be the number of cards the grid shows for it, or the dialog contradicts the screen
-    /// next to it.
+    /// Parts in this folder **and every folder under it**. Subtree-inclusive because a
+    /// delete cascades through subcategories, so a count that stopped at the folder itself
+    /// would understate what the confirmation is about to delete. The number beside a
+    /// category has to be the number of cards the grid shows for it, or the dialog
+    /// contradicts the screen next to it.
     pub part_count: i64,
 }
 
@@ -37,7 +36,7 @@ pub struct FolderRow {
 // being moved -- is never visited, `bool_or(id = $2)` is false, and the UPDATE closes a real
 // loop that the foreign key and `folder_library_parent` both accept. Nothing bounds depth in
 // `create`, so seventeen `POST`s and one `PATCH` is the whole exploit. The same cap made
-// `slug_path` truncate to a rootless path past sixteen, and left `soft_delete_subtree`
+// `slug_path` truncate to a rootless path past sixteen, and left the subtree delete
 // hiding a category while the models under it stayed visible -- a confirmation dialog
 // understating what it just did.
 //
@@ -167,27 +166,22 @@ impl PgFolders {
     /// from a repair script or a future writer would put a foreign model in this library's
     /// sidebar count and in the number its delete confirmation shows. The grid this count
     /// has to agree with filters on library, so this count does too.
-    ///
-    /// The descent is not filtered on `deleted_at`: a soft-deleted subfolder's parts were
-    /// soft-deleted with it by `soft_delete_subtree`, so they fall out at the part filter
-    /// anyway, and filtering the walk as well would only add a way for the two rules to
-    /// disagree. The roots are filtered, because a deleted folder is not a row this returns.
     pub async fn tree(&self, library: LibraryId) -> Result<Vec<FolderRow>, DbError> {
         let rows: Vec<(Uuid, Option<Uuid>, String, String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
              SELECT id AS root, id FROM folder \
-             WHERE library_id = $1 AND deleted_at IS NULL \
+             WHERE library_id = $1 \
              UNION ALL \
              SELECT d.root, f.id FROM folder f \
              JOIN down d ON f.parent_id = d.id) CYCLE id SET is_cycle USING seen, \
              counts AS ( \
              SELECT d.root, count(p.id) AS n FROM down d \
-             JOIN part p ON p.folder_id = d.id AND p.deleted_at IS NULL \
+             JOIN part p ON p.folder_id = d.id \
              WHERE NOT d.is_cycle AND p.library_id = $1 \
              GROUP BY d.root) \
              SELECT f.id, f.parent_id, f.name, f.slug, coalesce(c.n, 0) \
              FROM folder f LEFT JOIN counts c ON c.root = f.id \
-             WHERE f.library_id = $1 AND f.deleted_at IS NULL ORDER BY f.name",
+             WHERE f.library_id = $1 ORDER BY f.name",
         )
         .bind(library.as_uuid())
         .fetch_all(&self.0)
@@ -247,12 +241,10 @@ impl PgFolders {
     }
 
     pub async fn library_of(&self, folder: FolderId) -> Result<Option<LibraryId>, DbError> {
-        let found: Option<Uuid> = sqlx::query_scalar(
-            "SELECT library_id FROM folder WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(folder.as_uuid())
-        .fetch_optional(&self.0)
-        .await?;
+        let found: Option<Uuid> = sqlx::query_scalar("SELECT library_id FROM folder WHERE id = $1")
+            .bind(folder.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
         Ok(found.map(LibraryId::from_uuid))
     }
 
@@ -331,11 +323,6 @@ impl PgFolders {
     ) -> Result<bool, DbError> {
         let mut tx = self.0.begin().await?;
 
-        // Not `library_of`: that filters `deleted_at IS NULL`, and a soft-deleted folder
-        // must still resolve here so the UPDATE below runs exactly as it always has for
-        // one (unfiltered) — this SELECT exists only to name a lock key, not to gate
-        // the move.
-        //
         // The name and slug come along because the UPDATE at the end can violate the same
         // two sibling-uniqueness constraints a rename can — moving `Terrain` under a parent
         // that already holds a `Terrain` is a collision reached by the other route — and
@@ -389,43 +376,55 @@ impl PgFolders {
         Ok(done.rows_affected() == 1)
     }
 
-    /// Soft-delete a folder, every descendant, and every part in any of them. Returns
-    /// (folders hidden, parts hidden) so the confirmation can name the count it warned
+    /// Delete a folder, every descendant, and every part in any of them, for good. Returns
+    /// (folders deleted, parts deleted) so the confirmation can name the count it warned
     /// about and the caller can check it matched.
-    pub async fn soft_delete_subtree(&self, folder: FolderId) -> Result<(u64, u64), DbError> {
+    ///
+    /// Each part goes the way a part deleted on its own does ([`crate::repo::delete_parts`]):
+    /// rows only, and **never a model file** — the directories on disk stay exactly as they
+    /// are. Move-trail rows of other parts that passed through one of these folders are
+    /// deleted too: `part_move` references `folder`, and a trail entry naming a category that
+    /// no longer exists has nothing left to say.
+    pub async fn delete_subtree(&self, folder: FolderId) -> Result<(u64, u64), DbError> {
         let mut tx = self.0.begin().await?;
 
-        let folders = sqlx::query(
+        let folders: Vec<Uuid> = sqlx::query_scalar(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $1 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             UPDATE folder SET deleted_at = now() \
-             WHERE id IN (SELECT id FROM down WHERE NOT is_cycle) AND deleted_at IS NULL",
+             SELECT id FROM down WHERE NOT is_cycle",
         )
         .bind(folder.as_uuid())
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        .fetch_all(&mut *tx)
+        .await?;
+        if folders.is_empty() {
+            return Ok((0, 0));
+        }
 
-        let parts = sqlx::query(
-            "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $1 \
-             UNION ALL \
-             SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             UPDATE part SET deleted_at = now() \
-             WHERE folder_id IN (SELECT id FROM down WHERE NOT is_cycle) \
-             AND deleted_at IS NULL",
-        )
-        .bind(folder.as_uuid())
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        let parts: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM part WHERE folder_id = ANY($1) FOR UPDATE")
+                .bind(&folders)
+                .fetch_all(&mut *tx)
+                .await?;
+        crate::repo::delete_parts(&mut tx, &parts).await?;
+
+        sqlx::query("DELETE FROM part_move WHERE from_folder = ANY($1) OR to_folder = ANY($1)")
+            .bind(&folders)
+            .execute(&mut *tx)
+            .await?;
+        // One statement for the whole subtree: `folder.parent_id` is a plain (`NO ACTION`)
+        // foreign key, checked at the end of the statement, so parent and child can go
+        // together.
+        let deleted = sqlx::query("DELETE FROM folder WHERE id = ANY($1)")
+            .bind(&folders)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
 
         tx.commit().await?;
-        Ok((folders, parts))
+        Ok((deleted, parts.len() as u64))
     }
 }
 

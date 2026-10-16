@@ -19,7 +19,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use lapidary_core::{LibraryId, SavedFilterId};
-use lapidary_db::{DbError, PgDashboard, PgParts, PgPool, PgSavedFilters, Shows, Sort};
+use lapidary_db::{DbError, PgDashboard, PgParts, PgPool, PgSavedFilters, Sort};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -375,7 +375,6 @@ async fn recent(db: &PgPool, library: LibraryId, limit: u8) -> Result<WidgetValu
         &FilterSearch::default(),
         None,
         u16::from(capped(limit, MOST_CARDS)),
-        Shows::Live,
         Sort::Newest,
     )
     .await
@@ -431,7 +430,6 @@ async fn saved_filter(
         &search,
         None,
         u16::from(capped(limit, MOST_CARDS)),
-        Shows::Live,
         Sort::Newest,
     )
     .await
@@ -459,17 +457,17 @@ async fn one_facet(
     let read = match facet {
         FacetKind::Format => {
             parts
-                .format_facet(library, None, None, Shows::Live, None, None, None, None)
+                .format_facet(library, None, None, None, None, None, None)
                 .await
         }
         FacetKind::Material => {
             parts
-                .material_facet(library, None, None, Shows::Live, None, None, None, None)
+                .material_facet(library, None, None, None, None, None, None)
                 .await
         }
         FacetKind::Tag => {
             parts
-                .tag_facet(library, None, None, Shows::Live, None, None, None, None)
+                .tag_facet(library, None, None, None, None, None, None)
                 .await
         }
     };

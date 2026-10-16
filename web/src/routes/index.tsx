@@ -61,6 +61,7 @@ import type {
 import { DEFAULT_ORIGIN } from '../components/Card'
 import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
+import { ConfirmDelete } from '../components/ConfirmDelete'
 import { QuickLook, StageLook, useWide } from '../components/QuickLook'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
@@ -462,7 +463,7 @@ export function Index({
     // grid that says 250.
     queryKey: ['parts', library, folderId ?? null, q ?? null, pageSize, format ?? null, material ?? null, tag ?? null, field ?? null, fieldValue ?? null, fieldMin ?? null, fieldMax ?? null, order],
     queryFn: ({ pageParam }) =>
-      fetchParts(library, pageParam, undefined, folderId, q, pageSize, format, order, material, tag, field, fieldValue, fieldMin, fieldMax),
+      fetchParts(library, pageParam, folderId, q, pageSize, format, order, material, tag, field, fieldValue, fieldMin, fieldMax),
     initialPageParam: undefined as PartId | undefined,
     getNextPageParam: (last) => last.next ?? undefined,
   })
@@ -537,6 +538,7 @@ export function Index({
   const [anchor, setAnchor] = useState<PartId | null>(null)
   const [bulk, setBulk] = useState<BulkProgress | null>(null)
   const [picking, setPicking] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   // Ids picked out of one grid mean nothing in another: a category, format or search that
   // changes which parts are on screen would otherwise leave hidden parts selected, and a
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
@@ -1074,10 +1076,21 @@ export function Index({
                 count={selected.size}
                 bulk={bulk}
                 onMove={() => setPicking(true)}
-                onRemove={() => void removeSelected()}
+                onRemove={() => setConfirmingDelete(true)}
                 onExport={() => void exportSelected()}
                 note={exportNote}
                 onClear={() => setSelected(new Set())}
+              />
+            ) : null}
+            {confirmingDelete ? (
+              <ConfirmDelete
+                title={strings.removal.confirmTitleMany(selected.size)}
+                body={strings.removal.confirmBodyMany(selected.size)}
+                onConfirm={() => {
+                  setConfirmingDelete(false)
+                  void removeSelected()
+                }}
+                onCancel={() => setConfirmingDelete(false)}
               />
             ) : null}
             {picking ? (

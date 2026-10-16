@@ -560,7 +560,7 @@ async fn a_saved_filter_on_a_deleted_category_fails_its_key_rather_than_showing_
         .await
         .expect("saves the filter");
     PgFolders(pool.clone())
-        .soft_delete_subtree(folder)
+        .delete_subtree(folder)
         .await
         .expect("deletes the category");
 

@@ -390,7 +390,7 @@ impl PgJobs {
                         jsonb_build_object('revision', d.revision_id, 'produce', d.kind) AS payload \
                    FROM derivative d \
                    JOIN revision r ON r.id = d.revision_id \
-                   JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+                   JOIN part p ON p.id = r.part_id \
                    JOIN LATERAL (SELECT format FROM file \
                                   WHERE revision_id = r.id AND role = 'source' \
                                   ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
@@ -602,6 +602,20 @@ impl PgJobs {
                 .fetch_optional(&self.0)
                 .await?;
         Ok(found.is_some())
+    }
+
+    /// The seeder's record that it ran: one finished `scan_directory` row in a batch of its own,
+    /// which is what [`Self::library_has_history`] reads. Finished, so no worker claims it and no
+    /// queue count shows it; in a batch nobody was handed, so no status route reaches it.
+    pub async fn record_seeded(&self, library: LibraryId) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO job (id, batch_id, library_id, kind, payload, state, outcome) \
+             VALUES (uuidv7(), uuidv7(), $1, 'scan_directory', '{}'::jsonb, 'done', 'ingested')",
+        )
+        .bind(library.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     pub async fn batch_status(

@@ -61,12 +61,12 @@
 //!
 //! # What this job does not move
 //!
-//! **A quarantined or purged blob.** Purge removes the `file` row, so its bytes are reachable
-//! from no row this job can select, and they stay under `blobs/ab/cd/…` after everything
-//! else has moved. That is deliberate: those bytes are already scheduled for removal by the
-//! purge slice's own 30-day hold, and a job that walked orphaned blobs would be deleting
-//! user data on a path whose whole reason to exist is that deletion is explicit and
-//! separate. It is stated here so a later reader finds a decision rather than a bug.
+//! **A blob no `file` row names.** Deleting a part removes its `file` rows, so bytes only a
+//! deleted part held are reachable from no row this job can select, and they stay under
+//! `blobs/ab/cd/…` after everything else has moved. That is deliberate: delete never removes
+//! a model file (owner, 2026-10-17), and a job that walked orphaned blobs would be removing
+//! user data nobody asked it to. It is stated here so a later reader finds a decision rather
+//! than a bug.
 //!
 //! **Derivatives.** They stay content-addressed, freely evictable and reachable by hash.
 //! Only source files moved.

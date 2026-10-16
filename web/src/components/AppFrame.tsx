@@ -24,7 +24,7 @@ function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'removed' | 'siteSettings' | 'profile'
+export type Place = 'parts' | 'dashboard' | 'siteSettings' | 'profile'
 
 /**
  * Out of the JSX on purpose: `no-bare-strings` reads any attribute literal that contains a strings.ts
@@ -76,7 +76,7 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
       {/*
         Second, not first: `/` is the grid and the grid is what this application is for. The
         dashboard is the overview beside it, and it carries the library for the same reason
-        Parts and Removed do — leaving it and coming back keeps the library you were in, which
+        Parts does — leaving it and coming back keeps the library you were in, which
         is the library the Add form offers first.
       */}
       {inDashboard ? (

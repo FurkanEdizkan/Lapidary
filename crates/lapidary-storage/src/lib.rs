@@ -32,7 +32,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error(
-        "No blob is stored for {hash_prefix}… . It may have been evicted from the render cache, or quarantined and removed after its 30-day hold. Source blobs are never removed while any part references them, so a missing source blob means the reference itself is stale."
+        "No blob is stored for {hash_prefix}… . It may have been evicted from the render cache and removed after its 30-day hold. Source blobs are never removed while any part references them, so a missing source blob means the reference itself is stale."
     )]
     NotFound { hash_prefix: String },
 

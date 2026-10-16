@@ -257,7 +257,7 @@ async fn a_filter_whose_category_was_deleted_is_marked_and_a_restored_one_is_not
     );
 
     folders
-        .soft_delete_subtree(terrain)
+        .delete_subtree(terrain)
         .await
         .expect("deletes the category");
     assert_eq!(
@@ -267,19 +267,5 @@ async fn a_filter_whose_category_was_deleted_is_marked_and_a_restored_one_is_not
             ("Stock STL".to_owned(), false)
         ],
         "only the filter naming the deleted category is marked"
-    );
-
-    sqlx::query("UPDATE folder SET deleted_at = NULL WHERE id = $1")
-        .bind(terrain.as_uuid())
-        .execute(&pool)
-        .await
-        .expect("restores the category");
-    assert_eq!(
-        gone(filters.list(library()).await.expect("lists")),
-        [
-            ("Terrain".to_owned(), false),
-            ("Stock STL".to_owned(), false)
-        ],
-        "the mark is read on every list"
     );
 }

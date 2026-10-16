@@ -1,4 +1,4 @@
-//! The thirty-day sweep: the only place in Lapidary where user data actually leaves.
+//! The thirty-day sweep: the only place in Lapidary where stored bytes actually leave.
 //!
 //! It lives in this crate rather than in `lapidary-db` or `lapidary-storage` because it
 //! needs both — the decision is a query, the removal is an unlink — and this crate is
@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// `DATA.md` §1.6, and it is a promise rather than a tunable: a blob is reachable by hash
-/// and restorable for thirty days after the last part naming it is purged. Nothing reads
-/// this from configuration, because an operator who could shorten it could shorten it to
-/// zero and turn purge into deletion.
+/// `DATA.md` §1.6, and it is a promise rather than a tunable: a blob is kept for thirty days
+/// after the last row naming it goes (cache eviction, an export whose part was deleted).
+/// Nothing reads this from configuration, because an operator who could shorten it could
+/// shorten it to zero and turn eviction into immediate removal.
 pub const QUARANTINE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How often to ask. Hourly, not because anything needs hourly precision — the answer
@@ -49,7 +49,8 @@ pub async fn sweep(
         .await
 }
 
-/// A purged model file, its manifest, and the directory that held them.
+/// A quarantined model file, its manifest, and the directory that held them. Only a file a
+/// purge queued before delete became final (2026-10-17) reaches this: delete never queues one.
 ///
 /// Three removals where the hash-addressed half has one, because a model directory is a
 /// place rather than an address: `metadata.json` sits beside the file by design (the store
@@ -131,7 +132,7 @@ fn remove_dir_if_empty(store: &SourceStore, directory: &str) -> Result<bool, Str
 pub async fn run(db: PgPool, blob_root: PathBuf, shutdown: CancellationToken) {
     loop {
         // Sweep first, sleep after. The other order would make the doc comment above a
-        // lie by an hour: a blob whose part was restored moments before a restart would
+        // lie by an hour: a blob something pointed at again moments before a restart would
         // stay flagged for a full interval with a running process that had already decided
         // it should not be. The sweep is a lookup against a partial index that is almost
         // always empty, so doing it at startup costs nothing worth deferring.
