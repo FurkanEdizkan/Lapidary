@@ -3810,3 +3810,136 @@ async fn a_file_past_two_quarantined_names_takes_its_whole_hash(pool: PgPool) {
         "left as they were"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// F1: a 3MF's own thumbnail becomes the part's picture, when the part has none.
+// ---------------------------------------------------------------------------------------
+
+/// A real picture of a real part, from the fixtures: a WebP, which `normalize` reads like a PNG.
+const THUMB_FIXTURE: &[u8] = include_bytes!("../../../fixtures/bracket-lp-1042-03.thumb.webp");
+
+/// The carrier fixture, with a thumbnail relationship and the picture it names added, the way a
+/// slicer saves one. `None` leaves the package exactly as it was.
+fn carrier_with_thumbnail(thumbnail: Option<&[u8]>) -> Vec<u8> {
+    use std::io::{Read as _, Write as _};
+    let Some(thumbnail) = thumbnail else {
+        return CARRIER_FIXTURE.to_vec();
+    };
+    let mut source = zip::ZipArchive::new(std::io::Cursor::new(CARRIER_FIXTURE)).expect("a zip");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).expect("an entry");
+        let name = entry.name().expect("a name").into_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("reads");
+        if name == "_rels/.rels" {
+            let rels = String::from_utf8(bytes).expect("utf-8");
+            bytes = rels
+                .replace(
+                    "</Relationships>",
+                    r#"<Relationship Id="thumb" Target="/Metadata/thumbnail.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#,
+                )
+                .into_bytes();
+        }
+        out.start_file(name, opts).expect("start");
+        out.write_all(&bytes).expect("write");
+    }
+    out.start_file("Metadata/thumbnail.png", opts)
+        .expect("start");
+    out.write_all(thumbnail).expect("write");
+    out.finish().expect("finish").into_inner()
+}
+
+async fn pictures_of(pool: &PgPool, source_path: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT i.origin FROM part_image i JOIN part p ON p.id = i.part_id \
+         WHERE p.source_path = $1 ORDER BY i.position",
+    )
+    .bind(source_path)
+    .fetch_all(pool)
+    .await
+    .expect("reads the gallery")
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_3mf_carrying_a_thumbnail_arrives_with_it_as_its_picture(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(
+        ingest_dir.path(),
+        CARRIER,
+        &carrier_with_thumbnail(Some(THUMB_FIXTURE)),
+    );
+    assert_eq!(
+        handler.handle(&job_for(CARRIER)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    assert_eq!(pictures_of(&pool, CARRIER).await, ["embedded"]);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_3mf_without_a_thumbnail_or_with_a_broken_one_ingests_with_no_picture(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), CARRIER, &carrier_with_thumbnail(None));
+    assert_eq!(
+        handler.handle(&job_for(CARRIER)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    assert!(pictures_of(&pool, CARRIER).await.is_empty());
+
+    // Half a picture: the file still ingests, and a broken thumbnail is no reason to fail it.
+    let other = "Terrain/planetary-carrier-truncated.3mf";
+    stage(
+        ingest_dir.path(),
+        other,
+        &carrier_with_thumbnail(Some(&THUMB_FIXTURE[..THUMB_FIXTURE.len() / 2])),
+    );
+    assert_eq!(
+        handler.handle(&job_for(other)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+    assert!(pictures_of(&pool, other).await.is_empty());
+}
+
+/// A person's picture always wins: a revised 3MF that now carries a thumbnail adds nothing to a
+/// part somebody gave a picture.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_thumbnail_never_replaces_a_picture_somebody_chose(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    stage(ingest_dir.path(), CARRIER, &carrier_with_thumbnail(None));
+    handler.handle(&job_for(CARRIER)).await.expect("ingests");
+    let part: uuid::Uuid = sqlx::query_scalar("SELECT id FROM part WHERE source_path = $1")
+        .bind(CARRIER)
+        .fetch_one(&pool)
+        .await
+        .expect("the part");
+    lapidary_db::PgParts(pool.clone())
+        .add_part_image(
+            lapidary_core::PartId::from_uuid(part),
+            lapidary_db::NewPartImage {
+                bytes: lapidary_db::ImageBytes::Inline(THUMB_FIXTURE),
+                origin: "uploaded",
+                source_url: None,
+            },
+        )
+        .await
+        .expect("a person's picture");
+
+    stage(
+        ingest_dir.path(),
+        CARRIER,
+        &carrier_with_thumbnail(Some(THUMB_FIXTURE)),
+    );
+    assert_eq!(
+        handler.handle(&job_for(CARRIER)).await.expect("revises"),
+        Outcome::Revised
+    );
+    assert_eq!(pictures_of(&pool, CARRIER).await, ["uploaded"]);
+}

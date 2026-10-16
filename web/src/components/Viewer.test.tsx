@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 import { strings } from '../lib/strings'
 import type { PartDetail } from '../lib/types'
@@ -54,7 +54,7 @@ const PART = {
 } as unknown as PartDetail
 
 /** The component under test, imported lazily so the mocks above are in place first. */
-async function mount(part: PartDetail = PART) {
+async function mount(part: PartDetail = PART, keep?: (png: Blob) => Promise<string | null>) {
   const { default: Viewer } = await import('./Viewer')
   // A host with a size, so the renderer's own `setSize` has something to be given.
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: 400 })
@@ -67,7 +67,7 @@ async function mount(part: PartDetail = PART) {
     },
   )
   await act(async () => {
-    render(<Viewer part={part} poster={null} />)
+    render(<Viewer part={part} poster={null} keep={keep} />)
   })
 }
 
@@ -127,4 +127,59 @@ test('a revision with no source file says so instead of loading for ever', async
   expect((await screen.findByRole('alert')).textContent).toBe(strings.viewer.failed)
   expect(screen.queryByText(strings.viewer.loading)).toBeNull()
   expect(fetchMock).not.toHaveBeenCalled()
+})
+
+/**
+ * **Keeping the view as the part's picture** (F1). The canvas as it is on screen goes to `keep` as a
+ * PNG, and a refusal from the server is shown in its own words; with no `keep` there is no button.
+ */
+test('the view on screen can be kept as the picture, and a refusal says why', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) })),
+  )
+  const three = await import('three')
+  parse.mockImplementation(
+    () =>
+      new three.Mesh(
+        new three.BufferGeometry().setAttribute(
+          'position',
+          new three.Float32BufferAttribute([0, 0, 0, 40, 0, 0, 0, 60, 0], 3),
+        ),
+      ),
+  )
+  const png = new Blob(['a picture'], { type: 'image/png' })
+  HTMLCanvasElement.prototype.toBlob = function (callback: BlobCallback) {
+    callback(png)
+  }
+  const keep = vi.fn(async () => null as string | null)
+  await mount(PART, keep)
+
+  fireEvent.click(await screen.findByRole('button', { name: strings.viewer.keepView }))
+  await waitFor(() => expect(keep).toHaveBeenCalledWith(png))
+  expect(await screen.findByRole('button', { name: strings.viewer.keptView })).toBeTruthy()
+
+  keep.mockImplementation(async () => 'That image is 40×60, and the smallest side must be at least 64 pixels.')
+  fireEvent.click(screen.getByRole('button', { name: strings.viewer.keptView }))
+  expect((await screen.findByRole('alert')).textContent).toContain('at least 64 pixels')
+})
+
+test('with nowhere to keep it, the view offers no button', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) })),
+  )
+  const three = await import('three')
+  parse.mockImplementation(
+    () =>
+      new three.Mesh(
+        new three.BufferGeometry().setAttribute(
+          'position',
+          new three.Float32BufferAttribute([0, 0, 0, 40, 0, 0, 0, 60, 0], 3),
+        ),
+      ),
+  )
+  await mount(PART)
+  await waitFor(() => expect(parse).toHaveBeenCalled())
+  expect(screen.queryByRole('button', { name: strings.viewer.keepView })).toBeNull()
 })

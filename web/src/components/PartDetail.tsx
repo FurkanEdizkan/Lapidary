@@ -689,11 +689,15 @@ const FRAME =
 export function Preview({
   part,
   stage = false,
+  recordable = false,
 }: {
   part: PartDetailData
   /** The quick look's stage: the view fills its parent instead of a 10rem frame. */
   stage?: boolean
+  /** Whether the view may be kept as the part's picture: only where the page records changes. */
+  recordable?: boolean
 }) {
+  const queryClient = useQueryClient()
   const [viewing, setViewing] = useState(false)
   // A different part in the same Preview — the quick look steps through the grid without
   // unmounting — closes the view rather than carrying one part's model to the next.
@@ -729,7 +733,24 @@ export function Preview({
           Keyed by part: the quick look and the part page both hand the same Preview a different
           part without unmounting it, and a view kept across parts keeps the last part's framing.
         */}
-        <Viewer key={part.id} part={part} poster={poster} stage={stage} />
+        <Viewer
+          key={part.id}
+          part={part}
+          poster={poster}
+          stage={stage}
+          // Only for a part with no picture yet: a snapshot joins the end of the gallery, so on a part
+          // that has one it would not be "the picture" the button promises.
+          keep={
+            recordable && images.data?.length === 0
+              ? async (png) => {
+                  const result = await uploadPartImage(part.id, png, 'snapshot')
+                  if (result.kind === 'refused') return result.message
+                  await queryClient.invalidateQueries({ queryKey: ['part-images', part.id] })
+                  return null
+                }
+              : undefined
+          }
+        />
       </Suspense>
     )
   }
@@ -865,7 +886,7 @@ export function Detail({
   // `?? []` for a server from before materials, as the list below does: read once, because both the
   // list and the mass row have to agree about how many the part holds.
   const materials = part.materials ?? []
-  const preview = <Preview part={part} stage={page} />
+  const preview = <Preview part={part} stage={page} recordable={recordable} />
   const heading = (
     <>
       {titled ? null : (

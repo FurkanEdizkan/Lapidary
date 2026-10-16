@@ -574,6 +574,17 @@ impl WorkerHandler {
         // immutable, so every parse failure is the final answer about them (`classify_cad`).
         let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
         let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
+        // The picture a slicer saved inside a 3MF, read now while the bytes are in hand and
+        // attached once the part exists (F1). Never a reason to fail: a part with no picture is a
+        // part, so a broken thumbnail is a log line.
+        let embedded = if format == "3mf" {
+            lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
+                tracing::warn!(source_path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                None
+            })
+        } else {
+            None
+        };
 
         // 5a. The next revision of the part at step 3b (spec §3.1). It has its folder and its
         // directory already, and its transaction writes the blob row itself, so steps 6 to 9
@@ -662,6 +673,8 @@ impl WorkerHandler {
                     );
                 }
             }
+            self.adopt_embedded_picture(existing.part, embedded, source_path)
+                .await;
             return Ok(Outcome::Revised);
         }
 
@@ -941,7 +954,73 @@ impl WorkerHandler {
             ),
         }
 
+        self.adopt_embedded_picture(part, embedded, source_path)
+            .await;
         Ok(Outcome::Ingested)
+    }
+
+    /// A 3MF's own thumbnail, as the part's picture when it has none (F1). Through the same
+    /// `normalize` every upload takes — decoded under limits, bounded, re-encoded to WebP — and
+    /// stored the way the gallery stores one: on its row under the inline limit, in the store above.
+    ///
+    /// **A person's picture always wins**: `adopt_part_image` adds nothing to a part that has one,
+    /// so a revised 3MF never replaces what somebody chose. Warn-only throughout, for the reason
+    /// `record_centre_of_mass` is: the part is committed, and a picture it lacks is not a failure.
+    async fn adopt_embedded_picture(
+        &self,
+        part: lapidary_core::PartId,
+        embedded: Option<Vec<u8>>,
+        source_path: &str,
+    ) {
+        let Some(raw) = embedded else {
+            return;
+        };
+        let image = match lapidary_storage::images::normalize(&raw) {
+            Ok(image) => image,
+            Err(error) => {
+                tracing::warn!(source_path, %error, "this 3MF's thumbnail is not a picture Lapidary keeps; the part has none from it");
+                return;
+            }
+        };
+        let blob = if image.webp.len() < lapidary_storage::images::INLINE_LIMIT {
+            None
+        } else {
+            match lapidary_storage::DerivativeStore::open(&self.blob_root).put(&image.webp) {
+                Ok(stored) => {
+                    let row = StoredBlobRow {
+                        hash: stored.hash,
+                        size_bytes: stored.size_bytes,
+                        stored_bytes: stored.stored_bytes,
+                        zstd_level: stored.zstd_level,
+                    };
+                    if let Err(error) = PgBlobs(self.db.clone()).record_unreferenced(&row).await {
+                        tracing::warn!(source_path, %error, "could not record this 3MF's thumbnail; the part has no picture from it");
+                        return;
+                    }
+                    Some(row.hash)
+                }
+                Err(error) => {
+                    tracing::warn!(source_path, %error, "could not store this 3MF's thumbnail; the part has no picture from it");
+                    return;
+                }
+            }
+        };
+        let adopted = PgParts(self.db.clone())
+            .adopt_part_image(
+                part,
+                lapidary_db::NewPartImage {
+                    bytes: match &blob {
+                        Some(hash) => lapidary_db::ImageBytes::Blob(hash),
+                        None => lapidary_db::ImageBytes::Inline(&image.webp),
+                    },
+                    origin: "embedded",
+                    source_url: None,
+                },
+            )
+            .await;
+        if let Err(error) = adopted {
+            tracing::warn!(source_path, %error, "could not attach this 3MF's thumbnail; the part has no picture from it");
+        }
     }
 
     /// The category rows and the directory one model lands in: its leaf `folder_id`, and

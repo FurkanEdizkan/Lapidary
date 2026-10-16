@@ -8,7 +8,7 @@ import type { PartImageId } from "./PartImageId";
  */
 export type PartImage = { id: PartImageId, src: string, 
 /**
- * `uploaded`, `url_supplied`, `og_fetched` or `rendered`.
+ * `uploaded`, `url_supplied`, `embedded` (a 3MF's own thumbnail) or `snapshot` (the 3D viewer's).
  */
 origin: string, 
 /**

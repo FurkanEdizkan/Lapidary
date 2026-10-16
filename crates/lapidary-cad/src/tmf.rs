@@ -170,6 +170,43 @@ pub(crate) fn entry(
 /// Spec §3.6: read the relationships rather than assuming `3D/3dmodel.model`. The cost is
 /// one small parse; the benefit is that a legal package that moved its model still opens.
 pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
+    relationship_target(rels_xml, MODEL_REL_TYPE)?.ok_or_else(|| {
+        malformed("it declares no 3D model relationship, so there is nothing to read".to_owned())
+    })
+}
+
+/// The package's thumbnail relationship, which slicers point at the picture they save with a
+/// project (usually `Metadata/thumbnail.png`). OPC's own type, not 3MF's.
+const THUMBNAIL_REL_TYPE: &str =
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail";
+
+/// The largest thumbnail read out of a package: the same 10 MB a picture upload is allowed, and
+/// for the same reason — it bounds what one file can make the worker hold.
+const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The picture a 3MF carries for itself, when its relationships name one. `Ok(None)` for a
+/// package that names none, which is most hand-made files and nothing to apologise for. The bytes
+/// are whatever the package holds; the caller decides whether they are an image worth keeping.
+///
+/// Through the relationship and never a guessed path, for `model_part_name`'s reason: a file
+/// that moved its thumbnail is still a file with one, and a file whose `Metadata/` holds a
+/// stray PNG nobody pointed at is not.
+pub fn thumbnail_3mf(bytes: &[u8]) -> Result<Option<Vec<u8>>, CadError> {
+    let caps = Caps::DEFAULT;
+    let mut archive = open_archive(bytes, &caps)?;
+    let rels = entry(&mut archive, "_rels/.rels", &caps)?;
+    let Some(name) = relationship_target(&rels, THUMBNAIL_REL_TYPE)? else {
+        return Ok(None);
+    };
+    let capped = Caps {
+        max_decompressed: MAX_THUMBNAIL_BYTES,
+        ..caps
+    };
+    entry(&mut archive, &name, &capped).map(Some)
+}
+
+/// The target of the first relationship of `rel_type`, normalised to an archive entry name.
+fn relationship_target(rels_xml: &[u8], rel_type: &str) -> Result<Option<String>, CadError> {
     let mut reader = quick_xml::Reader::from_reader(rels_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -180,7 +217,7 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                 if e.local_name().as_ref() == b"Relationship" =>
             {
                 let mut target = None;
-                let mut is_model = false;
+                let mut matches = false;
                 for attr in e.attributes().flatten() {
                     let value = attr
                         .normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -188,17 +225,17 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                         .into_owned();
                     match attr.key.local_name().as_ref() {
                         b"Target" => target = Some(value),
-                        b"Type" => is_model = value == MODEL_REL_TYPE,
+                        b"Type" => matches = value == rel_type,
                         _ => {}
                     }
                 }
-                if is_model {
+                if matches {
                     let t = target.ok_or_else(|| {
-                        malformed("its model relationship names no target".to_owned())
+                        malformed("one of its relationships names no target".to_owned())
                     })?;
                     // Relationship targets are package-absolute (`/3D/x.model`); ZIP
                     // entry names are not.
-                    return Ok(t.trim_start_matches('/').to_owned());
+                    return Ok(Some(t.trim_start_matches('/').to_owned()));
                 }
             }
             Err(source) => {
@@ -210,9 +247,7 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
         }
         buf.clear();
     }
-    Err(malformed(
-        "it declares no 3D model relationship, so there is nothing to read".to_owned(),
-    ))
+    Ok(None)
 }
 
 /// Millimetres per unit of the file's declared unit.
@@ -315,12 +350,45 @@ pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
     // is the difference between headroom and none.
     drop(rels);
     let model = entry(&mut archive, &model_name, &caps)?;
-    let (objects, build, scale) = read_model(&model)?;
+    let (mut objects, build, scale) = read_model(&model)?;
+    drop(model);
+    // Every other model part a component points into, each read once and its objects filed under
+    // the part's path. Its own components without a `p:path` name objects in that same part.
+    let parts: std::collections::BTreeSet<String> = objects
+        .values()
+        .flat_map(|object| object.components.iter())
+        .filter_map(|(key, _)| key.split_once('#').map(|(path, _)| path.to_owned()))
+        .collect();
+    for path in parts {
+        let xml = entry(&mut archive, &path, &caps)?;
+        let (part_objects, _, part_scale) = read_model(&xml)?;
+        // ponytail: one unit for the whole package. Every slicer that writes `p:path` writes
+        // millimetres in every part; combining parts in different units is the upgrade if one ever
+        // turns up, and until then it is refused rather than drawn at the wrong size.
+        if part_scale != scale {
+            return Err(malformed(format!(
+                "its model part {path} uses a different unit from the main model, which this reader does not combine"
+            )));
+        }
+        for (id, mut object) in part_objects {
+            for (child, _) in &mut object.components {
+                if !child.contains('#') {
+                    *child = part_key(&path, child);
+                }
+            }
+            objects.insert(part_key(&path, &id), object);
+        }
+    }
     let mut triangles = Vec::new();
     for (id, transform) in &build {
         emit(&objects, id, *transform, scale, 0, &caps, &mut triangles)?;
     }
     finish(FORMAT, triangles)
+}
+
+/// An object's key when it lives in another model part: the part's entry name, then its id.
+fn part_key(path: &str, id: &str) -> String {
+    format!("{}#{id}", path.trim_start_matches('/'))
 }
 
 fn attr(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Option<String> {
@@ -420,6 +488,14 @@ fn read_model(xml: &[u8]) -> Result<Model, CadError> {
                             let target = attr(e, b"objectid").ok_or_else(|| {
                                 malformed("a component names no object".to_owned())
                             })?;
+                            // The Production extension's `p:path`: the object lives in another
+                            // model part of the package, which is how Bambu Studio and Orca save
+                            // every project. Keyed by part as well as id, because each part
+                            // numbers its objects from 1.
+                            let target = match attr(e, b"path") {
+                                Some(path) => part_key(&path, &target),
+                                None => target,
+                            };
                             let m = matrix(attr(e, b"transform").as_deref())?;
                             if let Some(o) = objects.get_mut(&id) {
                                 o.components.push((target, m));
@@ -822,6 +898,75 @@ mod tests {
             ("_rels/.rels", rels),
             ("3D/carrier.model", model_xml.as_bytes()),
         ])
+    }
+
+    /// The thumbnail is found through its relationship — here at a path no slicer uses, so a
+    /// lookup that guessed `Metadata/thumbnail.png` would miss it — and a stray PNG nobody points
+    /// at is not taken for one.
+    #[test]
+    fn a_packages_thumbnail_is_found_through_its_relationship_and_only_then() {
+        let png = b"\x89PNG\r\n\x1a\n stand-in bytes, the caller decodes";
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+<Relationship Id="rel1" Target="/Pictures/plate-cover.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
+</Relationships>"#;
+        let with = zip_of(&[
+            ("_rels/.rels", rels),
+            ("3D/carrier.model", b"<model/>"),
+            ("Pictures/plate-cover.png", png),
+        ]);
+        assert_eq!(thumbnail_3mf(&with).expect("reads"), Some(png.to_vec()));
+
+        let stray = {
+            let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+            zip_of(&[
+                ("_rels/.rels", rels),
+                ("3D/carrier.model", b"<model/>"),
+                ("Metadata/thumbnail.png", png),
+            ])
+        };
+        assert_eq!(thumbnail_3mf(&stray).expect("reads"), None);
+
+        // A relationship pointing at a part the package does not hold is malformed, not absent.
+        let dangling = br#"<Relationships><Relationship Id="t" Target="/Metadata/gone.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#;
+        let broken = zip_of(&[("_rels/.rels", dangling)]);
+        assert!(thumbnail_3mf(&broken).is_err());
+    }
+
+    /// Bambu Studio's and Orca's layout (the Production extension): the main model's objects are only
+    /// components, each pointing with `p:path` into another model part that numbers its own objects
+    /// from 1. Both parts here hold an object 1, and they must not be confused.
+    #[test]
+    fn components_in_other_model_parts_are_followed_by_path() {
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+        let root = br#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+<resources>
+<object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2" type="model"><components><component p:path="/3D/Objects/object_7.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 100 0 0"/></components></object>
+</resources>
+<build><item objectid="2"/></build>
+</model>"#;
+        let part = br#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources><object id="1" type="model"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="40" y="0" z="0"/><vertex x="0" y="60" z="0"/><vertex x="0" y="0" z="5"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="1" v3="3"/></triangles>
+</mesh></object></resources>
+</model>"#;
+        let package = zip_of(&[
+            ("_rels/.rels", rels),
+            ("3D/3dmodel.model", root),
+            ("3D/Objects/object_7.model", part),
+        ]);
+        let mesh = parse_3mf(&package).expect("parses");
+        // The other part's object 1 — two triangles, 40 × 60 × 5, moved 100 along x — and not the
+        // main model's own object 1, which is one small triangle nothing in the build names.
+        assert_eq!(mesh.triangles.len(), 2);
+        let xs: Vec<f32> = mesh.triangles.iter().flatten().map(|v| v[0]).collect();
+        assert!(xs.iter().all(|x| (100.0..=140.0).contains(x)), "{xs:?}");
     }
 
     #[test]
