@@ -152,6 +152,9 @@ pub struct WorkerHandler {
     /// `tests/handler.rs` are staged through it. A trait with one implementation is not worth
     /// keeping to obtain one await point; two `Notify` handles are.
     pub pause: Option<Pause>,
+    /// Where the model sites an `import_link` reads from are. `Sites::public()` everywhere a
+    /// worker really runs; tests point it at a fixture server.
+    pub sites: lapidary_sites::Sites,
 }
 
 /// The await point above, and nothing else. A test holds a job here, lets another job run to
@@ -194,6 +197,8 @@ impl JobHandler for WorkerHandler {
             // for the same one: a migration re-enqueues itself until the library drains,
             // and it has to land in the batch whoever started it is already polling.
             JobPayload::MigrateStorage => self.migrate_storage(job.batch_id, job.library_id).await,
+            // A model from the page a person pasted, through ordinary ingest; see `link.rs`.
+            JobPayload::ImportLink { url } => self.import_link(job.library_id, &url).await,
             // A bundle unpacks into its own batch, as a scan does; see `import.rs`.
             JobPayload::ImportBundle { blake3, path } => {
                 self.import_bundle(job.batch_id, job.library_id, blake3, &path)
@@ -673,8 +678,10 @@ impl WorkerHandler {
                     );
                 }
             }
-            self.adopt_embedded_picture(existing.part, embedded, source_path)
-                .await;
+            if let Some(raw) = embedded {
+                self.adopt_picture(existing.part, &raw, "embedded", None, source_path)
+                    .await;
+            }
             return Ok(Outcome::Revised);
         }
 
@@ -954,31 +961,33 @@ impl WorkerHandler {
             ),
         }
 
-        self.adopt_embedded_picture(part, embedded, source_path)
-            .await;
+        if let Some(raw) = embedded {
+            self.adopt_picture(part, &raw, "embedded", None, source_path)
+                .await;
+        }
         Ok(Outcome::Ingested)
     }
 
-    /// A 3MF's own thumbnail, as the part's picture when it has none (F1). Through the same
+    /// A picture the application found — a 3MF's own thumbnail (`embedded`, F1) or a model page's
+    /// (`url_supplied`, F3) — as the part's picture when it has none. Through the same
     /// `normalize` every upload takes — decoded under limits, bounded, re-encoded to WebP — and
     /// stored the way the gallery stores one: on its row under the inline limit, in the store above.
     ///
     /// **A person's picture always wins**: `adopt_part_image` adds nothing to a part that has one,
     /// so a revised 3MF never replaces what somebody chose. Warn-only throughout, for the reason
     /// `record_centre_of_mass` is: the part is committed, and a picture it lacks is not a failure.
-    async fn adopt_embedded_picture(
+    pub(crate) async fn adopt_picture(
         &self,
         part: lapidary_core::PartId,
-        embedded: Option<Vec<u8>>,
+        raw: &[u8],
+        origin: &str,
+        source_url: Option<&str>,
         source_path: &str,
     ) {
-        let Some(raw) = embedded else {
-            return;
-        };
-        let image = match lapidary_storage::images::normalize(&raw) {
+        let image = match lapidary_storage::images::normalize(raw) {
             Ok(image) => image,
             Err(error) => {
-                tracing::warn!(source_path, %error, "this 3MF's thumbnail is not a picture Lapidary keeps; the part has none from it");
+                tracing::warn!(source_path, origin, %error, "a found picture is not one Lapidary keeps; the part has none from it");
                 return;
             }
         };
@@ -994,13 +1003,13 @@ impl WorkerHandler {
                         zstd_level: stored.zstd_level,
                     };
                     if let Err(error) = PgBlobs(self.db.clone()).record_unreferenced(&row).await {
-                        tracing::warn!(source_path, %error, "could not record this 3MF's thumbnail; the part has no picture from it");
+                        tracing::warn!(source_path, %error, "could not record a found picture; the part has no picture from it");
                         return;
                     }
                     Some(row.hash)
                 }
                 Err(error) => {
-                    tracing::warn!(source_path, %error, "could not store this 3MF's thumbnail; the part has no picture from it");
+                    tracing::warn!(source_path, %error, "could not store a found picture; the part has no picture from it");
                     return;
                 }
             }
@@ -1013,13 +1022,13 @@ impl WorkerHandler {
                         Some(hash) => lapidary_db::ImageBytes::Blob(hash),
                         None => lapidary_db::ImageBytes::Inline(&image.webp),
                     },
-                    origin: "embedded",
-                    source_url: None,
+                    origin,
+                    source_url,
                 },
             )
             .await;
         if let Err(error) = adopted {
-            tracing::warn!(source_path, %error, "could not attach this 3MF's thumbnail; the part has no picture from it");
+            tracing::warn!(source_path, %error, "could not attach a found picture; the part has no picture from it");
         }
     }
 

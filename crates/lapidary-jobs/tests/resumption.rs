@@ -51,6 +51,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
         pause: None,
+        sites: lapidary_sites::Sites::public(),
     }
 }
 

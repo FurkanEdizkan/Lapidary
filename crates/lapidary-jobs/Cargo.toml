@@ -26,6 +26,7 @@ tokio = { workspace = true, features = ["test-util"] }
 # is about what reaches the `part` table, so proving it needs an ingest that really writes
 # one. A counting stub would only prove the loop re-delivers a row.
 lapidary-ingest.workspace = true
+lapidary-sites.workspace = true
 tempfile.workspace = true
 
 [lints]

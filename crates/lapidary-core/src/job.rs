@@ -134,6 +134,17 @@ pub enum JobPayload {
     DescribePart {
         part: crate::PartId,
     },
+    /// Import a model from the page a person pasted: Printables, Thingiverse or MyMiniFactory (F3).
+    /// The worker reads the model, fetches its files and files each through ordinary ingest. The
+    /// row also carries the URL as `path`, which is the key the batch's failure list names a job by.
+    ImportLink {
+        url: String,
+    },
+}
+
+#[derive(Deserialize)]
+struct ImportLinkPayload {
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +191,7 @@ impl JobPayload {
     pub const IMPORT_BUNDLE: &'static str = "import_bundle";
     pub const IMPORT_PART: &'static str = "import_part";
     pub const DESCRIBE_PART: &'static str = "describe_part";
+    pub const IMPORT_LINK: &'static str = "import_link";
 
     pub fn kind(&self) -> &'static str {
         match self {
@@ -191,6 +203,7 @@ impl JobPayload {
             JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
             JobPayload::ImportPart { .. } => Self::IMPORT_PART,
             JobPayload::DescribePart { .. } => Self::DESCRIBE_PART,
+            JobPayload::ImportLink { .. } => Self::IMPORT_LINK,
         }
     }
 
@@ -217,6 +230,7 @@ impl JobPayload {
                 serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
             JobPayload::DescribePart { part } => serde_json::json!({ "part": part }),
+            JobPayload::ImportLink { url } => serde_json::json!({ "url": url, "path": url }),
         }
     }
 
@@ -280,6 +294,12 @@ impl JobPayload {
                 }),
             Self::DESCRIBE_PART => serde_json::from_value::<DescribePartPayload>(payload.clone())
                 .map(|p| JobPayload::DescribePart { part: p.part })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            Self::IMPORT_LINK => serde_json::from_value::<ImportLinkPayload>(payload.clone())
+                .map(|p| JobPayload::ImportLink { url: p.url })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),
@@ -503,6 +523,22 @@ mod tests {
                 blake3: BlobHash::from_bytes([0x5d; 32]),
                 source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn an_import_link_payload_round_trips_and_names_its_url_as_its_path() {
+        let payload = JobPayload::ImportLink {
+            url: "https://www.printables.com/model/482910-motorcycle-throttle-stop".to_owned(),
+        };
+        let json = payload.to_json();
+        assert_eq!(
+            json["path"], json["url"],
+            "the failure list names a job by `path`"
+        );
+        assert_eq!(
+            JobPayload::from_row(payload.kind(), &json).expect("parses"),
+            payload
         );
     }
 
