@@ -67,20 +67,13 @@ Local free, Team, Enterprise, Cloud).
 
 ## Operating Context
 
-- **Container-first**, Podman and Docker. Three services split by port: web on 3000, api on
-  8080, worker on 8081 — and peer on 8082, only with sharing switched on. A route only the
-  worker serves is a route no browser can reach.
+- **Container-first**, Podman and Docker. Two containers: the database, and one app process
+  that serves the browser app and its API on 3000 and runs ingest behind them.
 - **Air-gapped industrial deployments are a real target**, which is why the plain stack makes
   one outbound request, the image fetch a person pastes a URL into, and why uploading a picture
-  always works without it. Sharing is the only other thing that reaches another machine, and it
-  is off until switched on: the `peer` service ships as an overlay
-  (`deploy/compose.sharing.yaml`), accepts only installations somebody paired by hand or accepted
-  an introduction to, and talks only to those: a hello every 15 s, a read of what they share when
-  it changes, the roster of each folder they share with this one, a question about who has a file
-  before it is fetched, and the files a person asked to pull (owner's decisions, 2026-09-16 and
-  2026-09-17). Every one of those goes to a machine on that list and to no other: there is no
-  directory, no tracker and no discovery of machines nobody has paired with.
-- **Parts arrive** either from a directory mounted into the worker or from a browser drop
+  always works without it. Nothing else reaches another machine: sharing between installations
+  was removed on 2026-10-16 (owner's decision).
+- **Parts arrive** either from a directory mounted into the app or from a browser drop
   (client-side BLAKE3 first, then a probe, then resumable chunked upload).
 - **Parts leave** to Rhino, Fusion, FreeCAD, Blender and Orca. Those are the tools the user
   already has open; Lapidary never competes with them.

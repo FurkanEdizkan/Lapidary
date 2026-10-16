@@ -86,18 +86,6 @@ uuid_newtype!(
      something that changes under it."
 );
 uuid_newtype!(
-    PeerShareId,
-    "Identifies somebody else's share as this installation mirrors it: a local id, never the sharer's own."
-);
-uuid_newtype!(
-    PullId,
-    "Identifies one pull: somebody else's share, fetched into one of this installation's libraries."
-);
-uuid_newtype!(
-    ShareId,
-    "Identifies one category this installation offers the people it is paired with, and everything under it."
-);
-uuid_newtype!(
     SavedFilterId,
     "Identifies one saved filter: a name for a set of the grid's filters in one library."
 );

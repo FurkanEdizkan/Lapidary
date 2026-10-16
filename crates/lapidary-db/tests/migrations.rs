@@ -780,41 +780,43 @@ fn the_standalone_backfill_file_and_the_copy_inside_0009_agree() {
     );
 }
 
-/// `0042`: a category shared before member lists existed keeps reaching everyone paired — including people
-/// paired after the migration, until its owner says who it goes to.
-///
-/// Tested here rather than only in `shares.rs` because it is the migration that decides who can see data
-/// somebody is already sharing: a wrong default either hides every share or leaves every share open.
+/// `0056`: sharing between installations is gone, and its ten tables with it. Nothing else may have
+/// gone: a pulled part was an ordinary part, so the core tables it lived in must all still be there.
 #[sqlx::test(migrations = "./migrations")]
-async fn a_share_made_before_member_lists_still_reaches_everyone(pool: PgPool) {
-    let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
-    let folder = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO folder (id, library_id, name, slug) VALUES ($1, $2, 'Terrain', 'terrain')",
+async fn sharing_leaves_no_table_behind_and_takes_no_core_one(pool: PgPool) {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables WHERE table_schema = 'public'",
     )
-    .bind(folder)
-    .bind(library)
-    .execute(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("a category");
-    // Written the way 0037 wrote one, naming no audience, which is what 0042 left every share already there.
-    sqlx::query("INSERT INTO share (id, library_id, folder_id) VALUES ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(library)
-        .bind(folder)
-        .execute(&pool)
-        .await
-        .expect("a share");
-
-    let audience: String = sqlx::query_scalar("SELECT audience FROM share WHERE folder_id = $1")
-        .bind(folder)
-        .fetch_one(&pool)
-        .await
-        .expect("reads it back");
-    assert_eq!(
-        audience, "everyone",
-        "a share nobody picked people for goes on reaching whoever is paired"
-    );
+    .expect("reads the table list");
+    for gone in [
+        "part_provenance",
+        "pull",
+        "share_grant",
+        "share_member",
+        "share",
+        "peer_share_member",
+        "peer_share_part",
+        "peer_share",
+        "peer",
+        "peer_identity",
+    ] {
+        assert!(!tables.iter().any(|t| t == gone), "{gone} is still there");
+    }
+    for kept in [
+        "part",
+        "library",
+        "folder",
+        "revision",
+        "file",
+        "blob",
+        "job",
+        "part_image",
+        "part_source",
+    ] {
+        assert!(tables.iter().any(|t| t == kept), "{kept} went with sharing");
+    }
 }
 
 /// `0054`: production stops. The queue loses the jobs no handler can run, the similarity tables

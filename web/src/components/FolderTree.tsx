@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Dialog } from './Dialog'
 import {
-  fetchLibraryShares,
   createFolder,
   deleteFolder,
   fetchFolders,
@@ -12,7 +11,6 @@ import {
   type MoveRefusalReason,
 } from '../lib/api'
 import { strings } from '../lib/strings'
-import { ShareDialog } from './ShareDialog'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
 
 /**
@@ -210,12 +208,6 @@ export function FolderTree({
    */
   const [creating, setCreating] = useState(false)
   const [renaming, setRenaming] = useState<FolderNode | null>(null)
-  const [sharing, setSharing] = useState<FolderNode | null>(null)
-  const shares = useQuery({ queryKey: ['shares', library], queryFn: () => fetchLibraryShares(library) })
-  const shared = useMemo(
-    () => new Set((shares.data ?? []).map((share) => share.folderId)),
-    [shares.data],
-  )
   /** A refused create or rename, shown inside the dialog that caused it — see `note` below. */
   const [writeRefusal, setWriteRefusal] = useState<string | null>(null)
   /**
@@ -381,8 +373,6 @@ export function FolderTree({
           onDropPart={drop}
           onDelete={setPendingDelete}
           onRename={setRenaming}
-          onShare={setSharing}
-          shared={shared}
           noteFor={noteFor}
         />
       )}
@@ -409,14 +399,6 @@ export function FolderTree({
             setCreating(false)
             setWriteRefusal(null)
           }}
-        />
-      )}
-      {sharing === null ? null : (
-        <ShareDialog
-          library={library}
-          folder={sharing}
-          alreadyShared={shared.has(sharing.id)}
-          onClose={() => setSharing(null)}
         />
       )}
       {renaming === null ? null : (
@@ -560,8 +542,6 @@ function FolderLevel({
   onDropPart,
   onDelete,
   onRename,
-  onShare,
-  shared,
   noteFor,
 }: {
   groups: ReadonlyMap<FolderId | null, readonly FolderNode[]>
@@ -574,9 +554,6 @@ function FolderLevel({
   onDropPart: (event: DragEvent<HTMLElement>, folder: FolderId) => void
   onDelete: (folder: FolderNode) => void
   onRename: (folder: FolderNode) => void
-  onShare: (folder: FolderNode) => void
-  /** The categories this installation shares, marked on their rows. */
-  shared: ReadonlySet<FolderId>
   noteFor: (folder: FolderId) => string | null
 }) {
   const children = groups.get(parentId) ?? []
@@ -647,14 +624,6 @@ function FolderLevel({
                 >
                   <button
                     type="button"
-                    onClick={() => onShare(folder)}
-                    aria-label={strings.folders.shareFor(folder.name)}
-                    className="rounded px-1.5 py-1 text-xs text-[var(--color-muted)]"
-                  >
-                    {strings.folders.shareAction}
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => onRename(folder)}
                     aria-label={strings.folders.renameFor(folder.name)}
                     className="rounded px-1.5 py-1 text-xs text-[var(--color-muted)]"
@@ -671,11 +640,6 @@ function FolderLevel({
                   </button>
                 </div>
               </div>
-              {shared.has(folder.id) ? (
-                <span className="shrink-0 text-[10px] font-medium text-[var(--color-accent)]">
-                  {strings.folders.shared}
-                </span>
-              ) : null}
             </div>
             <RowNote note={noteFor(folder.id)} />
             {opened ? (
@@ -690,8 +654,6 @@ function FolderLevel({
                 onDropPart={onDropPart}
                 onDelete={onDelete}
                 onRename={onRename}
-                onShare={onShare}
-                shared={shared}
                 noteFor={noteFor}
               />
             ) : null}

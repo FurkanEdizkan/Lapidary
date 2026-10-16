@@ -36,7 +36,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use lapidary_core::{Approximate, BlobHash, LibraryId, PartId, Provenance, RevisionId};
-use lapidary_db::{PartDetailRow, PgDensities, PgLocks, PgParts, PgPulls};
+use lapidary_db::{PartDetailRow, PgDensities, PgLocks, PgParts};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -118,17 +118,6 @@ pub struct PartDetail {
     pub updated_at: Timestamp,
     /// The part's active check-out, when somebody holds one (Phase 4 slice 1).
     pub lock: Option<PartLock>,
-    /// Who this part was pulled from, when it came from somebody's shared library (sharing S3).
-    pub shared_by: Option<SharedBy>,
-}
-
-/// Somebody a part was pulled from: their name when they gave one, and their device id either way.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct SharedBy {
-    pub device_id: String,
-    pub name: Option<String>,
 }
 
 /// `GET /api/parts/{id}` — one part, in full.
@@ -141,20 +130,13 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
     match PgParts(state.db.clone()).detail(part).await {
         // The lock is its own read rather than a column on the detail query: it is a row of
         // its own table, and that query is already at its column ceiling.
-        Ok(Some(row)) => match (
-            PgLocks(state.db.clone()).active(part).await,
-            PgPulls(state.db.clone()).provenance(part).await,
-        ) {
-            (Ok(lock), Ok(provenance)) => {
+        Ok(Some(row)) => match PgLocks(state.db.clone()).active(part).await {
+            Ok(lock) => {
                 // Opening a part no longer touches a derivative: it has none to touch. The
                 // rungs this recorded a read of were what told the render cache a part was
                 // still in use before it counted it (Phase 4 slice 2 spec §4), and nothing
                 // produces one. An export's read is recorded by the blob route that serves it.
-                let shared_by = provenance.map(|(device, name)| SharedBy {
-                    device_id: device.to_string(),
-                    name,
-                });
-                let mut detail = to_detail(row, lock.map(PartLock::from), shared_by);
+                let mut detail = to_detail(row, lock.map(PartLock::from));
                 // One more `part` row read, not a source file: still the open path. `of_part` answers
                 // only where the part holds exactly one material with a density, which is the only
                 // case a single mass means anything at all.
@@ -170,8 +152,7 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
                 }
                 Json(detail).into_response()
             }
-            (Err(err), _) => internal_error(&err, "part lock lookup failed"),
-            (_, Err(err)) => internal_error(&err, "part provenance lookup failed"),
+            Err(err) => internal_error(&err, "part lock lookup failed"),
         },
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -192,11 +173,7 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
 /// A value with no provenance is dropped rather than guessed at, for the reason
 /// `detail_provenance` refuses an unknown word: there is no safe default, because one
 /// default hedges and the other lies.
-fn to_detail(
-    row: PartDetailRow,
-    lock: Option<PartLock>,
-    shared_by: Option<SharedBy>,
-) -> PartDetail {
+fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
     PartDetail {
         id: row.id,
         library: row.library,
@@ -235,7 +212,6 @@ fn to_detail(
         created_at: row.created_at,
         updated_at: row.updated_at,
         lock,
-        shared_by,
     }
 }
 

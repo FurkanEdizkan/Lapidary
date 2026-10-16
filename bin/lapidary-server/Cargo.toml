@@ -10,8 +10,6 @@ publish = false
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
-# The peer role's router and its pinned-key TLS, until sharing comes out (S3).
-lapidary-peer.workspace = true
 # The mesh parsers, the ingest job handler and the job loop that feeds it. The server runs all
 # three in-process; `lapidary-api` itself still never links `lapidary-cad` (check-layers).
 lapidary-cad.workspace = true
@@ -35,20 +33,12 @@ tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["fs", "set-header"] }
 
 [dev-dependencies]
-# A connection kept open across a removal, in `tests/peer_mirror.rs`.
-reqwest.workspace = true
-# Only for #[sqlx::test] against the app's router and the peer role's hello round (tests/peer_sync.rs) — see deny.toml's
-# sqlx wrapper allow-list, which lists this crate for exactly this reason. No real SQL lives
-# here; lapidary-db still owns all of it.
+# Only for #[sqlx::test] against the app's router — see deny.toml's sqlx wrapper allow-list, which
+# lists this crate for exactly this reason. No real SQL lives here; lapidary-db still owns all of it.
 sqlx.workspace = true
-# The device ids the hello round's tests pair with.
+# `MESH_EXTENSIONS`, for the startup line's test.
 lapidary-core.workspace = true
-# Reads the share routes' answers in tests/peer_shares.rs.
-serde_json.workspace = true
-# Real stored bytes for the blob route's tests (tests/peer_blob.rs).
-lapidary-storage.workspace = true
-# The digest those bytes are filed under.
-blake3.workspace = true
+# The browser app's files, in src/web.rs's tests.
 tempfile.workspace = true
 # Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed
 # directly (a part/revision/file with no storage_path) -- the same reason lapidary-ingest

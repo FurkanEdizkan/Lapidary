@@ -91,7 +91,7 @@ crates/
 │                                     read-only source handle, in download.rs and nowhere
 │                                     else; `cargo xtask check-deploy` enforces both
 │                                     halves. A LIBRARY.
-├── lapidary-ingest/      L3          axum Router: the worker-only scan route. The one
+└── lapidary-ingest/      L3          axum Router: the worker-only scan route. The one
 │                                     crate allowed to depend on lapidary-cad and to hold
 │                                     a SourceStore — see its module doc for why this is a
 │                                     separate crate from lapidary-api rather than a role
@@ -99,21 +99,8 @@ crates/
 │                                     is refused by name, since `is_model_file` still admits
 │                                     one so that a scan reports it rather than skipping it
 │                                     in silence. A LIBRARY.
-├── lapidary-peer/        L3          the peer protocol: the raw-public-key TLS listener
-│                                     pinned to paired device ids, the hello, and the
-│                                     hello round that refreshes who is paired and
-│                                     mirrors what they share; the share, file and
-│                                     request routes; and the pull. The only crate that
-│                                     speaks to another installation, and lapidary-api
-│                                     may never depend on it. It names SourceReader only
-│                                     in blob.rs, to serve a shared file, and SourceWriter
-│                                     only in pull.rs, to store a pulled bundle, and never
-│                                     SourceStore; `cargo xtask check-deploy` enforces
-│                                     it. It stages pulled files in its own volume,
-│                                     lapidary-peer-staging, beside the key's. A LIBRARY.
-└── lapidary-enterprise/  Enterprise  licence verify, auth, RBAC, audit, worker fleet
 bin/
-├── lapidary-server/          container entrypoint: api, worker, or peer when sharing is on
+├── lapidary-server/          container entrypoint: the API, the job worker and the browser app
 └── lapidary/                 desktop binary: agent | worker | up
 web/                          React SPA
 deploy/                       Containerfile, compose, quadlet, install.sh, install.ps1

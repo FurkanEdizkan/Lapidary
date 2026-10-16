@@ -54,18 +54,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 --create-home lapidary
 # Every directory a named volume mounts over, created in the image and owned by the runtime
-# user: the blob store, the upload staging, and the peer role's identity key and pull
-# staging (deploy/compose.sharing.yaml). Both Docker and Podman seed a freshly created named
-# volume from whatever the image has at the mount point, ownership included; with no
-# directory here the volume comes up owned by root and this container, which does not run
-# as root, cannot write to it. Goal 8 found the peer's two missing by running the images:
-# the peer could not write its key and exited. `cargo xtask check-deploy` now holds every
-# named volume a lapidary-server service mounts to a line here. The key's directory is 0700:
-# it holds a private key and nothing else.
+# user: the blob store and the upload staging. Both Docker and Podman seed a freshly created named
+# volume from whatever the image has at the mount point, ownership included; with no directory here
+# the volume comes up owned by root and this container, which does not run as root, cannot write to
+# it. `cargo xtask check-deploy` holds every named volume the app mounts to a line here.
 RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \
-    && install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary-uploads \
-    && install -d -o lapidary -g lapidary -m 0700 /var/lib/lapidary-peer \
-    && install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary-peer-staging
+    && install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary-uploads
 # The bundled example parts, so a first run is never an empty grid. 216 kB of real
 # geometry with a committed generator beside it (example/parts/generate.py), and a path
 # the image owns rather than the operator's /ingest mount — see `lapidary_ingest::seed`

@@ -283,7 +283,7 @@ test('strings.ts was flattened into something to compare against', () => {
   expect(KNOWN.exact.has('approximate')).toBe(true)
   expect(KNOWN.exact.has('Nothing here yet')).toBe(true)
   expect(KNOWN.exact.has('1 triangle')).toBe(true)
-  expect(KNOWN.fragments.has('Rendered preview of')).toBe(true)
+  expect(KNOWN.fragments.has('Picture of')).toBe(true)
   expect(KNOWN.fragments.has('triangles')).toBe(true)
 })
 
@@ -318,7 +318,7 @@ test('the scan catches copy in every position that renders', () => {
   // The cross-check: byte-identical copies of known strings, single-word ones included.
   expect(fires("const a = <span>{'approximate'}</span>", 'copy of a strings.ts entry')).toBe(true)
   expect(fires('const a = <p>Nothing here yet</p>', 'copy of a strings.ts entry')).toBe(true)
-  expect(fires('const a = <img alt={`Rendered preview of ${n}`} />', 'copy of a strings.ts entry')).toBe(true)
+  expect(fires('const a = <img alt={`Picture of ${n}`} />', 'copy of a strings.ts entry')).toBe(true)
   expect(fires("const a = <Badge text={'approximate'} />", 'copy of a strings.ts entry')).toBe(true)
 
   // JSX text in a position that is not the first child — the shape that let a copy of

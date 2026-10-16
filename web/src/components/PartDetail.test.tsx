@@ -46,7 +46,6 @@ const BRACKET: PartDetail = {
   surfaceAreaMm2: { value: 11392, approximate: false },
   massG: null,
   lock: null,
-  sharedBy: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'iges',
   sourceBytes: 18204,
@@ -713,17 +712,3 @@ test('a STEP part offers a 3MF for a slicer, watches it being written, then link
   vi.unstubAllGlobals()
 })
 
-test('a part pulled from somebody’s shared library says who it came from', () => {
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
-  const pulled: PartDetail = {
-    ...BRACKET,
-    sharedBy: { deviceId: '7KQ2M-4XW9P-0HB3R', name: 'Ayşe’s workshop' },
-  }
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={pulled} recordable={false} />
-    </QueryClientProvider>,
-  )
-  expect(screen.getByText(strings.detail.sharedBy)).toBeTruthy()
-  expect(screen.getByText('Ayşe’s workshop')).toBeTruthy()
-})

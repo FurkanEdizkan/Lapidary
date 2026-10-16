@@ -524,7 +524,7 @@ fn check_commit_msg() -> Result<()> {
     bail!("commit message check failed")
 }
 
-/// Static checks over `deploy/` and the store's two boundaries — see `xtask/src/deploy.rs`. Static:
+/// Static checks over `deploy/` and the store's boundary — see `xtask/src/deploy.rs`. Static:
 /// it verifies configuration and source text, not the images built from them.
 fn check_deploy() -> Result<()> {
     let root = workspace_root()?;
@@ -533,25 +533,18 @@ fn check_deploy() -> Result<()> {
         std::fs::read_to_string(&path).with_context(|| format!("Could not read {}", path.display()))
     };
     let compose = read("deploy/compose.yaml")?;
-    // Sharing's own service, kept in an overlay so that bringing the plain stack up opens no
-    // listener to the network. Its volumes are held to the same rule.
-    let overlay = read("deploy/compose.sharing.yaml")?;
     let containerfile = read("deploy/Containerfile")?;
 
-    let mut violations = deploy::check_volume_ownership(&[&compose, &overlay], &containerfile);
+    let mut violations = deploy::check_volume_ownership(&[&compose], &containerfile);
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));
-    let mut peer_sources = Vec::new();
-    collect_rs_files(&root.join("crates/lapidary-peer/src"), &mut peer_sources)?;
-    violations.extend(deploy::check_peer_boundary(&peer_sources));
 
     if violations.is_empty() {
         println!(
             "deploy check OK — every named volume a lapidary-server service mounts is a directory \
              the image makes for lapidary, lapidary-api never names SourceStore and names each \
-             narrow source handle only in its one route, and lapidary-peer reads the store only in \
-             blob.rs and writes it only in pull.rs ({} source file(s) checked)",
-            api_sources.len() + peer_sources.len()
+             narrow source handle only in its one route ({} source file(s) checked)",
+            api_sources.len()
         );
         Ok(())
     } else {

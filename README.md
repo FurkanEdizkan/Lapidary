@@ -23,8 +23,7 @@ own picture, or names its format when nobody has given it one. Parts live in a f
 mirrored on disk — one directory per model, its file under its own name with a
 `metadata.json` beside it — under categories you can create and drag models between. Full
 text and part-number search, format and category facets, saved filters, a quick-look panel,
-revisions and locks for a `controlled` library, a dashboard, and sharing between two
-installations that were paired by hand. Removing a part is reversible; purging it is a
+revisions and locks for a `controlled` library, and a dashboard. Removing a part is reversible; purging it is a
 separate, explicit action.
 
 **The pivot of 2026-10-03 is the thing to know before reading anything older.** Lapidary is
@@ -97,12 +96,11 @@ the same scan twice and the second batch settles every file as `skipped` rather 
 
 ### Two containers
 
-`db` (stock Postgres 18) and `app`, plus `peer` when sharing is switched on:
+`db` (stock Postgres 18) and `app`:
 
 | Port | Service | What it is |
 |---|---|---|
 | 3000 | `app` | The browser app, its API, and the job worker that ingests — one process |
-| 8082 | `peer` | Sharing, only with `deploy/compose.sharing.yaml`: installations paired by hand, and nobody else |
 
 The scan route never walks a directory in the request. It writes one `scan_directory` job;
 the worker inside the same process picks it up, walks the mount, and enqueues one job per

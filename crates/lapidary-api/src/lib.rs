@@ -25,8 +25,6 @@ mod part_number;
 mod parts;
 mod revisions;
 mod scan;
-mod shares;
-mod sharing;
 mod sources;
 mod tags;
 mod upload;
@@ -100,13 +98,6 @@ pub struct AppState {
 pub enum Role {
     Api,
     Worker,
-    /// Serves the peer protocol to the installations their owner paired with, and nothing else.
-    ///
-    /// The router this crate builds for it is empty: the peer routes live in `lapidary-peer`,
-    /// which `lapidary-api` may never depend on (`xtask/src/layers.rs` forbids the edge by name).
-    /// The variant is here because `LAPIDARY_ROLE` is parsed here, and a role this parser does not
-    /// know is a startup failure rather than a silent fallback.
-    Peer,
 }
 
 impl Role {
@@ -117,7 +108,6 @@ impl Role {
         match s {
             "api" => Ok(Role::Api),
             "worker" => Ok(Role::Worker),
-            "peer" => Ok(Role::Peer),
             other => Err(ApiError::UnknownRole {
                 got: other.to_owned(),
             }),
@@ -284,79 +274,6 @@ pub fn router(state: AppState, role: Role) -> Router {
                     "/api/libraries/{library}/densities/{material}",
                     axum::routing::put(densities::set).delete(densities::remove),
                 )
-                // Sharing: this installation's id and name, and the people it shares with. The api
-                // only edits the list; the peer role says hello and records who answered. See
-                // `sharing.rs`.
-                .route(
-                    "/api/sharing/identity",
-                    get(sharing::identity).put(sharing::set_name),
-                )
-                .route("/api/sharing/peers", get(sharing::peers).post(sharing::add))
-                .route(
-                    "/api/sharing/peers/{device}",
-                    axum::routing::delete(sharing::remove),
-                )
-                // Who the owners of the folders mirrored here have introduced, and the one answer each needs.
-                .route("/api/sharing/introductions", get(sharing::introductions))
-                .route(
-                    "/api/sharing/introductions/{share}/{device}",
-                    axum::routing::post(sharing::answer_introduction),
-                )
-                // What somebody shares, read from the mirror the peer role keeps, so a shared library
-                // browses while the other machine is asleep.
-                .route(
-                    "/api/sharing/peers/{device}/shares",
-                    get(sharing::peer_shares),
-                )
-                .route("/api/sharing/shares/{id}", get(sharing::mirrored_share))
-                // Whether this installation passes a held folder's files on to its other people (S8).
-                .route(
-                    "/api/sharing/shares/{id}/seeding",
-                    put(sharing::set_seeding),
-                )
-                .route(
-                    "/api/sharing/shares/{id}/parts",
-                    get(sharing::mirrored_parts),
-                )
-                .route(
-                    "/api/sharing/shares/{id}/thumbnail",
-                    get(sharing::mirrored_thumbnail),
-                )
-                // Pulling it: recorded here, done by the peer role, followed from the share's page.
-                .route(
-                    "/api/sharing/shares/{id}/pulls",
-                    axum::routing::post(sharing::start_pull),
-                )
-                .route("/api/sharing/shares/{id}/pull", get(sharing::latest_pull))
-                .route("/api/sharing/pulls", get(sharing::pulls))
-                .route(
-                    "/api/sharing/pulls/{id}/pause",
-                    axum::routing::post(sharing::pause_pull),
-                )
-                .route(
-                    "/api/sharing/pulls/{id}/resume",
-                    axum::routing::post(sharing::resume_pull),
-                )
-                // What this installation shares: a category and everything under it. The peer role
-                // serves it to the people paired; this is where it is decided. See `shares.rs`.
-                .route(
-                    "/api/libraries/{id}/shares",
-                    get(shares::list).post(shares::share),
-                )
-                .route("/api/libraries/{id}/shares/preview", get(shares::preview))
-                .route("/api/shares", get(shares::all))
-                // Asking first: who asked, and this installation's answer. Before `/api/shares/{id}`, which a
-                // literal segment outranks anyway.
-                .route("/api/shares/requests", get(shares::requests))
-                .route(
-                    "/api/shares/{id}/grants/{device}",
-                    axum::routing::put(shares::decide),
-                )
-                .route("/api/shares/{id}", axum::routing::delete(shares::stop))
-                .route(
-                    "/api/shares/{id}/members",
-                    get(shares::members).put(shares::set_members),
-                )
                 // Moving a model, which is the one route here that does touch the store — a
                 // directory rename, no content access. `moves.rs` is the only file in this
                 // crate allowed to hold that rename handle, enforced by `cargo xtask
@@ -438,12 +355,6 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // router was `likeness`, and it went with shape similarity (R3).
                 .merge(dashboard::routes()),
             Role::Worker => Router::new(),
-            // Empty for `Role::Worker`'s reason, and one of its own: the peer protocol is
-            // `lapidary-peer`'s router, which `bin/lapidary-server` serves instead of this one,
-            // and this crate may never depend on that one (`xtask/src/layers.rs` forbids the edge
-            // by name). A peer-facing process must carry no route of the browser's, so the
-            // honest answer here is nothing at all — only `/api/healthz` from `shared` remains.
-            Role::Peer => Router::new(),
         };
     shared.merge(by_role).with_state(state)
 }

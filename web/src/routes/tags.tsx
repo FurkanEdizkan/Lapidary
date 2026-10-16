@@ -61,7 +61,7 @@ export function TagsPage({ library, order }: { library: LibraryId; order?: 'name
   const byLetter = order === 'name'
   return (
     /*
-      No `current` place. The header's places are the grid, the dashboard, Removed and Sharing; this
+      No `current` place. The header's places are the grid, the dashboard and Removed; this
       is reached from the grid's tag panel and from a tag on a model, which is where somebody is when
       they want it. Nor a reading measure on the list — the lead is prose and keeps its 70ch, the list
       is a directory and fills the window, which is the `/duplicates` finding applied before it could

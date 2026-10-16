@@ -129,18 +129,13 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "49bda18946204dd1",
-        reason: "a compose.yaml fixture (an api service mounting a bind-mounted store and a named volume, and a db on the stock image) for the named-volume ownership rule; the YAML indentation is the structure under test. Re-keyed by S1, which dropped the fixture's role and build target",
+        content: "fa729cd46805f31c",
+        reason: "a compose.yaml fixture (an app service mounting a bind-mounted store, one owned named volume and one the image makes for root, and a db on the stock image) for the named-volume ownership rule; the YAML indentation is the structure under test. Re-keyed by S3, which folded the sharing overlay's fixture into it",
     },
     Exemption {
         file: "xtask/src/deploy.rs",
         content: "e424f2cca583b454",
         reason: "a compose.yaml fixture with a column-0 banner comment above its one service, for parse_services; the indentation is the structure under test",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "ea214ab66ff3265e",
-        reason: "a compose.sharing.yaml fixture (a peer service mounting two named volumes and the store) for the named-volume ownership rule; the YAML indentation is the structure under test",
     },
     Exemption {
         file: "xtask/src/deploy.rs",

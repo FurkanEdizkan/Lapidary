@@ -51,7 +51,7 @@ const S = {
   // card carries `aria-labelledby="part-name-<id>"`.
   card: 'article[aria-labelledby^="part-name-"]',
   // The part's OWN picture. `Rendered preview of …` was the alt text until R1; nothing renders, and
-  // `strings.parts.thumbnailAlt` survives only for a shared library's page, which this rig never opens.
+  // `strings.parts.thumbnailAlt` went with sharing (S3).
   cardPicture: 'article[aria-labelledby^="part-name-"] img[alt^="Picture of "]',
   cardCheckbox: 'article[aria-labelledby^="part-name-"] input[type="checkbox"]',
   search: 'input[type="search"][aria-label="Search this library"]',
@@ -121,7 +121,6 @@ const T = {
   uploadButton: 'Upload a folder',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
-  thisInstallation: 'This installation',
   uploadComplete: 'Upload complete —',
   // The press that loads the model, and the whole of `view-original`. `open-timing.mjs` parses this
   // same literal out of strings.ts for the same reason.
@@ -825,7 +824,7 @@ const FLOWS = [
   },
   {
     name: 'remove-restore',
-    // Stage 4's narrow set is grid, quick look, part detail, **removed** and sharing, and /removed is this
+    // Stage 4's narrow set is grid, quick look, part detail and **removed**, and /removed is this
     // flow's. Safe at both widths because it restores what it took.
     widths: [1440, 390],
     async run(page, ctx) {
@@ -1094,37 +1093,6 @@ const FLOWS = [
         )
       }
       return `${JSON.stringify(summary)}; instance keys ${Object.keys(instance).join(', ')}; library ${JSON.stringify(library).slice(0, 100)}`
-    },
-  },
-  {
-    name: 'sharing',
-    widths: [1440, 390],
-    async run(page, ctx) {
-      const identity = await ctx.get('/api/sharing/identity')
-      expect(
-        typeof identity.deviceId === 'string' && identity.deviceId.length > 0,
-        'no device id to show; the peer role did not come up',
-      )
-      await page.go('/sharing', `document.querySelector('h2') !== null`)
-      const regions = await page.settle(
-        () =>
-          page.evaluate(`(() => ({
-            h3: [...document.querySelectorAll('h3')].map((h) => h.textContent.trim()),
-            body: document.body.textContent,
-          }))()`),
-        (r) => r.h3.includes(T.thisInstallation) && r.body.includes(identity.deviceId.slice(0, 8)),
-        { timeout: 20_000 },
-      )
-      expect(regions.h3.includes(T.thisInstallation), `the sharing page's regions are ${JSON.stringify(regions.h3)}`)
-      expect(
-        regions.body.includes(identity.deviceId.slice(0, 8)),
-        `the page never shows this installation's device id (${identity.deviceId.slice(0, 11)}…)`,
-      )
-      // Off by default and it stays off: nothing here pairs anybody.
-      const peers = await ctx.get('/api/sharing/peers')
-      expect(Array.isArray(peers), 'GET /api/sharing/peers did not answer a list')
-      expect(peers.length === 0, `${peers.length} peers are paired; this rig pairs nobody`)
-      return `device ${identity.deviceId.slice(0, 11)}…, regions: ${regions.h3.join(' / ')}, ${peers.length} peers`
     },
   },
 ]
