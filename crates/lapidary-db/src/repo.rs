@@ -153,25 +153,13 @@ pub struct DownloadSource {
 pub struct StorageTotals {
     pub source_bytes: u64,
     pub derivative_bytes: u64,
-    /// What this library's *removed* parts still occupy.
-    ///
-    /// Zero until somebody removes something, and the reason it exists at all is that the
-    /// two figures above deliberately exclude soft-deleted parts: without this, removing a
-    /// part would drop the panel's total by its size while the disk was unchanged, which
-    /// is the panel telling a user bytes were freed. `CLAUDE.md` forbids exactly that
-    /// reading, and `strings.removal` is written around never producing it.
-    ///
-    /// A blob shared with a live part is counted here *and* above, because it is genuinely
-    /// serving both and purging the removed part would not reclaim it.
-    pub removed_bytes: u64,
 }
 
 /// What the whole store holds, across every library — the figure a person means by "how
 /// much space is this taking".
 ///
-/// Four numbers rather than one, because they behave differently and a single total would
-/// hide the two that surprise people: `removed_bytes` is still on the disk and comes back
-/// if the part is restored, and `quarantined_bytes` is on the disk *and* belongs to no
+/// Several numbers rather than one, because they behave differently and a single total would
+/// hide the one that surprises people: `quarantined_bytes` is on the disk *and* belongs to no
 /// library, so it appears in no other panel in the application.
 ///
 /// **There is no inline figure since R4.** `derivative.thumb_bytes` held the one kind that
@@ -191,15 +179,13 @@ pub struct InstanceStorage {
     /// What Lapidary wrote **on the storage volume** — the slicer exports, since R3 — each
     /// blob counted once however many revisions or libraries point at it.
     pub derivative_bytes: u64,
-    /// What soft-deleted parts still occupy. Nothing has left the disk; a restore brings
-    /// them back, and only a purge starts the clock that removes them.
-    pub removed_bytes: u64,
     /// Inside the thirty-day hold, on the disk and belonging to no library. The one figure
     /// this application can report nowhere else.
     ///
-    /// Two things reach it, and the panel must not name only the first: a part somebody
-    /// purged, and a blob that lost its last reference — which after `0055` includes the
-    /// render derivatives this application deleted on its own behalf.
+    /// What reaches it is a derivative that lost its last reference: an evicted export, an
+    /// export of a deleted part, and after `0055` the render derivatives this application
+    /// deleted on its own behalf. A deleted part's own model file never does — delete leaves
+    /// it where it is.
     pub quarantined_bytes: u64,
     /// Slicer exports Lapidary can write again and nobody has read in 90 days: what "free
     /// cache space" would put into quarantine (`DATA.md` §1.5). Only blobs no other row
@@ -227,23 +213,6 @@ fn cache_kinds() -> Vec<&'static str> {
     // what `derivative` can hold — and it stays a filter rather than becoming "every row",
     // because what makes a row cache is that something can rebuild it, not that it is there.
     DerivativeKind::ALL.map(DerivativeKind::as_str).to_vec()
-}
-
-/// Which side of `deleted_at` a page reads.
-///
-/// A parameter rather than a second method, because the two pages are the same query with
-/// one predicate flipped and a duplicate of four LATERALs would drift the moment either
-/// side gained a column. A parameter rather than a `bool` for the ordinary reason: `page(
-/// library, after, limit, true)` does not say what `true` selects, and this is a call site
-/// where guessing wrong shows a user the wrong parts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shows {
-    /// The library as it stands. What the grid asks for.
-    Live,
-    /// Parts a person removed and has not purged. The only route back to a soft-deleted
-    /// part — without it, delete is a trap, because every other read path filters these
-    /// out and nothing would list an id to restore.
-    Removed,
 }
 
 /// What a part looks like to the move route, before it moves.
@@ -292,7 +261,6 @@ pub struct GridQuery<'a> {
     /// The previous page's last id, or `None` for the first page.
     pub after: Option<PartId>,
     pub limit: u16,
-    pub shows: Shows,
     /// One source format, as ingest records it: the extension, lowercased.
     pub format: Option<&'a str>,
     /// One material, exactly as the file names it.
@@ -319,7 +287,6 @@ impl GridQuery<'_> {
             folder: None,
             after: None,
             limit,
-            shows: Shows::Live,
             format: None,
             material: None,
             tag: None,
@@ -513,7 +480,7 @@ impl PgBlobs {
     }
 
     /// Where copies of these bytes are filed in the folder tree: each source `file` row's
-    /// `storage_path`, with the level that file was written at, live parts first.
+    /// `storage_path`, with the level that file was written at.
     ///
     /// For the upload arm, which is handed a hash rather than bytes when the probe found
     /// them already held. A scanned file's only copy is its model directory's — the store
@@ -541,7 +508,7 @@ impl PgBlobs {
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
              WHERE f.blake3 = $1 AND f.role = 'source' AND f.storage_path IS NOT NULL \
-             ORDER BY (p.deleted_at IS NULL) DESC, f.created_at DESC, f.id DESC \
+             ORDER BY f.created_at DESC, f.id DESC \
              LIMIT 8",
         )
         .bind(hash.to_hex())
@@ -593,7 +560,7 @@ impl PgBlobs {
         Ok(())
     }
 
-    /// Step three of the three: remove bytes nothing has pointed at for `older_than`.
+    /// Remove bytes nothing has pointed at for `older_than`.
     ///
     /// This is the only code in Lapidary that destroys user data, and it is written on the
     /// assumption that everything upstream of it may be wrong.
@@ -601,8 +568,7 @@ impl PgBlobs {
     /// # It does not consult `ref_count`, and the `NOT EXISTS` pair is not why that is safe
     ///
     /// The counter is a hint. It is maintained by arithmetic on the ingest paths, and
-    /// [`PgParts::purge`]'s recompute can itself miss a row committed while it waited for a
-    /// lock. Both can be wrong, so nothing here reads it.
+    /// [`recount`] can itself miss a row committed while it waited for a lock. Both can be wrong, so nothing here reads it.
     ///
     /// What actually makes a referenced blob unremovable is neither this query nor that
     /// counter: it is `file.blake3` and `derivative.blake3`, both foreign keys to `blob`.
@@ -718,7 +684,7 @@ impl PgBlobs {
             }
         }
 
-        // A path a live `file` row has claimed since the purge. Dropped rather than
+        // A path a live `file` row has claimed since it was quarantined. Dropped rather than
         // un-flagged, which is where this differs from the blob branch below: there is no
         // `ref_count` to correct and no state to go back to, so a record saying these bytes
         // are doomed is simply wrong and goes.
@@ -732,7 +698,7 @@ impl PgBlobs {
 
         // The other half, and it is not conditional on the cutoff: bytes somebody pointed
         // at again stop being candidates the moment they are pointed at, not thirty days
-        // later. `ref_count` is recomputed here for the same reason purge recomputes it —
+        // later. `ref_count` is recomputed here for the same reason [`recount`] exists —
         // this is the one sweep that looks at every quarantined blob, so it is the cheapest
         // place to correct a counter that drifted.
         let revived: Vec<String> = sqlx::query_scalar(
@@ -804,9 +770,8 @@ impl PgBlobs {
     /// `part_source_path_unique_per_library`; `0003_jobs.sql` records what happens when
     /// the two disagree, and migration `0007` moved both together.
     ///
-    /// Deliberately does *not* filter `part.deleted_at`. A part the user deleted stays
-    /// deleted — re-scanning the directory it came from must not resurrect it, and
-    /// delete is the one action in this product that is always explicit.
+    /// A deleted part has no rows left, so a re-scan of the file it came from finds nothing
+    /// here and ingests it again as a new part (owner, 2026-10-17: delete is delete).
     ///
     /// **The part's current revision, not any of them** (Phase 4 slice 1). Bytes an older
     /// revision held, arriving on top of a newer one, are a revert — history, not a re-scan —
@@ -825,7 +790,8 @@ impl PgBlobs {
         Ok(held.contains(&true))
     }
 
-    /// Whether `quarantined_file` records `storage_path`: a purged part's file waiting out its 30 days,
+    /// Whether `quarantined_file` records `storage_path`: a file a purge (before delete became final,
+    /// 2026-10-17) left waiting out its 30 days,
     /// or, until the sweep drops the record, a path a part has claimed since. Unlike the sweep, which
     /// deletes and so asks whether a row names the path, a caller here only writes beside it.
     pub async fn waits_in_quarantine(&self, storage_path: &str) -> Result<bool, DbError> {
@@ -867,35 +833,6 @@ impl PgBlobs {
         }
         Ok(each)
     }
-}
-
-/// What [`PgParts::purge`] did, so a caller can say it truthfully.
-///
-/// The counts are of *blobs entering quarantine*, not of bytes freed, and the
-/// difference is the point: purging a part frees nothing today. Its bytes sit where
-/// they were for thirty days, reachable by hash and restorable, and only then are they
-/// removed. A route that reported "12.4 MB freed" would be describing something that
-/// has not happened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PurgeReport {
-    /// Blobs this purge left with nothing pointing at them.
-    pub quarantined: u32,
-    /// What those blobs occupy on disk — `stored_bytes`, the compressed figure, since
-    /// that is the space that will actually come back.
-    pub quarantined_bytes: u64,
-}
-
-/// Purging a part that cannot be purged, told apart — a caller has something different
-/// to say about each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Purged {
-    /// No part with that id.
-    NoSuchPart,
-    /// The part is live. Purge is the *second* step and refuses to be the first: a
-    /// single call that both hid a part and destroyed its chain would be the implicit
-    /// deletion the product rule forbids.
-    NotDeletedYet,
-    Done(PurgeReport),
 }
 
 /// What one sweep of [`PgBlobs::reap`] did.
@@ -1069,9 +1006,17 @@ impl PgIngest {
 /// nothing does, in one statement. One row comes back per hash: its `stored_bytes` when nothing
 /// points at it any more, `NULL` when something still does.
 ///
-/// Purge's, and the render cache's: two ways of taking references away, one rule for what that
-/// does to a blob, so the two cannot drift apart. [`PgParts::purge`] says why it is one
-/// statement and why `quarantined_at` keeps a clock that is already running.
+/// Delete's and the render cache's: two ways of taking references away, one rule for what that
+/// does to a blob, so the two cannot drift apart.
+///
+/// It recomputes rather than decrementing. `ref_count` is maintained by arithmetic everywhere
+/// else, and a counter maintained only by increments and decrements drifts invisibly until the
+/// reaper acts on it — so the path that leads to removing bytes refuses to trust the number.
+/// One statement, so a hash cannot be counted correct and left un-quarantined by a failure
+/// between two. `coalesce` keeps a clock that is already running; a count above zero clears
+/// it. The count is taken under the statement's snapshot and can miss a row committed while it
+/// waited for the lock; that is survivable by design, because [`PgBlobs::reap`] re-asks
+/// reachability inside the transaction that would delete the bytes.
 async fn recount(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     hashes: &[String],
@@ -1095,6 +1040,62 @@ async fn recount(
     .bind(hashes)
     .fetch_all(&mut **tx)
     .await?)
+}
+
+/// Delete these parts and everything that hangs off them, child-first, inside the caller's
+/// transaction. Shared by [`PgParts::delete`] and `PgFolders::delete_subtree`, so a part
+/// deleted on its own and a part deleted with its category leave the same nothing behind.
+///
+/// Child-first because nothing in `0002_parts.sql` declares `ON DELETE CASCADE`, which is a
+/// property worth keeping: a stray `DELETE FROM part` fails loudly on a foreign key rather than
+/// quietly taking four tables with it.
+///
+/// # Which blob counts move
+///
+/// Only the derivatives'. Their hashes are collected before the chain comes down (afterwards
+/// there is no path from a part to them) and [`recount`] runs over them, so a cached export
+/// nothing points at any more enters the same quarantine cache eviction uses.
+///
+/// **Source-file hashes are deliberately left alone**, and no `quarantined_file` row is
+/// written. Both are how the old purge handed a part's own file to the reaper, which unlinks
+/// it; delete never removes the owner's model file, so it never starts that clock. The cost is
+/// a `blob.ref_count` that stays above the true count for those bytes, which only ever errs
+/// towards keeping them. Gallery images (`part_image.blake3`) are not recounted either, as
+/// before: `recount` has never counted them.
+pub(crate) async fn delete_parts(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parts: &[Uuid],
+) -> Result<(), DbError> {
+    if parts.is_empty() {
+        return Ok(());
+    }
+    let derived: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT d.blake3 FROM derivative d \
+         JOIN revision r ON r.id = d.revision_id \
+         WHERE r.part_id = ANY($1) AND d.blake3 IS NOT NULL",
+    )
+    .bind(parts)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    for statement in [
+        "DELETE FROM part_image WHERE part_id = ANY($1)",
+        "DELETE FROM part_source WHERE part_id = ANY($1)",
+        "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = ANY($1))",
+        "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = ANY($1))",
+        "DELETE FROM revision WHERE part_id = ANY($1)",
+        // The move trail records where a part was filed; a deleted part is not filed anywhere.
+        "DELETE FROM part_move WHERE part_id = ANY($1)",
+        "DELETE FROM part WHERE id = ANY($1)",
+    ] {
+        sqlx::query(statement)
+            .bind(parts)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    recount(tx, &derived).await?;
+    Ok(())
 }
 
 async fn insert_part_chain(
@@ -1416,7 +1417,6 @@ macro_rules! grid_columns {
      s.zstd_level AS zstd_level, s.storage_path AS storage_path, \
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
-     (extract(epoch FROM p.deleted_at) * 1000000)::bigint AS removed_us, \
      s.format AS source_format, \
      img.id AS image_id, img.image_webp AS image_webp, img.blake3 AS image_blake3, \
      img.origin AS image_origin, img.source_url AS image_source_url, \
@@ -1461,7 +1461,7 @@ macro_rules! sorted_page {
     ($key:literal) => {
         concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $5 \
+             SELECT id FROM folder WHERE id = $4 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
@@ -1472,19 +1472,19 @@ macro_rules! sorted_page {
                SELECT p.id, ",
             $key,
             " AS value FROM part p \
-                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
+                WHERE p.library_id = $1 \
                   AND EXISTS (SELECT 1 FROM revision WHERE part_id = p.id) \
                   AND ($2::uuid IS NULL OR (",
             $key,
             ", p.id) < (SELECT value, id FROM anchor)) \
-                  AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                       AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+                  AND ($4::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-                  AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
-                  AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
-                  AND ($9::jsonb IS NULL OR p.metadata_json->'custom' @> $9::jsonb) \
-                  AND ($10::jsonpath IS NULL OR p.metadata_json->'custom' @? $10::jsonpath) \
+                  AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
+                  AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
+                  AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+                  AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
                 ORDER BY ",
             $key,
             " DESC, p.id DESC LIMIT $3) \
@@ -1570,7 +1570,6 @@ impl PgParts {
         library: LibraryId,
         folder: Option<FolderId>,
         query: Option<&str>,
-        shows: Shows,
         material: Option<&str>,
         tag: Option<&str>,
         field: Option<&str>,
@@ -1585,7 +1584,7 @@ impl PgParts {
         // when a large library measures slow.
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $3 \
+             SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
@@ -1594,18 +1593,17 @@ impl PgParts {
                            ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
              JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
                            ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
-             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
-               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
-               AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
-               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
-               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
-               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
+             WHERE p.library_id = $1 \
+               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
+                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
+               AND ($5::text IS NULL OR p.materials @> ARRAY[$5::text]) \
+               AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
+               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
+               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
              GROUP BY s.format ORDER BY s.format",
         )
         .bind(library.as_uuid())
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
         .bind(query.map(like_pattern))
@@ -1631,7 +1629,6 @@ impl PgParts {
         library: LibraryId,
         folder: Option<FolderId>,
         query: Option<&str>,
-        shows: Shows,
         format: Option<&str>,
         tag: Option<&str>,
         field: Option<&str>,
@@ -1639,26 +1636,25 @@ impl PgParts {
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $3 \
+             SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              SELECT m.material, count(DISTINCT p.id) FROM part p \
              CROSS JOIN LATERAL unnest(p.materials) AS m(material) \
-             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
-               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
-               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+             WHERE p.library_id = $1 \
+               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
+                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
+               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
-               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
-               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
+               AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
+               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
+               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
              GROUP BY m.material ORDER BY m.material",
         )
         .bind(library.as_uuid())
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
         .bind(query.map(like_pattern))
@@ -1680,7 +1676,6 @@ impl PgParts {
         library: LibraryId,
         folder: Option<FolderId>,
         query: Option<&str>,
-        shows: Shows,
         format: Option<&str>,
         material: Option<&str>,
         field: Option<&str>,
@@ -1688,26 +1683,25 @@ impl PgParts {
     ) -> Result<Vec<FacetValue>, DbError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $3 \
+             SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              SELECT t.tag, count(DISTINCT p.id) FROM part p \
              CROSS JOIN LATERAL unnest(p.tags) AS t(tag) \
-             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
-               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
-               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+             WHERE p.library_id = $1 \
+               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
+                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
+               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
-               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
-               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
+               AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
+               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
+               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
              GROUP BY t.tag ORDER BY t.tag",
         )
         .bind(library.as_uuid())
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
         .bind(query.map(like_pattern))
@@ -1731,7 +1725,6 @@ impl PgParts {
         library: LibraryId,
         folder: Option<FolderId>,
         query: Option<&str>,
-        shows: Shows,
         format: Option<&str>,
         material: Option<&str>,
         tag: Option<&str>,
@@ -1744,30 +1737,29 @@ impl PgParts {
         // and would fail the query rather than count nothing.
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $3 \
+             SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
              SELECT kv.key, kv.value, count(*) FROM part p \
              CROSS JOIN LATERAL jsonb_each_text(CASE jsonb_typeof(p.metadata_json->'custom') \
                   WHEN 'object' THEN p.metadata_json->'custom' END) AS kv(key, value) \
-             WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $2 \
-               AND ($3::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($4::text IS NULL OR p.part_number ILIKE $5 OR p.name ILIKE $5 \
-                    OR p.source_path ILIKE $5 OR p.search @@ plainto_tsquery('simple', $4)) \
-               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+             WHERE p.library_id = $1 \
+               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
+                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
+               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
-               AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
-               AND kv.key = ANY($9::text[]) \
-               AND (kv.key = $10 \
-                    OR (($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
-                        AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath))) \
+               AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
+               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
+               AND kv.key = ANY($8::text[]) \
+               AND (kv.key = $9 \
+                    OR (($10::jsonb IS NULL OR p.metadata_json->'custom' @> $10::jsonb) \
+                        AND ($11::jsonpath IS NULL OR p.metadata_json->'custom' @? $11::jsonpath))) \
              GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value",
         )
         .bind(library.as_uuid())
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
         .bind(query.map(like_pattern))
@@ -1853,7 +1845,7 @@ impl PgParts {
                                 FROM file f \
                                 WHERE f.revision_id = r.id AND f.role = 'source' \
                                 ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-             WHERE p.id = $1 AND p.deleted_at IS NULL",
+             WHERE p.id = $1",
         )
         .bind(part.as_uuid())
         .fetch_optional(&self.0)
@@ -1958,30 +1950,30 @@ impl PgParts {
         Ok(name.map(|name| lapidary_core::slug::slugify(&name).to_lowercase()))
     }
 
-    /// Step one of the three: hide the part, touch no bytes.
+    /// Delete the part, for good: its revisions, files, derivatives, pictures, sources and
+    /// move trail, in one transaction. There is no undo (owner, 2026-10-17: "if it is deleted
+    /// it is deleted").
     ///
-    /// One `UPDATE`, and that it is only one is a property of what came before rather
-    /// than luck — [`PartRepository::page`], [`PgParts::detail`], [`PgParts::library_of`],
-    /// [`PgBlobs::source_for_download`] and [`PgParts::storage_totals`] all already filter
-    /// `deleted_at IS NULL`, so setting the column removes the part from the grid, its own
-    /// page, its download and the library's totals at once.
+    /// **The model file is never touched.** Delete takes rows out of the database and nothing
+    /// else: the file at a `storage_path`, and a content-addressed source blob, stay exactly where
+    /// they are. See [`delete_parts`] for which blob counts are recomputed and which are not.
     ///
-    /// [`PgBlobs::library_holds`] is the deliberate exception and must stay one: it is
-    /// what makes a re-scan of a deleted path a no-op instead of a resurrection. See its
-    /// own doc comment.
-    ///
-    /// `WHERE deleted_at IS NULL` makes this idempotent in the direction that matters —
-    /// deleting an already-deleted part reports `false` rather than moving its timestamp
-    /// forward and quietly extending how long it has been gone.
-    ///
-    /// Returns whether a row matched, for [`PgParts::set_auto_thumbnail`]'s reason.
-    pub async fn soft_delete(&self, part: PartId) -> Result<bool, DbError> {
-        let result =
-            sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
+    /// Returns whether there was such a part, so a second delete of the same id is a `404`.
+    pub async fn delete(&self, part: PartId) -> Result<bool, DbError> {
+        let mut tx = self.0.begin().await?;
+        // `FOR UPDATE` holds the row for the whole transaction, so a revision being recorded
+        // against this part (which takes the same lock) and this delete cannot interleave.
+        let found: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM part WHERE id = $1 FOR UPDATE")
                 .bind(part.as_uuid())
-                .execute(&self.0)
+                .fetch_optional(&mut *tx)
                 .await?;
-        Ok(result.rows_affected() > 0)
+        let Some(found) = found else {
+            return Ok(false);
+        };
+        delete_parts(&mut tx, &[found]).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// The number a person gave this part, or `None` to clear it. Only a live part: a deleted
@@ -1993,7 +1985,7 @@ impl PgParts {
     ) -> Result<bool, DbError> {
         let result = sqlx::query(
             "UPDATE part SET part_number = $2, updated_at = now() \
-             WHERE id = $1 AND deleted_at IS NULL",
+             WHERE id = $1",
         )
         .bind(part.as_uuid())
         .bind(number)
@@ -2005,13 +1997,11 @@ impl PgParts {
     /// The tags a person gave this part, replacing the ones it had; an empty list clears them.
     /// Only a live part, for [`PgParts::set_part_number`]'s reason.
     pub async fn set_tags(&self, part: PartId, tags: &[String]) -> Result<bool, DbError> {
-        let result = sqlx::query(
-            "UPDATE part SET tags = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(part.as_uuid())
-        .bind(tags)
-        .execute(&self.0)
-        .await?;
+        let result = sqlx::query("UPDATE part SET tags = $2, updated_at = now() WHERE id = $1")
+            .bind(part.as_uuid())
+            .bind(tags)
+            .execute(&self.0)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -2027,7 +2017,7 @@ impl PgParts {
     pub async fn set_materials(&self, part: PartId, materials: &[String]) -> Result<bool, DbError> {
         let result = sqlx::query(
             "UPDATE part SET materials = $2::text[], materials_typed = true, updated_at = now() \
-             WHERE id = $1 AND deleted_at IS NULL",
+             WHERE id = $1",
         )
         .bind(part.as_uuid())
         .bind(materials)
@@ -2047,7 +2037,7 @@ impl PgParts {
                       THEN metadata_json->'cad'->'materials' ELSE '[]'::jsonb END)), \
                materials_typed = false, \
                updated_at = now() \
-             WHERE id = $1 AND deleted_at IS NULL",
+             WHERE id = $1",
         )
         .bind(part.as_uuid())
         .execute(&self.0)
@@ -2055,235 +2045,7 @@ impl PgParts {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Undo of [`PgParts::soft_delete`], and explicit for the same reason delete is: we do
-    /// not un-delete implicitly either. A scan that found the file again will not do this
-    /// — a person has to ask.
-    ///
-    /// Nothing needs restoring but the column. Delete left the revisions, files,
-    /// derivatives and blobs exactly where they were, which is the whole point of it being
-    /// soft.
-    pub async fn restore(&self, part: PartId) -> Result<bool, DbError> {
-        let result = sqlx::query(
-            "UPDATE part SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL",
-        )
-        .bind(part.as_uuid())
-        .execute(&self.0)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Step two of the three: remove the part chain, and leave the bytes alone.
-    ///
-    /// # The reference update recomputes rather than decrementing
-    ///
-    /// `ref_count` is maintained by arithmetic everywhere else — `+1` per `file` and
-    /// `derivative` row in [`insert_part_chain`], moved on rung replacement in
-    /// [`PgParts::record_derivative`]. This is the one place that does not do that, and it
-    /// is deliberate: a counter maintained only by increments and decrements is a counter
-    /// that drifts, and the drift is invisible until something acts on it. The thing that
-    /// acts on it is the reaper, and what it does is delete bytes.
-    ///
-    /// So the destructive path refuses to trust the number. It recomputes each affected
-    /// hash from what actually points at it, which makes any accumulated drift self-heal
-    /// the moment a purge touches that blob.
-    ///
-    /// A concurrent ingest of the same bytes is *not* fully excluded by this, and the
-    /// honest version is worth writing down. The `UPDATE` takes the same `blob` row lock
-    /// ingest's `ref_count + 1` takes, so the two serialize on the write — but the count
-    /// itself is computed by a CTE evaluated under the statement's own snapshot, so a
-    /// `file` row that another transaction commits while this one waits for the lock can
-    /// be missed. The recompute would then land on zero for bytes something does point at.
-    ///
-    /// That is survivable, and it is survivable by design rather than by luck: reaching
-    /// zero sets `quarantined_at`, which starts a thirty-day clock and removes nothing.
-    /// [`PgBlobs::reap`] re-asks reachability inside the transaction that would delete the
-    /// bytes, and a blob with a `file` row is not removed — it is un-quarantined. The
-    /// layering is the point. This statement is allowed to be wrong; the one that destroys
-    /// data is not, so it does not rely on this one being right.
-    ///
-    /// # Order matters twice
-    ///
-    /// The doomed hashes are collected *before* the chain is deleted, because afterwards
-    /// there is no path from the part to its blobs. And the chain comes down child-first:
-    /// nothing in `0002_parts.sql` declares `ON DELETE CASCADE`, which is a property worth
-    /// keeping — a stray `DELETE FROM part` should fail loudly on a foreign key rather
-    /// than quietly take four tables with it.
-    pub async fn purge(&self, part: PartId) -> Result<Purged, DbError> {
-        let mut tx = self.0.begin().await?;
-
-        // `FOR UPDATE` holds the part row for the whole transaction, so two purges of the
-        // same part cannot both pass the gate below and double-count the recompute.
-        let state: Option<Option<i64>> = sqlx::query_scalar(
-            "SELECT (extract(epoch FROM deleted_at) * 1000000)::bigint FROM part \
-             WHERE id = $1 FOR UPDATE",
-        )
-        .bind(part.as_uuid())
-        .fetch_optional(&mut *tx)
-        .await?;
-        match state {
-            None => return Ok(Purged::NoSuchPart),
-            Some(None) => return Ok(Purged::NotDeletedYet),
-            Some(Some(_)) => {}
-        }
-
-        let doomed: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT h FROM ( \
-                 SELECT f.blake3 AS h FROM file f \
-                 JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1 \
-                 UNION ALL \
-                 SELECT d.blake3 FROM derivative d \
-                 JOIN revision r ON r.id = d.revision_id \
-                 WHERE r.part_id = $1 AND d.blake3 IS NOT NULL \
-             ) hashes",
-        )
-        .bind(part.as_uuid())
-        .fetch_all(&mut *tx)
-        .await?;
-
-        // Collected here, beside the hashes, and for the identical reason: after the chain
-        // comes down there is no path from the part to its files, and `storage_path` is
-        // the only record of where a migrated part's bytes are. `blob` cannot stand in for
-        // it -- one hash, several model files (migration `0014`'s header states why).
-        //
-        // No `role` filter, unlike `storage_totals` and the grid's source LATERAL. Those
-        // ask "what is this part's source file"; this asks "what has this part put on
-        // disk", and a row carrying a path is a file in a model directory whatever its
-        // role. Only `source` rows have one today, so the clause is inert now and right
-        // when that stops being true.
-        //
-        // A part with no `storage_path` on any row writes nothing here. That is the
-        // un-migrated case and the blob quarantine below already covers it: the two are
-        // complementary, not alternatives.
-        #[allow(clippy::type_complexity)]
-        let doomed_files: Vec<(String, String, Option<i64>)> = sqlx::query_as(
-            "SELECT f.storage_path, f.blake3, f.stored_bytes \
-             FROM file f JOIN revision r ON r.id = f.revision_id \
-             WHERE r.part_id = $1 AND f.storage_path IS NOT NULL",
-        )
-        .bind(part.as_uuid())
-        .fetch_all(&mut *tx)
-        .await?;
-
-        for statement in [
-            // The gallery and the provenance, both children of `part` and both added a
-            // slice after this list was written -- the same shape as `part_move` below,
-            // and this time the catalogue test caught them at the moment they were created
-            // rather than a running stack catching them at the moment somebody purged.
-            //
-            // `part_image` first: its `blake3` references `blob`, and the `ref_count`
-            // recompute further down has to see these rows gone or it will count a
-            // reference that is on its way out. An inline image needs no such care -- its
-            // bytes are the row.
-            "DELETE FROM part_image WHERE part_id = $1",
-            // Deleted with the part rather than kept as a record of where it came from. A
-            // source row is a claim about a model, and after a purge there is no model for
-            // it to be about; keeping it would leave a vendor and a price pointing at an id
-            // nothing else in the database knows.
-            "DELETE FROM part_source WHERE part_id = $1",
-            "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
-            "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = $1)",
-            "DELETE FROM revision WHERE part_id = $1",
-            // The move audit trail. It references `part` and arrived a slice after this
-            // list was written, so a purge of any part anyone had ever moved failed on
-            // `part_move_part_id_fkey` -- caught on the running stack, not by the suite,
-            // because slice 7's purge tests never move and the folder tree's move tests
-            // never purge. `child-first` is the rule this list already follows; this row
-            // is a child of `part` and belongs above it.
-            //
-            // Deleted rather than kept: the trail records where a part was filed, and a
-            // purged part is not filed anywhere. Keeping it would leave rows pointing at
-            // an id nothing else in the database knows, which is the shape of orphan the
-            // no-`ON DELETE CASCADE` rule exists to make impossible.
-            "DELETE FROM part_move WHERE part_id = $1",
-            "DELETE FROM part WHERE id = $1",
-        ] {
-            sqlx::query(statement)
-                .bind(part.as_uuid())
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        // Recompute and quarantine in one statement, so a hash cannot be counted correct
-        // and left un-quarantined by a failure between two of them.
-        //
-        // `quarantined_at` is cleared when the count comes back above zero, which is what
-        // makes re-ingesting quarantined bytes un-quarantine them: `link_existing` points
-        // a new `file` row at a blob whose clock was running, and the next purge that
-        // touches it stops that clock. `coalesce` on the other branch is what stops a
-        // second purge from restarting a clock that is already running.
-        let sizes = recount(&mut tx, &doomed).await?;
-
-        // The path half of quarantine. Written after the chain comes down rather than
-        // before it, so a `storage_path` a `file` row still holds cannot briefly appear in
-        // both tables at once -- the sweep's guard reads exactly that overlap and would
-        // decline a row this transaction is about to make removable.
-        //
-        // `quarantined_at = now()` on conflict, where the blob branch above keeps the
-        // running clock with `coalesce`. Not an inconsistency: the clock belongs to the
-        // bytes, a hash identifies its bytes and a path does not. The same path can arrive
-        // holding something else, and it takes a person to do it -- `model_dir_for`
-        // disambiguates against a directory that exists, so what puts a quarantined path
-        // back in play is the owner removing that directory in a file manager, which is
-        // what a browsable store is for. Restarting is the safe answer, and it is this
-        // sweep's own rule: losing bytes is worse than keeping them.
-        if !doomed_files.is_empty() {
-            let (paths, hashes, sizes) = doomed_files.iter().fold(
-                (Vec::new(), Vec::new(), Vec::new()),
-                |(mut paths, mut hashes, mut sizes), (path, hash, stored)| {
-                    paths.push(path.as_str());
-                    hashes.push(hash.as_str());
-                    sizes.push(*stored);
-                    (paths, hashes, sizes)
-                },
-            );
-            sqlx::query(
-                "INSERT INTO quarantined_file (storage_path, blake3, stored_bytes) \
-                 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]) \
-                 ON CONFLICT (storage_path) DO UPDATE \
-                     SET blake3 = excluded.blake3, \
-                         stored_bytes = excluded.stored_bytes, \
-                         quarantined_at = now()",
-            )
-            .bind(&paths)
-            .bind(&hashes)
-            .bind(&sizes)
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-
-        // One row came back per hash the purge touched; the `NULL`s are the ones another
-        // part still points at, which are exactly the blobs that must not be counted as
-        // entering quarantine.
-        // A blob with no content-addressed copy (a filed source, `0026`) enters quarantine as a
-        // row and holds no bytes of its own, so it is not a file this purge kept.
-        let entering: Vec<i64> = sizes
-            .into_iter()
-            .flatten()
-            .filter(|stored| *stored != 0)
-            .collect();
-        let mut quarantined_bytes = 0u64;
-        for stored in &entering {
-            // `bytes_column`, never `as u64`: a negative row would otherwise reach a person
-            // as 18 exabytes entering quarantine instead of saying the row is wrong.
-            quarantined_bytes += bytes_column("blob.stored_bytes", *stored)?;
-        }
-        // The model files, counted once, where they are: the bytes of every part filed since the
-        // folder tree.
-        for (_, _, stored) in &doomed_files {
-            if let Some(stored) = stored {
-                quarantined_bytes += bytes_column("file.stored_bytes", *stored)?;
-            }
-        }
-        Ok(Purged::Done(PurgeReport {
-            quarantined: (entering.len() + doomed_files.len()) as u32,
-            quarantined_bytes,
-        }))
-    }
-
-    /// Which library owns `part`. `None` when there is no such part, or when it is
-    /// soft-deleted.
+    /// Which library owns `part`. `None` when there is no such part.
     ///
     /// This is how a part-scoped route stays tenant-safe without a library in its path:
     /// the library it enqueues under is read off the part rather than taken from the
@@ -2292,16 +2054,11 @@ impl PgParts {
     /// "content addressing is not authorization" applies to a part id exactly as
     /// `jobs.rs` applies it to a batch id — scoping makes the check structural instead of
     /// a step someone can forget.
-    ///
-    /// Soft-deleted parts answer `None` for the same reason
-    /// [`PgParts::revisions_missing`] skips them: a deleted part is hidden everywhere the
-    /// grid looks, so rendering for one is work whose output nothing will ever display.
     pub async fn library_of(&self, part: PartId) -> Result<Option<LibraryId>, DbError> {
-        let id: Option<Uuid> =
-            sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1 AND deleted_at IS NULL")
-                .bind(part.as_uuid())
-                .fetch_optional(&self.0)
-                .await?;
+        let id: Option<Uuid> = sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1")
+            .bind(part.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
         Ok(id.map(LibraryId::from_uuid))
     }
 
@@ -2347,7 +2104,7 @@ impl PgParts {
         let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
             "SELECT p.library_id, d.revision_id, d.kind FROM derivative d \
              JOIN revision r ON r.id = d.revision_id \
-             JOIN part p ON p.id = r.part_id AND p.deleted_at IS NULL \
+             JOIN part p ON p.id = r.part_id \
              WHERE d.blake3 = $1 AND d.kind = ANY($2)",
         )
         .bind(hash.to_hex())
@@ -2401,13 +2158,8 @@ impl PgParts {
     /// source row (a re-upload, a later format conversion) must resolve to one answer
     /// every call, rather than to whichever row the planner handed back first.
     ///
-    /// Deliberately does **not** filter `part.deleted_at`, where its neighbour
-    /// [`PgParts::source_for_download`] does — the asymmetry is the point, not an
-    /// oversight to tidy up. This one is reached only from a `derive` job, and both
-    /// sweeps that enqueue those (`revisions_missing`, and the page query beside it)
-    /// already filter deleted parts, so a deleted part never arrives here. The download
-    /// route is reached from a URL a user can hold after deleting the part, which is a
-    /// different question with a different answer.
+    /// A deleted part has no revision left, so a `derive` job queued before the delete finds
+    /// nothing here.
     pub async fn revision_source(
         &self,
         library: LibraryId,
@@ -2452,10 +2204,8 @@ impl PgParts {
     /// capability, as it is on every other Phase 1 route; when auth lands the check becomes
     /// "is this revision's library reachable by this caller", which has a subject.
     ///
-    /// Filters `part.deleted_at IS NULL`, which [`PgBlobs::library_holds`] deliberately
-    /// does not. Different question, opposite answer: a re-scan must not resurrect a part
-    /// the user deleted, and a download URL held from before the delete must not outlive
-    /// it. A deleted part is not browsable, so it is not downloadable either.
+    /// A download URL held from before a delete does not outlive it: the part's rows are gone,
+    /// so this answers `None`.
     ///
     /// `zstd_level` comes off the `file` row itself — never from
     /// `Compression::for_source_format`. That is ingest-time policy and slice 7 is about to
@@ -2488,7 +2238,7 @@ impl PgParts {
              FROM file f \
              JOIN revision r ON r.id = f.revision_id \
              JOIN part p ON p.id = r.part_id \
-             WHERE f.revision_id = $1 AND f.role = 'source' AND p.deleted_at IS NULL \
+             WHERE f.revision_id = $1 AND f.role = 'source' \
              ORDER BY f.created_at DESC, f.id DESC LIMIT 1",
             )
             .bind(revision.as_uuid())
@@ -2532,7 +2282,7 @@ impl PgParts {
                SELECT p.id, p.name, p.part_number, p.source_path, p.tags, wanted.position, \
                       ps.urls, ps.vendors, ps.external_ids, ps.titles, ps.licenses \
                  FROM unnest($2::uuid[]) WITH ORDINALITY AS wanted(id, position) \
-                 JOIN part p ON p.id = wanted.id AND p.library_id = $1 AND p.deleted_at IS NULL \
+                 JOIN part p ON p.id = wanted.id AND p.library_id = $1 \
                  LEFT JOIN LATERAL (SELECT array_agg(url ORDER BY created_at, id) AS urls, \
                                            array_agg(vendor ORDER BY created_at, id) AS vendors, \
                                            array_agg(external_id ORDER BY created_at, id) AS external_ids, \
@@ -2673,62 +2423,44 @@ impl PgParts {
     /// writes the second role. The card figures and this total describe the same set, and
     /// this clause is what keeps that true.
     ///
-    /// Soft-deleted parts are excluded from the first two figures and counted in the
-    /// third. The two above match [`PartRepository::page`], so the panel that sits over
-    /// the grid can be checked against the cards in it; `removed_bytes` is what stops the
-    /// split from reading as a saving, because the bytes have not moved and
-    /// `strings.storage.removed` says so in words.
+    /// Both figures match [`PartRepository::page`], so the panel that sits over the grid can
+    /// be checked against the cards in it.
     ///
-    /// The folder-tree slice reached the same requirement from the other side and met it
-    /// by counting removed parts inside the totals, while nothing yet reported them
-    /// apart -- a delete that dropped the panel while the volume was unchanged is the one
-    /// reading `CLAUDE.md` forbids, and both shapes refuse it. This one also keeps the
-    /// panel checkable against the grid, so it is the one that survived the merge.
+    /// **A deleted part leaves this panel at once, and its model file stays on the disk.**
+    /// Delete takes the rows and never the file (owner, 2026-10-17), so the panel drops by the
+    /// part's size while the volume does not: the figure is what the library catalogues, not
+    /// what the disk holds. The instance view's directory walk answers the second question.
     ///
-    /// **Quarantined bytes are not here, and cannot be.** A purge removes the part chain,
-    /// so a quarantined blob has no `file` row, no `revision`, no `part` and therefore no
-    /// library: the figure is library-less by construction rather than merely
-    /// unimplemented. It belongs to an instance-wide storage view, which arrives with
-    /// Phase 4's tiering job. Until then a purge does drop this panel while the bytes wait
-    /// out their thirty days -- recorded in the slice 7 design, section 2.
+    /// **Quarantined bytes are not here, and cannot be.** A quarantined blob has nothing
+    /// pointing at it and therefore no library: the figure is library-less by construction.
+    /// It belongs to [`Self::instance_storage`].
     pub async fn storage_totals(
         &self,
         library: LibraryId,
     ) -> Result<Option<StorageTotals>, DbError> {
         // `sum()` over a bigint column is `numeric`, which sqlx will not decode into
         // i64 — hence the `::bigint` casts, not decoration.
-        let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        let row: Option<(i64, i64)> = sqlx::query_as(
             "SELECT (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
              FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL \
+             WHERE p.library_id = l.id \
              AND f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NULL)), \
-             (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
-             FROM file f \
-             JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
-             AND f.role = 'source') \
-             + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
-             WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
-             JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
-             WHERE p.library_id = l.id AND p.deleted_at IS NOT NULL \
-             AND d.blake3 IS NOT NULL)) \
+             WHERE p.library_id = l.id)) \
              FROM library l WHERE l.id = $1",
         )
         .bind(library.as_uuid())
         .fetch_optional(&self.0)
         .await?;
-        let Some((source, derivative, removed)) = row else {
+        let Some((source, derivative)) = row else {
             return Ok(None);
         };
         Ok(Some(StorageTotals {
             source_bytes: bytes_column("file.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
-            removed_bytes: bytes_column("file.stored_bytes + blob.stored_bytes", removed)?,
         }))
     }
 
@@ -2743,10 +2475,10 @@ impl PgParts {
     /// Here every blob is counted once.
     ///
     /// Quarantined bytes appear here and nowhere else. They are library-less by
-    /// construction (`DATA.md` §1.6): a quarantined blob is keyed by hash, and the part
-    /// that would have said which library it belonged to is the part that was purged. That
-    /// is exactly why a per-library panel cannot show them and an instance-wide one must —
-    /// they are bytes on the disk, for up to thirty days, that no other figure admits to.
+    /// construction (`DATA.md` §1.6): a quarantined blob is keyed by hash, and nothing points
+    /// at it any more to say which library it belonged to. That is exactly why a per-library
+    /// panel cannot show them and an instance-wide one must — they are bytes on the disk, for
+    /// up to thirty days, that no other figure admits to.
     ///
     /// **Still not `du`, and the caller is expected to say so.** `metadata.json` beside
     /// every model is not counted (the same omission `StorageTotals` documents, for the
@@ -2754,22 +2486,16 @@ impl PgParts {
     /// move), and neither is anything a person dropped into the store themselves. The
     /// route pairs this with a real walk of the root for exactly that reason.
     pub async fn instance_storage(&self) -> Result<InstanceStorage, DbError> {
-        // One row, five scalar subqueries, same `::bigint` casts as `storage_totals` and
+        // One row, four scalar subqueries, same `::bigint` casts as `storage_totals` and
         // for the same reason: `sum()` over bigint is `numeric`, which sqlx will not decode
         // into i64.
-        let (source, derivative, removed, quarantined, cache): (i64, i64, i64, i64, i64) =
-            sqlx::query_as(
-                "SELECT \
+        let (source, derivative, quarantined, cache): (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
              (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
               FROM file f JOIN revision r ON r.id = f.revision_id \
-              JOIN part p ON p.id = r.part_id \
-              WHERE p.deleted_at IS NULL AND f.role = 'source'), \
+              WHERE f.role = 'source'), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
               WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d WHERE d.blake3 IS NOT NULL)), \
-             (SELECT coalesce(sum(coalesce(f.stored_bytes, f.size_bytes)), 0)::bigint \
-              FROM file f JOIN revision r ON r.id = f.revision_id \
-              JOIN part p ON p.id = r.part_id \
-              WHERE p.deleted_at IS NOT NULL AND f.role = 'source'), \
              (SELECT coalesce(sum(q.stored_bytes), 0)::bigint FROM quarantined_file q) \
              + (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
                 WHERE b.quarantined_at IS NOT NULL), \
@@ -2781,22 +2507,21 @@ impl PgParts {
                 AND NOT EXISTS (SELECT 1 FROM derivative d \
                                 WHERE d.blake3 = b.blake3 AND NOT d.kind = ANY($1)) \
                 AND NOT EXISTS (SELECT 1 FROM file f WHERE f.blake3 = b.blake3))",
-            )
-            .bind(cache_kinds())
-            .fetch_one(&self.0)
-            .await?;
+        )
+        .bind(cache_kinds())
+        .fetch_one(&self.0)
+        .await?;
 
         Ok(InstanceStorage {
             source_bytes: bytes_column("file.stored_bytes", source)?,
             derivative_bytes: bytes_column("blob.stored_bytes", derivative)?,
-            removed_bytes: bytes_column("file.stored_bytes", removed)?,
             quarantined_bytes: bytes_column("quarantined_file.stored_bytes", quarantined)?,
             render_cache_bytes: bytes_column("blob.stored_bytes", cache)?,
         })
     }
 
     /// "Free cache space" (`DATA.md` §1.5): remove every slicer export row whose blob nobody
-    /// has read in 90 days, then recount those blobs as purge does, so a blob nothing else
+    /// has read in 90 days, then recount those blobs as delete does, so a blob nothing else
     /// points at enters the thirty-day quarantine and the hourly sweep takes its bytes after.
     ///
     /// Rows, not only bytes: a row naming bytes that are gone would answer 404 for good, where
@@ -2860,7 +2585,7 @@ impl PgParts {
                  LEFT JOIN LATERAL (SELECT f.storage_path, f.blake3 FROM file f \
                                     WHERE f.revision_id = r.id AND f.role = 'source' \
                                     ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-                 WHERE p.id = $1 AND p.deleted_at IS NULL",
+                 WHERE p.id = $1",
             )
             .bind(part.as_uuid())
             .fetch_optional(&self.0)
@@ -2887,13 +2612,10 @@ impl PgParts {
         .transpose()
     }
 
-    /// Is another live part in `folder` already called `name`?
+    /// Is another part in `folder` already called `name`?
     ///
-    /// Two exclusions that both have to be there. `except` drops the part being moved, so
-    /// re-filing a model into the category it is already in is a no-op rather than a
-    /// collision with itself. `deleted_at IS NULL` drops a soft-deleted namesake, which is
-    /// invisible everywhere else and must not block a move on the strength of a row nobody
-    /// can see.
+    /// `except` drops the part being moved, so re-filing a model into the category it is
+    /// already in is a no-op rather than a collision with itself.
     ///
     /// `IS NOT DISTINCT FROM` for the folder, because the library root is NULL and `=` is
     /// never true against it — the same reason `PgFolders::get_or_create` uses it.
@@ -2907,7 +2629,7 @@ impl PgParts {
         Ok(sqlx::query_scalar(
             "SELECT exists(SELECT 1 FROM part \
              WHERE library_id = $1 AND folder_id IS NOT DISTINCT FROM $2 \
-               AND name = $3 AND id <> $4 AND deleted_at IS NULL)",
+               AND name = $3 AND id <> $4)",
         )
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))
@@ -3056,7 +2778,6 @@ impl PartRepository for PgParts {
             folder,
             after,
             limit,
-            shows,
             format,
             material,
             tag,
@@ -3108,7 +2829,7 @@ impl PartRepository for PgParts {
         // an absent filter mean the whole library.
         let rows: Vec<GridRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $5 \
+             SELECT id FROM folder WHERE id = $4 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
@@ -3116,25 +2837,21 @@ impl PartRepository for PgParts {
             grid_columns!(),
             " FROM part p ",
             grid_laterals!(),
-            " WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
+            " WHERE p.library_id = $1 \
                AND ($2::uuid IS NULL OR p.id < $2) \
-               AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $6 AND f.revision_id = (SELECT id FROM revision \
+               AND ($4::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
                     WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($7::text IS NULL OR p.materials @> ARRAY[$7::text]) \
-               AND ($8::text IS NULL OR p.tags @> ARRAY[$8::text]) \
-               AND ($9::jsonb IS NULL OR p.metadata_json->'custom' @> $9::jsonb) \
-               AND ($10::jsonpath IS NULL OR p.metadata_json->'custom' @? $10::jsonpath) \
+               AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
+               AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
+               AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+               AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath) \
              ORDER BY p.id DESC LIMIT $3",
         ))
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
-        // The predicate is `(deleted_at IS NOT NULL) = $4` rather than two branches of
-        // SQL, so both pages are provably the same query: a column added to one is added
-        // to the other, and the removed list cannot quietly fall behind the grid.
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         .bind(format)
         .bind(material)
@@ -3161,14 +2878,13 @@ impl PartRepository for PgParts {
             folder,
             after,
             limit,
-            shows,
             format,
             material,
             tag,
             field,
             field_range,
         } = *grid;
-        // Same seventeen columns, same LATERALs, same `Shows` predicate, same subtree filter.
+        // Same seventeen columns, same LATERALs, same subtree filter.
         // What differs is which parts are candidates and in what order they come back.
         //
         // # The four tiers, and why they are 8/4/2/1 rather than 4/2/1
@@ -3243,31 +2959,31 @@ impl PartRepository for PgParts {
         // rename-during-scroll window would be more machinery than the case deserves.
         let rows: Vec<GridRow> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $5 \
+             SELECT id FROM folder WHERE id = $4 \
              UNION ALL \
              SELECT f.id FROM folder f \
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, \
              hits AS ( \
                SELECT p.id, \
-                      ( (coalesce(p.part_number, '') ILIKE $7)::int * 8 \
-                      + (p.name ILIKE $7)::int * 4 \
-                      + (p.search @@ plainto_tsquery('simple', $6))::int * 2 \
-                      + (p.source_path ILIKE $7)::int \
-                      + least(ts_rank(p.search, plainto_tsquery('simple', $6)), 0.999) ) AS rank \
+                      ( (coalesce(p.part_number, '') ILIKE $6)::int * 8 \
+                      + (p.name ILIKE $6)::int * 4 \
+                      + (p.search @@ plainto_tsquery('simple', $5))::int * 2 \
+                      + (p.source_path ILIKE $6)::int \
+                      + least(ts_rank(p.search, plainto_tsquery('simple', $5)), 0.999) ) AS rank \
                  FROM part p \
-                WHERE p.library_id = $1 AND (p.deleted_at IS NOT NULL) = $4 \
-                  AND ($5::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-                  AND ($8::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                       AND f.format = $8 AND f.revision_id = (SELECT id FROM revision \
+                WHERE p.library_id = $1 \
+                  AND ($4::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                  AND ($7::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
+                       AND f.format = $7 AND f.revision_id = (SELECT id FROM revision \
                        WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-                  AND ($9::text IS NULL OR p.materials @> ARRAY[$9::text]) \
-                  AND ($10::text IS NULL OR p.tags @> ARRAY[$10::text]) \
-                  AND ($11::jsonb IS NULL OR p.metadata_json->'custom' @> $11::jsonb) \
-                  AND ($12::jsonpath IS NULL OR p.metadata_json->'custom' @? $12::jsonpath) \
-                  AND ( p.part_number ILIKE $7 \
-                     OR p.name ILIKE $7 \
-                     OR p.source_path ILIKE $7 \
-                     OR p.search @@ plainto_tsquery('simple', $6) ) ), \
+                  AND ($8::text IS NULL OR p.materials @> ARRAY[$8::text]) \
+                  AND ($9::text IS NULL OR p.tags @> ARRAY[$9::text]) \
+                  AND ($10::jsonb IS NULL OR p.metadata_json->'custom' @> $10::jsonb) \
+                  AND ($11::jsonpath IS NULL OR p.metadata_json->'custom' @? $11::jsonpath) \
+                  AND ( p.part_number ILIKE $6 \
+                     OR p.name ILIKE $6 \
+                     OR p.source_path ILIKE $6 \
+                     OR p.search @@ plainto_tsquery('simple', $5) ) ), \
              anchor AS (SELECT rank, id FROM hits WHERE id = $2), \
              top AS ( \
                SELECT id, rank FROM hits \
@@ -3282,7 +2998,6 @@ impl PartRepository for PgParts {
         .bind(library.as_uuid())
         .bind(after.map(|a| a.as_uuid()))
         .bind(i64::from(limit))
-        .bind(shows == Shows::Removed)
         .bind(folder.map(|f| f.as_uuid()))
         // The raw query, for `plainto_tsquery`, which must not see the LIKE escapes.
         .bind(query)
@@ -3318,7 +3033,7 @@ impl PgParts {
     /// `anchor` reads the previous page's last part by id, filters aside, so a part removed
     /// since that page still marks where the next one starts. Its key is read when the next page
     /// is asked for, though: a part revised since then moves the anchor with it, and the next
-    /// page repeats rows or skips them. One purged since ends the paging early, as `search`'s does.
+    /// page repeats rows or skips them. One deleted since ends the paging early, as `search`'s does.
     async fn sorted(
         &self,
         grid: &GridQuery<'_>,
@@ -3328,7 +3043,6 @@ impl PgParts {
             .bind(grid.library.as_uuid())
             .bind(grid.after.map(|a| a.as_uuid()))
             .bind(i64::from(grid.limit))
-            .bind(grid.shows == Shows::Removed)
             .bind(grid.folder.map(|f| f.as_uuid()))
             .bind(grid.format)
             .bind(grid.material)
@@ -3712,7 +3426,7 @@ pub struct NewPartImage<'a> {
 /// ([`grid_columns`]) and all end here, so a card cannot mean one thing on the grid and
 /// another in a set of results.
 ///
-/// A named `FromRow` struct since the seventeenth column (`removed_us`) went past sqlx's
+/// A named `FromRow` struct since the seventeenth column went past sqlx's
 /// sixteen-tuple ceiling. The SELECT aliases every column, including the three `id`s and
 /// three `blake3`s that kept this positional before, so a column is decoded by what it is
 /// called rather than by where it sits — **which is also why adding a column here is a
@@ -3737,7 +3451,6 @@ struct GridRow {
     storage_path: Option<String>,
     created_us: i64,
     updated_us: i64,
-    removed_us: Option<i64>,
     source_format: Option<String>,
     /// The part's first picture, from the `img` LATERAL. Every column is optional because
     /// the join is a LEFT one and a part may have no picture; `image_id` being present is
@@ -3774,7 +3487,6 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         storage_path,
         created_us,
         updated_us,
-        removed_us,
         source_format,
         image_id,
         image_webp,
@@ -3880,16 +3592,6 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                         value: updated_us,
                     }
                 })?,
-                removed_at: removed_us
-                    .map(|us| {
-                        jiff::Timestamp::from_microsecond(us).map_err(|_| {
-                            DbError::TimestampOutOfRange {
-                                column: "part.deleted_at",
-                                value: us,
-                            }
-                        })
-                    })
-                    .transpose()?,
             },
             source_format,
             image,
@@ -3940,7 +3642,7 @@ impl PgParts {
         let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
             "SELECT l.id, l.name, \
                     (SELECT count(*) FROM part p \
-                      WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
+                      WHERE p.library_id = l.id) \
                FROM library l ORDER BY l.created_at, l.id",
         )
         .fetch_all(&self.0)

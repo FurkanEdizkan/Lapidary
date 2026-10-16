@@ -191,8 +191,8 @@ impl PgCustomFields {
         }
         if let Some(kept) = patch.options {
             for dropped in options.iter().filter(|option| !kept.contains(option)) {
-                let (parts, removed): (i64, i64) = sqlx::query_as(
-                    "SELECT count(*), count(*) FILTER (WHERE deleted_at IS NOT NULL) \
+                let parts: i64 = sqlx::query_scalar(
+                    "SELECT count(*) \
                      FROM part WHERE library_id = $1 \
                      AND metadata_json->'custom' @> jsonb_build_object($2::text, $3::text)",
                 )
@@ -205,7 +205,6 @@ impl PgCustomFields {
                     return Err(DbError::OptionInUse {
                         option: dropped.clone(),
                         parts,
-                        removed,
                     });
                 }
             }
@@ -238,8 +237,8 @@ impl PgCustomFields {
         Ok(removed.rows_affected() == 1)
     }
 
-    /// The live part's library, and its library's field by that key if there is one. `None` when
-    /// there is no live part by that id.
+    /// The part's library, and its library's field by that key if there is one. `None` when
+    /// there is no part by that id.
     pub async fn field_of_part(
         &self,
         part: PartId,
@@ -258,7 +257,7 @@ impl PgCustomFields {
                         ARRAY(SELECT jsonb_array_elements_text(f.options_json)), f.indexed \
                  FROM part p \
                  LEFT JOIN custom_field f ON f.library_id = p.library_id AND f.key = $2 \
-                 WHERE p.id = $1 AND p.deleted_at IS NULL",
+                 WHERE p.id = $1",
         )
         .bind(part.as_uuid())
         .bind(key)
@@ -292,11 +291,10 @@ impl PgCustomFields {
         value: Option<&serde_json::Value>,
     ) -> Result<ValueSet, DbError> {
         let mut tx = self.0.begin().await?;
-        let library: Option<Uuid> =
-            sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1 AND deleted_at IS NULL")
-                .bind(part.as_uuid())
-                .fetch_optional(&mut *tx)
-                .await?;
+        let library: Option<Uuid> = sqlx::query_scalar("SELECT library_id FROM part WHERE id = $1")
+            .bind(part.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await?;
         let Some(library) = library else {
             return Ok(ValueSet::NoSuchPart);
         };
@@ -318,7 +316,7 @@ impl PgCustomFields {
                      CASE WHEN jsonb_typeof(metadata_json->'custom') = 'object' THEN metadata_json \
                           ELSE jsonb_set(metadata_json, '{custom}', '{}'::jsonb) END, \
                      ARRAY['custom', $2::text], $3::jsonb) END \
-             WHERE id = $1 AND deleted_at IS NULL",
+             WHERE id = $1",
         )
         .bind(part.as_uuid())
         .bind(&checked.key)

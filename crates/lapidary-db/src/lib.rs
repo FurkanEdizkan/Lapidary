@@ -30,8 +30,8 @@ pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS, FacetValue,
     Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage, LibraryRow, MoveRow,
     MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow, PartRepository, PartRow,
-    PartSourceRow, PgBlobs, PgIngest, PgParts, PurgeReport, Purged, ReapReport, RenderCacheFreed,
-    RevisionSource, Shows, Sort, StorageTotals, StoredBlobRow,
+    PartSourceRow, PgBlobs, PgIngest, PgParts, ReapReport, RenderCacheFreed, RevisionSource, Sort,
+    StorageTotals, StoredBlobRow,
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
@@ -145,15 +145,11 @@ pub enum DbError {
     )]
     TooManyIndexed { max: i64 },
 
-    /// `parts` counts removed parts too, `removed` of them: a value on a removed part comes back with it.
-    #[error("{}", option_in_use(.option, *.parts, *.removed))]
-    OptionInUse {
-        option: String,
-        parts: i64,
-        removed: i64,
-    },
+    #[error(
+        "{parts} parts in this library hold the option `{option}`. Change their values first, then remove the option."
+    )]
+    OptionInUse { option: String, parts: i64 },
 
-    /// `parts` counts removed parts too: a value comes back with its part.
     #[error(
         "{parts} parts in this library still hold values under `{key}`, left by a field removed earlier, that this field could not show. Choose another key, or define `{key}` as the kind those values are, with each of them among a choice's options."
     )]
@@ -583,18 +579,6 @@ pub async fn server_version_num(pool: &PgPool) -> Result<i32, DbError> {
         .fetch_one(pool)
         .await?;
     Ok(num)
-}
-
-fn option_in_use(option: &str, parts: i64, removed: i64) -> String {
-    if removed == 0 {
-        format!(
-            "{parts} parts in this library hold the option `{option}`. Change their values first, then remove the option."
-        )
-    } else {
-        format!(
-            "{parts} parts in this library hold the option `{option}`, {removed} of them removed. A removed part's value comes back with it, so restore those from Removed parts and change their values too, then remove the option."
-        )
-    }
 }
 
 #[cfg(test)]

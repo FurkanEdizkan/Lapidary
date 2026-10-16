@@ -22,7 +22,6 @@ pub struct CurrentRevision {
     /// `None` while the file is still in the content-addressed store the storage migration
     /// has not reached: there is no model directory to set the previous file aside in yet.
     pub storage_path: Option<String>,
-    pub deleted: bool,
 }
 
 /// The next revision of a part, as the kernel measured it.
@@ -102,7 +101,7 @@ struct HistoryColumns {
 pub struct PgRevisions(pub PgPool);
 
 impl PgRevisions {
-    /// The part at `source_path` in `library`, deleted or not, and its current revision —
+    /// The part at `source_path` in `library`, and its current revision —
     /// "current" ordered exactly as the grid's LATERAL orders it.
     pub async fn current(
         &self,
@@ -110,8 +109,8 @@ impl PgRevisions {
         source_path: &str,
     ) -> Result<Option<CurrentRevision>, DbError> {
         #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, Uuid, Option<String>, Option<String>, bool)> = sqlx::query_as(
-            "SELECT p.id, r.id, f.blake3, f.storage_path, p.deleted_at IS NOT NULL \
+        let row: Option<(Uuid, Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT p.id, r.id, f.blake3, f.storage_path \
                  FROM part p \
                  JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                                ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
@@ -124,13 +123,12 @@ impl PgRevisions {
         .bind(source_path)
         .fetch_optional(&self.0)
         .await?;
-        row.map(|(part, revision, hash, storage_path, deleted)| {
+        row.map(|(part, revision, hash, storage_path)| {
             Ok(CurrentRevision {
                 part: PartId::from_uuid(part),
                 revision: RevisionId::from_uuid(revision),
                 source_hash: detail_hash("file.blake3", hash)?,
                 storage_path,
-                deleted,
             })
         })
         .transpose()
@@ -160,14 +158,12 @@ impl PgRevisions {
     {
         let mut tx = self.0.begin().await?;
 
-        // A part deleted while the kernel ran is not revised: the conflict sends the job back
-        // round, and the retry finds it deleted and skips it.
-        let locked: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM part WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
-        )
-        .bind(req.part.as_uuid())
-        .fetch_optional(&mut *tx)
-        .await?;
+        // A part deleted while the file was read is not revised: the conflict sends the job back
+        // round, and the retry finds no part at this path and ingests the file as a new one.
+        let locked: Option<i32> = sqlx::query_scalar("SELECT 1 FROM part WHERE id = $1 FOR UPDATE")
+            .bind(req.part.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await?;
         let current: Option<(Uuid, String, Option<Uuid>, Option<String>)> = sqlx::query_as(
             "SELECT r.id, r.rev_label, f.id, f.storage_path FROM revision r \
              LEFT JOIN LATERAL (SELECT id, storage_path FROM file \

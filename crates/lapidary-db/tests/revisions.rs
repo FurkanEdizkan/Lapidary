@@ -363,12 +363,7 @@ async fn a_part_deleted_while_its_change_was_measured_is_not_revised(pool: sqlx:
         .expect("reads")
         .expect("the seeded part")
         .revision;
-    assert!(
-        PgParts(pool.clone())
-            .soft_delete(part)
-            .await
-            .expect("soft delete")
-    );
+    assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
 
     let mut ran = false;
     let m = measurements();
@@ -389,9 +384,8 @@ async fn a_part_deleted_while_its_change_was_measured_is_not_revised(pool: sqlx:
             .current(library(), PATH)
             .await
             .expect("reads")
-            .expect("still there")
-            .deleted,
-        "and the retry sees it deleted"
+            .is_none(),
+        "and the retry finds no part there, so it ingests the file as a new one"
     );
 }
 

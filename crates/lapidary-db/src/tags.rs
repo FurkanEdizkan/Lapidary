@@ -34,7 +34,7 @@ impl PgTags {
         Ok(sqlx::query_as(
             "SELECT t.tag, count(DISTINCT p.id) FROM part p \
              CROSS JOIN LATERAL unnest(p.tags) AS t(tag) \
-             WHERE p.library_id = $1 AND p.deleted_at IS NULL \
+             WHERE p.library_id = $1 \
              GROUP BY t.tag ORDER BY count(DISTINCT p.id) DESC, t.tag",
         )
         .bind(library.as_uuid())
@@ -60,7 +60,7 @@ impl PgTags {
     ) -> Result<(i64, Vec<(String, i64)>), DbError> {
         let parts: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM part \
-             WHERE library_id = $1 AND deleted_at IS NULL AND tags @> ARRAY[$2::text]",
+             WHERE library_id = $1 AND tags @> ARRAY[$2::text]",
         )
         .bind(library.as_uuid())
         .bind(tag)
@@ -69,7 +69,7 @@ impl PgTags {
         let related: Vec<(String, i64)> = sqlx::query_as(
             "WITH tagged AS ( \
              SELECT p.id, p.tags FROM part p \
-             WHERE p.library_id = $1 AND p.deleted_at IS NULL AND p.tags @> ARRAY[$2::text]) \
+             WHERE p.library_id = $1 AND p.tags @> ARRAY[$2::text]) \
              SELECT o.tag, count(DISTINCT tagged.id) FROM tagged \
              CROSS JOIN LATERAL unnest(tagged.tags) AS o(tag) \
              WHERE o.tag <> $2 \
