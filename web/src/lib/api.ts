@@ -366,6 +366,14 @@ export function downloadUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`
 }
 
+/**
+ * `GET /api/parts/{id}/file` — the part's current file, one link that keeps working when a new
+ * revision is recorded. Absolute, because it is for pasting somewhere that is not this page.
+ */
+export function fileLink(part: PartId, origin: string = window.location.origin): string {
+  return `${origin}/api/parts/${encodeURIComponent(part)}/file`
+}
+
 /** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
 export function exportUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`

@@ -1196,3 +1196,245 @@ async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_me
         "{refusal}"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// F2: `GET /api/parts/{id}/file` — one link per part, always its current file, with Range.
+// ---------------------------------------------------------------------------------------
+
+fn file_uri(part: PartId) -> String {
+    format!("/api/parts/{part}/file")
+}
+
+async fn get_with(
+    app: axum::Router,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+    let mut request = Request::builder().uri(uri);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = app
+        .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("response");
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_str().to_owned(),
+                v.to_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body")
+        .to_vec();
+    (status, headers, body)
+}
+
+fn app_over(pool: &sqlx::PgPool, root: &Path) -> axum::Router {
+    router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.to_path_buf(),
+            host_storage_root: None,
+            touches: Default::default(),
+            upload_dir: PathBuf::from("/nonexistent-upload-dir"),
+        },
+        Role::Api,
+    )
+}
+
+const COVER_PATH: &str = "libraries/default/cover-lp-3120-05/cover-lp-3120-05.stl";
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_parts_file_link_serves_its_bytes_whole_and_by_range(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let bytes = ascii_stl();
+    let seeded = seed_at_path(
+        &pool,
+        root.path(),
+        COVER_PATH,
+        "cover-lp-3120-05",
+        "stl",
+        &bytes,
+    )
+    .await;
+    let app = app_over(&pool, root.path());
+
+    let (status, headers, body) = get(app.clone(), &file_uri(seeded.part)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes, "byte-identical to what was ingested");
+    assert_eq!(
+        BlobHash::from_bytes(*blake3::hash(&body).as_bytes()),
+        seeded.hash
+    );
+    assert_eq!(header(&headers, "accept-ranges"), Some("bytes"));
+    assert!(
+        header(&headers, "content-disposition").is_some_and(|d| d.starts_with("attachment;")),
+        "{headers:?}"
+    );
+    let etag = header(&headers, "etag").expect("an etag").to_owned();
+
+    let (status, headers, body) = get_with(
+        app.clone(),
+        &file_uri(seeded.part),
+        &[("range", "bytes=0-99")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, bytes[..100]);
+    assert_eq!(
+        header(&headers, "content-range"),
+        Some(format!("bytes 0-99/{}", bytes.len()).as_str())
+    );
+    assert_eq!(header(&headers, "content-length"), Some("100"));
+
+    // The rest of it, resumed under the same ETag, puts the file back together.
+    let (status, _, rest) = get_with(
+        app.clone(),
+        &file_uri(seeded.part),
+        &[("range", "bytes=100-"), ("if-range", etag.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!([&bytes[..100], rest.as_slice()].concat(), bytes);
+
+    // A suffix range is the end of the file.
+    let (_, _, tail) = get_with(
+        app.clone(),
+        &file_uri(seeded.part),
+        &[("range", "bytes=-10")],
+    )
+    .await;
+    assert_eq!(tail, bytes[bytes.len() - 10..]);
+
+    // An If-Range naming another file gets the whole of this one, not a spliced half.
+    let (status, _, body) = get_with(
+        app.clone(),
+        &file_uri(seeded.part),
+        &[("range", "bytes=100-"), ("if-range", "\"not-this-file\"")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+
+    // Past the end is 416, and says how long the file is.
+    let past = format!("bytes={}-", bytes.len());
+    let (status, headers, _) = get_with(
+        app.clone(),
+        &file_uri(seeded.part),
+        &[("range", past.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        header(&headers, "content-range"),
+        Some(format!("bytes */{}", bytes.len()).as_str())
+    );
+
+    // The revision's own download route takes ranges too: it is the same code.
+    let (status, _, body) = get_with(
+        app,
+        &download_uri(seeded.revision, "?variant=original"),
+        &[("range", "bytes=0-9")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, bytes[..10]);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_parts_file_link_follows_its_newest_revision(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let first = ascii_stl();
+    let seeded = seed_at_path(
+        &pool,
+        root.path(),
+        COVER_PATH,
+        "cover-lp-3120-05",
+        "stl",
+        &first,
+    )
+    .await;
+
+    // Revision 2, recorded the way ingest records one: the old file set aside, the new one where
+    // it was. Its blob row comes from writing the same bytes into a scratch store.
+    let mut second = first.clone();
+    second.extend_from_slice(b"\nsolid revised\nendsolid revised\n");
+    let scratch = tempfile::tempdir().expect("temp dir");
+    let stored = SourceStore::open(scratch.path(), &WorkerRole::assume())
+        .put_at("scratch.stl", &second, Compression::AsIs)
+        .expect("stores");
+    let measured = measurements();
+    let root_path = root.path().to_path_buf();
+    let written = second.clone();
+    lapidary_db::PgRevisions(pool.clone())
+        .record_revision(
+            lapidary_db::RevisionRequest {
+                part: seeded.part,
+                parent: seeded.revision,
+                origin: lapidary_core::RevisionOrigin::Upload,
+                blob: &StoredBlobRow {
+                    hash: stored.hash,
+                    size_bytes: stored.size_bytes,
+                    stored_bytes: stored.stored_bytes,
+                    zstd_level: stored.zstd_level,
+                },
+                measurements: &measured,
+                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+                format: "stl",
+            },
+            move |current, aside| {
+                let aside = root_path.join(aside);
+                std::fs::create_dir_all(aside.parent().expect("a directory"))
+                    .map_err(|e| e.to_string())?;
+                std::fs::rename(root_path.join(current), &aside).map_err(|e| e.to_string())?;
+                std::fs::write(root_path.join(current), &written).map_err(|e| e.to_string())
+            },
+        )
+        .await
+        .expect("revision 2");
+
+    let app = app_over(&pool, root.path());
+    let (status, _, body) = get(app.clone(), &file_uri(seeded.part)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, second, "the same link now gives the new file");
+    // And the old one is still there, under its own revision.
+    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, first);
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_deleted_or_unknown_parts_file_link_is_a_404_that_says_what_to_do(pool: sqlx::PgPool) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let seeded = seed_at_path(
+        &pool,
+        root.path(),
+        COVER_PATH,
+        "cover-lp-3120-05",
+        "stl",
+        &ascii_stl(),
+    )
+    .await;
+    sqlx::query("UPDATE part SET deleted_at = now() WHERE id = $1")
+        .bind(seeded.part.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("deletes");
+    let app = app_over(&pool, root.path());
+    for part in [seeded.part, PartId::new()] {
+        let (status, _, body) = get(app.clone(), &file_uri(part)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            message(&body).contains("copy its link again"),
+            "{}",
+            message(&body)
+        );
+    }
+}

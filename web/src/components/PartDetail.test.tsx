@@ -416,3 +416,32 @@ test('a STEP part offers a 3MF for a slicer, watches it being written, then link
   vi.unstubAllGlobals()
 })
 
+
+test('Copy link copies the part’s current-file link, and shows it to copy where the clipboard is kept from pages', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
+  const link = `${window.location.origin}/api/parts/${BRACKET.id}/file`
+  const page = () =>
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <Detail part={BRACKET} />
+      </QueryClientProvider>,
+    )
+  const button = () => screen.getByRole('button', { name: strings.download.copyLinkFor(BRACKET.name) })
+
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  const one = page()
+  fireEvent.click(button())
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(link))
+  expect(await screen.findAllByText(strings.download.linkCopied)).not.toHaveLength(0)
+  expect(screen.queryByLabelText(strings.download.linkToCopy)).toBeNull()
+  one.unmount()
+
+  // Plain http on a LAN: no clipboard at all. The link is shown, selected, rather than nothing happening.
+  Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+  page()
+  fireEvent.click(button())
+  const shown = (await screen.findByLabelText(strings.download.linkToCopy)) as HTMLInputElement
+  expect(shown.value).toBe(link)
+  vi.unstubAllGlobals()
+})

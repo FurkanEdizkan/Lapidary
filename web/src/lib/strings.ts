@@ -767,6 +767,12 @@ export const strings = {
    */
   download: {
     original: 'Download',
+    /** Copies `/api/parts/{id}/file`: the current file, whichever revision that is when the link is opened. */
+    copyLink: 'Copy link',
+    copyLinkFor: (name: string) => `Copy a link to ${name}'s current file`,
+    linkCopied: 'Link copied',
+    /** A browser on plain http (a LAN install) keeps the clipboard from pages, so the link is shown to copy by hand. */
+    linkToCopy: 'Link to this part’s current file',
     /**
      * The accessible name, because the visible label is identical on every card and
      * "Download" alone does not say what of. Same shape as `render.partFor`.
