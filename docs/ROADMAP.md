@@ -4068,6 +4068,36 @@ documents — closes it.
 
 ---
 
+## Slimming: a hobbyist and creator library (2026-10-16)
+
+**The owner's decision.** Asked whether the stack was right for "hold our models, search them, attach
+pictures, get the file from a link, deploy as a container", and whether another tool already does it,
+the research (three agents, 2026-10-16) found Manyfold (Rails + Sidekiq + Redis, AGPL) the closest
+match, PrintStash second (expiring share links) and Thingport for import from model sites — and
+Lapidary's search, store and picture pipeline already better than theirs. **The owner kept Lapidary**
+and narrowed it to hobbyist models and creator libraries; container first, installer later; links for
+a local install, so no auth yet; "export from the source" means **import from a creator's page**.
+Everything built before the pivot that served the industrial half came out. Goals on `BOARD.md`.
+
+| Goal | Merged | What | Diff |
+|---|---|---|---|
+| S2 | `89961ab` | the three placeholder crates; pgvector and the custom db image — `db` is stock `postgres:18` at its pinned digest. The gate also forced **rustls 0.23.46** (four advisories) and **zip 9.0.4** (every earlier release yanked) | small |
+| S1 | `958024f` | **one process**: the API, the job loop, the sweep and the browser app (`bin/lapidary-server/src/web.rs`, `ServeDir` + SPA fallback, immutable `assets/`). `api`, `worker` and Caddy `web` became `app`; a minimal install is **db + app** on port 3000. `LAPIDARY_ROLE=api\|worker` refused by name. `check-deploy` 2,146 → 832 lines | +442 / −2,237 |
+| S3 | `188a830` | **sharing between installations**: `lapidary-peer`, four db and two api modules, 26 routes, the peer mode, the overlay, the screens; `0056` drops ten tables. No core table had a sharing column | +278 / −19,343 |
+| S4 | `c6534a0` | **governance**: check-out locks, the hobby/controlled modes, the revision diff, `lapidary-vcs`, the desktop agent `bin/lapidary` (the owner ruled the whole binary goes, `watch` included); `0057` drops `part_lock`, `library.mode`, `revision.lifecycle_state`. **Every library now keeps a part's history** — the hobby path recorded nothing, so the controlled path is what stayed | +369 / −5,991 |
+
+**Measured, through the rig on each branch.** One image, **159 MB**, built cold in **95 s** (the api
+image alone was 158 MB before, beside a worker and a Caddy image). Healthy **7 s** after `up`, two
+containers, memory ceilings 3 GB (was 4.3). Seed 13 of 13 and **26 of 26 flows** after S4 (28 before
+S3; the two sharing rows went with the flow). Workspace now **8 crates and 1 binary** (was 13 and 2):
+33,448 lines of Rust under `src/`, 27,515 under `tests/` — about 14,000 and 8,000 fewer than before S1.
+
+**Left for the goals after:** F1 (embedded 3MF pictures and a snapshot from the viewer), F2 (a stable
+`/api/parts/{id}/file` link with Range), F3 (import from Printables, Thingiverse and MyMiniFactory —
+MyMiniFactory's official API reference could not be read on 2026-10-16, so F3 confirms it first), then
+P1 (creator packs). The rig's corpus was remade after `target/` was wiped at the owner's request; it is
+the same recipe, not byte-identical.
+
 ## Phase 7 — Build graph
 
 Comparable in size to everything before it. **Do not start early.** A half-working
