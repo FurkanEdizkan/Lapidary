@@ -1297,10 +1297,12 @@ name = "lapidary-storage"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "image",
  "lapidary-core",
  "object_store",
  "tempfile",
  "thiserror",
+ "tracing",
  "zstd",
 ]
 

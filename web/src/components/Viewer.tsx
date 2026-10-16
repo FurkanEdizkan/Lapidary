@@ -20,6 +20,8 @@ import { contactShadow, disposeModel, partMaterial, shadowMaterial, studioLights
 /** What a view can be told. One part, shown once; everything else about it is the pointer's. */
 type View = {
   show: (model: Object3D) => void
+  /** The view as it is on screen now, as a PNG. `null` when the browser will not hand the canvas over. */
+  snapshot: () => Promise<Blob | null>
   dispose: () => void
 }
 
@@ -79,12 +81,18 @@ export default function Viewer({
   part,
   poster,
   stage = false,
+  keep,
 }: {
   part: PartDetail
   /** The part's picture, held under the canvas until the first frame is drawn over it. */
   poster: ReactNode
   /** Fill the parent on the lamp's ground, as the quick look's stage does, rather than a 22rem square. */
   stage?: boolean
+  /**
+   * Keeps what is on screen as the part's picture: the PNG, and back the server's refusal or
+   * `null`. Absent where the page records nothing, and then there is no button.
+   */
+  keep?: (png: Blob) => Promise<string | null>
 }) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<View | null>(null)
@@ -96,6 +104,10 @@ export default function Viewer({
     return () => clearTimeout(timer)
   }, [painted])
   const [failed, setFailed] = useState<string | null>(null)
+  const [keeping, setKeeping] = useState<'idle' | 'saving' | 'kept' | string>('idle')
+  const keepLabel =
+    keeping === 'saving' ? strings.viewer.keepingView : keeping === 'kept' ? strings.viewer.keptView : strings.viewer.keepView
+  const keepNote = keeping === 'idle' || keeping === 'saving' || keeping === 'kept' ? null : keeping
 
   const format = part.sourceFormat
   const revision = part.revision
@@ -189,6 +201,34 @@ export default function Viewer({
           </p>
         )}
       </div>
+      {keep === undefined || !painted || failed !== null ? null : (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            disabled={keeping === 'saving'}
+            onClick={() => {
+              const current = view.current
+              if (current === null) return
+              setKeeping('saving')
+              void current
+                .snapshot()
+                .then((png) => (png === null ? strings.viewer.keepViewFailed : keep(png)))
+                .then(
+                  (refusal) => setKeeping(refusal ?? 'kept'),
+                  () => setKeeping(strings.viewer.keepViewFailed),
+                )
+            }}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {keepLabel}
+          </button>
+          {keepNote === null ? null : (
+            <span role="alert" className="text-[var(--color-muted)]">
+              {keepNote}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -276,6 +316,12 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
         controls.update()
       }
       render()
+    },
+    snapshot() {
+      // Drawn and read in one task: without `preserveDrawingBuffer` the browser may clear the
+      // buffer once a frame is shown, so a read on its own later would be a blank picture.
+      render()
+      return new Promise((resolve) => renderer.domElement.toBlob(resolve, 'image/png'))
     },
     dispose() {
       shadow?.geometry.dispose()

@@ -22,6 +22,8 @@
 //! `lapidary-cad` at all — regardless of which routes ever ran — made the `api`
 //! container image link the kernel again. See `docs/ARCHITECTURE.md`'s crate graph.
 
+pub mod images;
+
 use lapidary_core::BlobHash;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

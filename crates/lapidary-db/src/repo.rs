@@ -3470,7 +3470,38 @@ impl PgParts {
         part: PartId,
         image: NewPartImage<'_>,
     ) -> Result<PartImageId, DbError> {
+        self.insert_part_image(part, image, false)
+            .await
+            .map(|id| id.expect("an unconditional insert always inserts"))
+    }
+
+    /// [`add_part_image`](Self::add_part_image) for a picture the application found rather than
+    /// one a person chose — a 3MF's own thumbnail — so it goes only to a part that has none.
+    /// `Ok(None)` when the part already has a picture, which is the person's and always wins.
+    ///
+    /// The part row is locked before the gallery is counted, so an upload landing at the same
+    /// moment either comes first and this adds nothing, or comes second and sits after it.
+    pub async fn adopt_part_image(
+        &self,
+        part: PartId,
+        image: NewPartImage<'_>,
+    ) -> Result<Option<PartImageId>, DbError> {
+        self.insert_part_image(part, image, true).await
+    }
+
+    async fn insert_part_image(
+        &self,
+        part: PartId,
+        image: NewPartImage<'_>,
+        only_if_none: bool,
+    ) -> Result<Option<PartImageId>, DbError> {
         let mut tx = self.0.begin().await?;
+        if only_if_none {
+            sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR UPDATE")
+                .bind(part.as_uuid())
+                .execute(&mut *tx)
+                .await?;
+        }
 
         let next: i32 = sqlx::query_scalar(
             "SELECT coalesce(max(position), -1) + 1 FROM part_image WHERE part_id = $1",
@@ -3478,6 +3509,10 @@ impl PgParts {
         .bind(part.as_uuid())
         .fetch_one(&mut *tx)
         .await?;
+        if only_if_none && next > 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
 
         let id = PartImageId::new();
         let (inline, hex) = match image.bytes {
@@ -3506,7 +3541,7 @@ impl PgParts {
         }
 
         tx.commit().await?;
-        Ok(id)
+        Ok(Some(id))
     }
 
     /// Where a part came from, oldest first.
@@ -3663,7 +3698,8 @@ pub enum ImageBytes<'a> {
 #[derive(Debug)]
 pub struct NewPartImage<'a> {
     pub bytes: ImageBytes<'a>,
-    /// `uploaded`, `url_supplied`, `og_fetched` or `rendered` — `part_image_known_origin`
+    /// `uploaded`, `url_supplied`, `embedded` (a 3MF's own thumbnail) or `snapshot` (the
+    /// viewer's) — `part_image_known_origin`
     /// is what refuses anything else, so a typo here is a failed insert rather than a value
     /// no reader understands.
     pub origin: &'a str,

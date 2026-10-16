@@ -943,7 +943,9 @@ export async function fetchPartImages(part: PartId): Promise<PartImage[]> {
  */
 export async function uploadPartImage(
   part: PartId,
-  source: File | string,
+  source: Blob | string,
+  /** `snapshot` for the 3D viewer's own canvas, recorded as that rather than as a file somebody chose. */
+  from?: 'snapshot',
 ): Promise<{ kind: 'stored'; stored: StoredImage } | { kind: 'refused'; message: string }> {
   const base = `/api/parts/${encodeURIComponent(part)}/images`
   const response =
@@ -953,7 +955,7 @@ export async function uploadPartImage(
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ url: source } satisfies FetchImageRequest),
         })
-      : await fetch(base, { method: 'POST', body: source })
+      : await fetch(from === undefined ? base : `${base}?from=${from}`, { method: 'POST', body: source })
   if (response.ok) {
     // The size it was stored at, which is how the caller can say so: an image over the
     // server's bound is scaled down on the way in, and that is not a thing to do to

@@ -13,6 +13,10 @@ thiserror.workspace = true
 blake3.workspace = true
 zstd.workspace = true
 object_store.workspace = true
+# `images.rs`: every picture this application stores is decoded under limits and re-encoded
+# here, whether a person uploaded it or a 3MF carried it.
+image.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

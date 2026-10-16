@@ -170,6 +170,43 @@ pub(crate) fn entry(
 /// Spec §3.6: read the relationships rather than assuming `3D/3dmodel.model`. The cost is
 /// one small parse; the benefit is that a legal package that moved its model still opens.
 pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
+    relationship_target(rels_xml, MODEL_REL_TYPE)?.ok_or_else(|| {
+        malformed("it declares no 3D model relationship, so there is nothing to read".to_owned())
+    })
+}
+
+/// The package's thumbnail relationship, which slicers point at the picture they save with a
+/// project (usually `Metadata/thumbnail.png`). OPC's own type, not 3MF's.
+const THUMBNAIL_REL_TYPE: &str =
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail";
+
+/// The largest thumbnail read out of a package: the same 10 MB a picture upload is allowed, and
+/// for the same reason — it bounds what one file can make the worker hold.
+const MAX_THUMBNAIL_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The picture a 3MF carries for itself, when its relationships name one. `Ok(None)` for a
+/// package that names none, which is most hand-made files and nothing to apologise for. The bytes
+/// are whatever the package holds; the caller decides whether they are an image worth keeping.
+///
+/// Through the relationship and never a guessed path, for `model_part_name`'s reason: a file
+/// that moved its thumbnail is still a file with one, and a file whose `Metadata/` holds a
+/// stray PNG nobody pointed at is not.
+pub fn thumbnail_3mf(bytes: &[u8]) -> Result<Option<Vec<u8>>, CadError> {
+    let caps = Caps::DEFAULT;
+    let mut archive = open_archive(bytes, &caps)?;
+    let rels = entry(&mut archive, "_rels/.rels", &caps)?;
+    let Some(name) = relationship_target(&rels, THUMBNAIL_REL_TYPE)? else {
+        return Ok(None);
+    };
+    let capped = Caps {
+        max_decompressed: MAX_THUMBNAIL_BYTES,
+        ..caps
+    };
+    entry(&mut archive, &name, &capped).map(Some)
+}
+
+/// The target of the first relationship of `rel_type`, normalised to an archive entry name.
+fn relationship_target(rels_xml: &[u8], rel_type: &str) -> Result<Option<String>, CadError> {
     let mut reader = quick_xml::Reader::from_reader(rels_xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -180,7 +217,7 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                 if e.local_name().as_ref() == b"Relationship" =>
             {
                 let mut target = None;
-                let mut is_model = false;
+                let mut matches = false;
                 for attr in e.attributes().flatten() {
                     let value = attr
                         .normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -188,17 +225,17 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
                         .into_owned();
                     match attr.key.local_name().as_ref() {
                         b"Target" => target = Some(value),
-                        b"Type" => is_model = value == MODEL_REL_TYPE,
+                        b"Type" => matches = value == rel_type,
                         _ => {}
                     }
                 }
-                if is_model {
+                if matches {
                     let t = target.ok_or_else(|| {
-                        malformed("its model relationship names no target".to_owned())
+                        malformed("one of its relationships names no target".to_owned())
                     })?;
                     // Relationship targets are package-absolute (`/3D/x.model`); ZIP
                     // entry names are not.
-                    return Ok(t.trim_start_matches('/').to_owned());
+                    return Ok(Some(t.trim_start_matches('/').to_owned()));
                 }
             }
             Err(source) => {
@@ -210,9 +247,7 @@ pub(crate) fn model_part_name(rels_xml: &[u8]) -> Result<String, CadError> {
         }
         buf.clear();
     }
-    Err(malformed(
-        "it declares no 3D model relationship, so there is nothing to read".to_owned(),
-    ))
+    Ok(None)
 }
 
 /// Millimetres per unit of the file's declared unit.
@@ -822,6 +857,41 @@ mod tests {
             ("_rels/.rels", rels),
             ("3D/carrier.model", model_xml.as_bytes()),
         ])
+    }
+
+    /// The thumbnail is found through its relationship — here at a path no slicer uses, so a
+    /// lookup that guessed `Metadata/thumbnail.png` would miss it — and a stray PNG nobody points
+    /// at is not taken for one.
+    #[test]
+    fn a_packages_thumbnail_is_found_through_its_relationship_and_only_then() {
+        let png = b"\x89PNG\r\n\x1a\n stand-in bytes, the caller decodes";
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+<Relationship Id="rel1" Target="/Pictures/plate-cover.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>
+</Relationships>"#;
+        let with = zip_of(&[
+            ("_rels/.rels", rels),
+            ("3D/carrier.model", b"<model/>"),
+            ("Pictures/plate-cover.png", png),
+        ]);
+        assert_eq!(thumbnail_3mf(&with).expect("reads"), Some(png.to_vec()));
+
+        let stray = {
+            let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/carrier.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+            zip_of(&[
+                ("_rels/.rels", rels),
+                ("3D/carrier.model", b"<model/>"),
+                ("Metadata/thumbnail.png", png),
+            ])
+        };
+        assert_eq!(thumbnail_3mf(&stray).expect("reads"), None);
+
+        // A relationship pointing at a part the package does not hold is malformed, not absent.
+        let dangling = br#"<Relationships><Relationship Id="t" Target="/Metadata/gone.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#;
+        let broken = zip_of(&[("_rels/.rels", dangling)]);
+        assert!(thumbnail_3mf(&broken).is_err());
     }
 
     #[test]

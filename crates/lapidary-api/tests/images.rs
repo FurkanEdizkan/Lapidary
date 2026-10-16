@@ -482,3 +482,40 @@ async fn a_framing_the_columns_would_refuse_is_refused_first(pool: sqlx::PgPool)
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "for {bad}");
     }
 }
+
+/// F1: the 3D viewer's own canvas comes in through the same route and the same checks, and is
+/// recorded as a `snapshot`, not as a file somebody chose. Any other `from` is refused rather than
+/// stored as an upload it was not.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_view_kept_from_the_viewer_is_recorded_as_a_snapshot(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+    let snapshot = Request::builder()
+        .method("POST")
+        .uri(format!("/api/parts/{part}/images?from=snapshot"))
+        .body(Body::from(png(400)))
+        .expect("request builds");
+    let (status, body) = send(state(pool.clone(), store.path()), snapshot).await;
+    assert_eq!(status, StatusCode::CREATED, "{}", json(&body));
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(part)).await;
+    assert_eq!(json(&body)[0]["origin"], "snapshot");
+
+    let unknown = Request::builder()
+        .method("POST")
+        .uri(format!("/api/parts/{part}/images?from=render"))
+        .body(Body::from(png(400)))
+        .expect("request builds");
+    let (status, body) = send(state(pool.clone(), store.path()), unknown).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json(&body)["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("snapshot"))
+    );
+    let (_, body) = send(state(pool, store.path()), gallery(part)).await;
+    assert_eq!(
+        json(&body).as_array().map(Vec::len),
+        Some(1),
+        "nothing stored for the refusal"
+    );
+}

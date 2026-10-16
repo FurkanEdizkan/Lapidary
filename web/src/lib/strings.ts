@@ -1540,6 +1540,11 @@ export const strings = {
    * **view** for, at which point the browser loads the original file itself.
    */
   viewer: {
+    /** Keeps the view on screen as the part's picture (F1): what a person sees is what the card shows. */
+    keepView: 'Use this view as the picture',
+    keepingView: 'Saving the picture…',
+    keptView: 'This view is the part’s picture now',
+    keepViewFailed: 'The picture was not saved. Try again, or attach a file instead.',
     label: (name: string) => `3D view of ${name}`,
     /** The press that loads the model. Named for what it does, not for the technology. */
     view: 'View in 3D',

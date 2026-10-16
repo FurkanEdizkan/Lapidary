@@ -20,7 +20,7 @@ mod tmf;
 pub use error::CadError;
 pub use measure::measure;
 pub use stl::{Mesh, write_stl};
-pub use tmf::write_3mf;
+pub use tmf::{thumbnail_3mf, write_3mf};
 
 // The three parsers are reached through `parse` and nowhere else. Exported one by one they were
 // three more ways for a caller to pick the wrong one from an extension it had not lowercased.
