@@ -32,7 +32,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [R3](R3.md) | Production stops, and similarity goes with it | 4 | Rust | R1, R2 | `DerivativeKind`, the four producers, `shapes.rs`/`likeness.rs` and their api | 0054 | merged `76eec33` | `chore/stop-rendering` |
 | [R4](R4.md) | Purge the rendered derivatives | 5 | Rust + ops | R3 | migration 0055, `cache_kinds`, `Storage.tsx` | 0055 | merged `4b9f856` | `chore/purge-renders` |
 | [R5](R5.md) | Trim `lapidary-cad` to parsers and measurement | 5 | Rust | R2, R3 | `lapidary-cad/src/*`, the `Kernel` trait, the worker-router gate | — | merged `270309a` | `refactor/mesh-facts-only` |
-| [R6](R6.md) | The rig, and the documents | 5 | tooling + lead | R1, R2, R3 | `scripts/e2e/`, `CLAUDE.md`, `PRODUCT.md`, `FEATURES.md`, `DATA.md`, `ARCHITECTURE.md` | — | open | `docs/visual-library` |
+| [R6](R6.md) | The rig, and the documents | 5 | tooling + lead | R1, R2, R3 | `scripts/e2e/`, `CLAUDE.md`, `PRODUCT.md`, `FEATURES.md`, `DATA.md`, `ARCHITECTURE.md` | — | merged `06b0d01` | `docs/visual-library` |
 
 **Wave 1 is closed** (2026-09-26): G3 `f18e0f0`, G6 `4479e1b`, G2 `5fdd5af`, T1 `9818ad2`, each gated on its merged
 tree. Phase 6's second exit is met and measured through containers.
