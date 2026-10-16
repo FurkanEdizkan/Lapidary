@@ -85,7 +85,7 @@ pub enum SiteError {
     NoKey { site: Site },
 
     #[error(
-        "{} refused the key saved in Settings. Check it there — it may have expired or been revoked — and import again.",
+        "{} refused the key. Check that it was copied whole and has not expired or been revoked, then save it again on the Settings page.",
         .site.name()
     )]
     BadKey { site: Site },

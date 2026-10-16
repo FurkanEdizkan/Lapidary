@@ -218,6 +218,14 @@ pub async fn check(
         tracing::warn!(error = %err, site = site.slug(), "could not record a key check");
     }
     Json(match answer {
+        Ok(_) if !site.needs_key() => SiteCheck {
+            ok: true,
+            message: format!(
+                "{} answers. Its free models import without a key.",
+                site.name()
+            ),
+            account: None,
+        },
         Ok(account) => SiteCheck {
             ok: true,
             message: format!("{} answers: the key works for {account}.", site.name()),

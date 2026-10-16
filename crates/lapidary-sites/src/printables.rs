@@ -115,6 +115,7 @@ pub(crate) async fn download_link(
     text(&answer["output"]["link"]).ok_or_else(|| unexpected("a download answer with no link"))
 }
 
+/// Printables has no account to name: `Ok` means it answered.
 pub(crate) async fn check(sites: &Sites) -> Result<String, SiteError> {
     let (_, body) = sites
         .post_json(
@@ -124,7 +125,7 @@ pub(crate) async fn check(sites: &Sites) -> Result<String, SiteError> {
         )
         .await?;
     errors(&body)?;
-    Ok("Printables answers; it needs no key".to_owned())
+    Ok(String::new())
 }
 
 fn errors(body: &Value) -> Result<(), SiteError> {

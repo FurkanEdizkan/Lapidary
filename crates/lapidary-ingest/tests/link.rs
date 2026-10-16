@@ -188,7 +188,10 @@ async fn a_model_with_no_mesh_or_a_site_with_no_key_is_refused_with_what_to_do(p
         .await
     {
         Err(HandlerError::Permanent { message }) => {
-            assert!(message.contains("refused the key"), "{message}")
+            assert!(
+                message.contains("refused the key") && message.contains("Settings"),
+                "{message}"
+            )
         }
         other => panic!("{other:?}"),
     }
