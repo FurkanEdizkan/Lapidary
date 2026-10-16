@@ -45,7 +45,6 @@ const BRACKET: PartDetail = {
   volumeMm3: { value: 35840, approximate: false },
   surfaceAreaMm2: { value: 11392, approximate: false },
   massG: null,
-  lock: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'iges',
   sourceBytes: 18204,
@@ -74,6 +73,86 @@ const PIN: PartDetail = {
  * the button is not offered at all. Its download and its figures are untouched, which is what it
  * had before.
  */
+test('the history appears once a part has a second revision, and says where each came from', async () => {
+  const second = {
+    id: '01931b6e-0000-7000-8000-00000000dddd',
+    parent: BRACKET.revision,
+    revLabel: '2',
+    origin: 'upload',
+    createdAt: '2026-09-14T09:30:00Z',
+    triangleCount: 44,
+    faceCount: null,
+    edgeCount: null,
+    bboxMm: { value: [66, 40, 60], approximate: true },
+    volumeMm3: { value: 39424, approximate: true },
+    surfaceAreaMm2: null,
+    massG: { value: 309.478, approximate: true },
+    centreMm: null,
+    sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
+    sourceFormat: 'stl',
+    sourceBytes: 20124,
+  } satisfies PartRevision
+  const first = {
+    ...second,
+    id: BRACKET.revision,
+    parent: null,
+    revLabel: '1',
+    origin: 'ingest',
+    createdAt: '2026-09-13T10:00:00Z',
+    volumeMm3: { value: 35840, approximate: true },
+    massG: { value: 281.344, approximate: true },
+  } satisfies PartRevision
+  let history: PartRevision[] = [first]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => (url.endsWith('/revisions') ? history : []),
+    })),
+  )
+  const settledPage = async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Detail part={BRACKET} />
+      </QueryClientProvider>,
+    )
+    // Settled, not merely asked: an absent section before the answer arrives proves nothing.
+    await waitFor(() =>
+      expect(client.getQueryState(['revisions', BRACKET.id])?.status).toBe('success'),
+    )
+    return view
+  }
+
+  const one = await settledPage()
+  expect(screen.queryByText(strings.detail.history)).toBeNull()
+  one.unmount()
+
+  history = [second, first]
+  await settledPage()
+  expect(await screen.findByText(strings.detail.history)).toBeTruthy()
+  const section = screen.getByText(strings.detail.history).closest('section') as HTMLElement
+  const item = (label: string) =>
+    [...section.querySelectorAll('li')].find((li) =>
+      li.textContent?.startsWith(strings.detail.historyRevision(label)),
+    )
+  expect(item('2')?.textContent).toContain(strings.detail.origin.upload)
+  expect(item('2')?.textContent).toContain(strings.detail.approximate)
+  expect(item('1')?.textContent).toContain(strings.detail.origin.ingest)
+  // Every revision stays downloadable: the older file is history, not gone.
+  expect(item('2')?.querySelector('a')?.getAttribute('href')).toBe(
+    `/api/revisions/${second.id}/download?variant=original`,
+  )
+  expect(item('1')?.querySelector('a')?.getAttribute('href')).toBe(
+    `/api/revisions/${first.id}/download?variant=original`,
+  )
+  // No comparison and no diff request: those went with governance (S4).
+  expect(section.querySelector('table')).toBeNull()
+  expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/diff?'))
+  vi.unstubAllGlobals()
+})
+
 test('the view is offered for a mesh, mounted only when pressed, and closed when the part changes', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -281,301 +360,10 @@ test('a part that holds no material says so where the list cannot be edited', as
 })
 
 /** One revision is the Identity row, said once; two are a history, each with its origin, its ≈ and its original. */
-test('the history appears once a part has a second revision, and says where each came from', async () => {
-  const second = {
-    id: '01931b6e-0000-7000-8000-00000000dddd',
-    parent: BRACKET.revision,
-    revLabel: '2',
-    origin: 'agent',
-    createdAt: '2026-09-14T09:30:00Z',
-    triangleCount: 44,
-    faceCount: null,
-    edgeCount: null,
-    bboxMm: { value: [66, 40, 60], approximate: true },
-    volumeMm3: { value: 39424, approximate: true },
-    surfaceAreaMm2: null,
-    massG: { value: 309.478, approximate: true },
-    centreMm: null,
-    sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
-    sourceFormat: 'stl',
-    sourceBytes: 20124,
-    deltaFromParent: {
-      volumeMm3: { from: 35840, to: 39424, change: 3584, percent: 10, approximate: true },
-      surfaceAreaMm2: null,
-      bboxMm: null,
-      triangleCount: null,
-      faceCount: null,
-      edgeCount: null,
-      massG: { from: 281.344, to: 309.478, change: 28.134, percent: 10, approximate: true },
-      centreMm: null,
-    },
-  } satisfies PartRevision
-  const first = {
-    ...second,
-    id: BRACKET.revision,
-    parent: null,
-    revLabel: '1',
-    origin: 'ingest',
-    createdAt: '2026-09-13T10:00:00Z',
-    volumeMm3: { value: 35840, approximate: true },
-    massG: { value: 281.344, approximate: true },
-    deltaFromParent: null,
-  } satisfies PartRevision
-  let history: PartRevision[] = [first]
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith('/revisions')
-          ? history
-          : url.includes('/diff?')
-            ? second.deltaFromParent
-            : [],
-    })),
-  )
-  const settledPage = async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const view = render(
-      <QueryClientProvider client={client}>
-        <Detail part={BRACKET} />
-      </QueryClientProvider>,
-    )
-    // Settled, not merely asked: an absent section before the answer arrives proves nothing.
-    await waitFor(() =>
-      expect(client.getQueryState(['revisions', BRACKET.id])?.status).toBe('success'),
-    )
-    return view
-  }
-
-  const one = await settledPage()
-  expect(screen.queryByText(strings.detail.history)).toBeNull()
-  one.unmount()
-
-  history = [second, first]
-  await settledPage()
-  expect(await screen.findByText(strings.detail.history)).toBeTruthy()
-  // Within the history's own list: the compare control names every revision too, as options.
-  const section = screen.getByText(strings.detail.history).closest('section') as HTMLElement
-  const item = (label: string) =>
-    [...section.querySelectorAll('li')].find((li) =>
-      li.textContent?.startsWith(strings.detail.historyRevision(label)),
-    )
-  expect(item('2')?.textContent).toContain(strings.detail.origin.agent)
-  expect(item('2')?.textContent).toContain(strings.detail.approximate)
-  expect(item('1')?.textContent).toContain(strings.detail.origin.ingest)
-  expect(item('2')?.querySelector('a')?.getAttribute('href')).toBe(
-    `/api/revisions/${second.id}/download?variant=original`,
-  )
-  // Revision 2 says what changed from its parent, marked as the mesh figure it is.
-  expect(item('2')?.textContent).toContain(strings.detail.volumeChange(3584, 10))
-  expect(strings.detail.volumeChange(3584, 10)).toBe('+3.58 cm³ (+10%)')
-  // A B-rep centre on its axis moves by float noise between revisions: too small for two places, not "−0 mm".
-  expect(strings.detail.lengthChange(-2.5e-13, null)).toBe('under 0.01 mm')
-
-  // The comparison opens on the newest against the one before it, and a figure one of them
-  // did not record says so rather than showing a zero.
-  const table = await screen.findByRole('table')
-  expect(fetch).toHaveBeenCalledWith(
-    `/api/parts/${BRACKET.id}/diff?from=${first.id}&to=${second.id}`,
-  )
-  expect(table.textContent).toContain(strings.detail.volumeChange(3584, 10))
-  expect(table.textContent).toContain(strings.detail.approximate)
-  expect(table.textContent).toContain(strings.detail.notInBoth)
-  // Mass beside volume, in the history and the comparison, with the note saying whose density it uses.
-  expect(item('2')?.textContent).toContain(strings.detail.massChange(28.134, 10))
-  expect(table.textContent).toContain(strings.detail.mass)
-  expect(table.textContent).toContain(strings.detail.massChange(28.134, 10))
-  expect(screen.getByText(strings.detail.massNote)).toBeTruthy()
-  // **A centre of mass neither revision recorded says so per axis, and says nothing more.** This
-  // used to read "a re-read is queued for it", keyed on a predicate that had to equal the worker's
-  // centre-of-mass backfill — and R3 deleted that backfill, because it worked by rebuilding an L0
-  // rung to obtain one float. A revision recorded before centres were keeps none until somebody
-  // re-ingests the file, and the honest word for that is the ordinary one.
-  const centre = (axis: 0 | 1 | 2) =>
-    [...table.querySelectorAll('tr')].find(
-      (tr) => tr.querySelector('th')?.textContent === strings.detail.centreAxis(axis),
-    )
-  expect(table.textContent).toContain(strings.detail.centreAxis(2))
-  for (const axis of [0, 1, 2] as const) {
-    expect(centre(axis)?.querySelector('td')?.textContent).toBe(strings.detail.notInBoth)
-  }
-  vi.unstubAllGlobals()
-})
 
 /** Who holds a check-out shows everywhere; releasing it is the part page's, behind a dialog. */
 /** A STEP part's revisions compare its B-rep faces and edges exactly, beside figures a mesh gave. */
-test('the comparison shows a CAD revision’s faces and edges exactly', async () => {
-  const revision = (id: string, revLabel: string, parent: string | null, faces: number, edges: number): PartRevision => ({
-    id,
-    parent,
-    revLabel,
-    origin: parent === null ? 'ingest' : 'agent',
-    createdAt: '2026-09-15T13:00:00Z',
-    triangleCount: 28576,
-    faceCount: faces,
-    edgeCount: edges,
-    bboxMm: null,
-    volumeMm3: null,
-    surfaceAreaMm2: null,
-    massG: null,
-    centreMm: null,
-    sourceHash: null,
-    sourceFormat: 'step',
-    sourceBytes: 190356,
-    deltaFromParent: null,
-  })
-  const [first, second] = ['01931b6e-0000-7000-8000-0000000000e1', '01931b6e-0000-7000-8000-0000000000e2']
-  const exact = (from: number, to: number) => ({ from, to, change: to - from, percent: ((to - from) / from) * 100, approximate: false })
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith('/revisions')
-          ? [revision(second, '2', first, 42, 108), revision(first, '1', null, 38, 96)]
-          : url.includes('/diff?')
-            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: exact(38, 42), edgeCount: exact(96, 108) }
-            : [],
-    })),
-  )
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={BRACKET} />
-    </QueryClientProvider>,
-  )
 
-  const table = await screen.findByRole('table')
-  const row = (label: string) =>
-    [...table.querySelectorAll('tr')].find((tr) => tr.querySelector('th')?.textContent === label)
-  await waitFor(() => expect(row(strings.detail.faces)?.textContent).toContain(strings.detail.countChange(4, (4 / 38) * 100)))
-  expect(row(strings.detail.faces)?.textContent).not.toContain(strings.detail.approximate)
-  expect(row(strings.detail.edges)?.textContent).toContain(strings.detail.countChange(12, (12 / 96) * 100))
-  expect(row(strings.detail.centreAxis(0))?.querySelector('td')?.textContent).toBe(
-    strings.detail.notInBoth,
-  )
-})
-
-test('a checked-out part names its holder, and its page can release the lock after a confirmation', async () => {
-  const posts: { url: string; body: unknown }[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-      if (init?.method === 'POST') {
-        posts.push({ url, body: JSON.parse(init.body ?? 'null') })
-        return { ok: true, status: 204, json: async () => null }
-      }
-      return { ok: true, status: 200, json: async () => [] }
-    }),
-  )
-  const checkedOut: PartDetail = {
-    ...BRACKET,
-    lock: {
-      id: '01931b6e-0000-7000-8000-00000000eeee',
-      holder: 'mira@workshop-pc',
-      takenAt: '2026-09-14T08:00:00Z',
-    },
-  }
-  const page = (recordable: boolean) => (
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={checkedOut} recordable={recordable} />
-    </QueryClientProvider>
-  )
-
-  const quickLook = render(page(false))
-  expect(
-    screen.getByText(strings.detail.checkedOutBy('mira@workshop-pc', '2026-09-14T08:00:00Z')),
-  ).toBeTruthy()
-  expect(screen.queryByRole('button', { name: strings.detail.releaseLock })).toBeNull()
-  quickLook.unmount()
-
-  render(page(true))
-  fireEvent.click(screen.getByRole('button', { name: strings.detail.releaseLock }))
-  expect(screen.getByRole('dialog').textContent).toContain(
-    strings.detail.releaseLockBody('mira@workshop-pc'),
-  )
-  expect(posts, 'nothing is released before the confirmation').toEqual([])
-  fireEvent.click(screen.getByRole('button', { name: strings.detail.releaseLockConfirm }))
-  await waitFor(() =>
-    expect(posts).toEqual([
-      {
-        url: `/api/parts/${BRACKET.id}/lock/release`,
-        body: { by: strings.detail.releasedBy },
-      },
-    ]),
-  )
-  vi.unstubAllGlobals()
-})
-
-/**
- * The comparison belongs to the part on screen. Coming back to a part whose history is already
- * cached keeps the History section mounted, so a comparison that remembered the last part's
- * revisions would ask this part about somebody else's, and be refused.
- */
-test('the comparison follows the part on screen instead of keeping the last part’s revisions', async () => {
-  const revision = (id: string, revLabel: string, parent: string | null): PartRevision => ({
-    id,
-    parent,
-    revLabel,
-    origin: parent === null ? 'ingest' : 'agent',
-    createdAt: '2026-09-14T09:30:00Z',
-    triangleCount: 44,
-    faceCount: null,
-    edgeCount: null,
-    bboxMm: null,
-    volumeMm3: null,
-    surfaceAreaMm2: null,
-    massG: null,
-    centreMm: null,
-    sourceHash: null,
-    sourceFormat: 'stl',
-    sourceBytes: 20124,
-    deltaFromParent: null,
-  })
-  const [b1, b2] = ['01931b6e-0000-7000-8000-0000000000b1', '01931b6e-0000-7000-8000-0000000000b2']
-  const [c1, c2] = ['01931b6e-0000-7000-8000-0000000000c1', '01931b6e-0000-7000-8000-0000000000c2']
-  const histories: Record<string, PartRevision[]> = {
-    [BRACKET.id]: [revision(b2, '2', b1), revision(b1, '1', null)],
-    [PIN.id]: [revision(c2, '2', c1), revision(c1, '1', null)],
-  }
-  const noChange = { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: null, edgeCount: null }
-  const fetchMock = vi.fn(async (url: string) => {
-    const part = Object.keys(histories).find((id) => url.startsWith(`/api/parts/${id}/`))
-    const body =
-      part !== undefined && url.endsWith('/revisions')
-        ? histories[part]
-        : url.includes('/diff?')
-          ? noChange
-          : []
-    return { ok: true, status: 200, json: async () => body }
-  })
-  vi.stubGlobal('fetch', fetchMock)
-  const diffs = () =>
-    fetchMock.mock.calls.map(([url]) => url).filter((url) => url.includes('/diff?'))
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const page = (part: PartDetail) => (
-    <QueryClientProvider client={client}>
-      <Detail part={part} />
-    </QueryClientProvider>
-  )
-
-  const { rerender } = render(page(PIN))
-  await waitFor(() => expect(diffs().at(-1)).toBe(`/api/parts/${PIN.id}/diff?from=${c1}&to=${c2}`))
-  rerender(page(BRACKET))
-  await waitFor(() =>
-    expect(diffs().at(-1)).toBe(`/api/parts/${BRACKET.id}/diff?from=${b1}&to=${b2}`),
-  )
-
-  // Back to the pin, whose history is cached: the section stays mounted this time.
-  rerender(page(PIN))
-  await waitFor(() => expect(diffs().at(-1)).toBe(`/api/parts/${PIN.id}/diff?from=${c1}&to=${c2}`))
-  expect(diffs(), 'never the bracket’s revisions asked of the pin').not.toContain(
-    `/api/parts/${PIN.id}/diff?from=${b1}&to=${b2}`,
-  )
-  vi.unstubAllGlobals()
-})
 
 /**
  * **The comparison compares figures, and draws no ghost** (R1).
@@ -589,92 +377,8 @@ test('the comparison follows the part on screen instead of keeping the last part
  * Asserted as an absence beside the figures that stayed, because the checkbox sat in the same row
  * as the two revision pickers and would otherwise be a control that quietly stopped doing anything.
  */
-test('the comparison keeps its pickers and offers no ghost', async () => {
-  const revision = (id: string, revLabel: string, parent: string | null): PartRevision => ({
-    id,
-    parent,
-    revLabel,
-    origin: parent === null ? 'ingest' : 'agent',
-    createdAt: '2026-09-15T08:10:00Z',
-    triangleCount: 44,
-    faceCount: null,
-    edgeCount: null,
-    bboxMm: null,
-    volumeMm3: null,
-    surfaceAreaMm2: null,
-    massG: null,
-    centreMm: null,
-    sourceHash: null,
-    sourceFormat: 'stl',
-    sourceBytes: 20124,
-    deltaFromParent: null,
-  })
-  const [first, second] = ['01931b6e-0000-7000-8000-0000000000d1', '01931b6e-0000-7000-8000-0000000000d2']
-  const history = [revision(second, '2', first), revision(first, '1', null)]
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith('/revisions')
-          ? history
-          : url.includes('/diff?')
-            ? { volumeMm3: null, surfaceAreaMm2: null, bboxMm: null, triangleCount: null, faceCount: null, edgeCount: null }
-            : [],
-    })),
-  )
-  render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Detail part={BRACKET} />
-    </QueryClientProvider>,
-  )
-
-  // The pickers are still there, which is what says this row was kept rather than emptied.
-  const from = await screen.findByLabelText(strings.detail.compareFrom)
-  expect(screen.getByLabelText(strings.detail.compareTo)).toBeTruthy()
-  // Structurally, not by its old copy: the ghost's strings are gone from `strings.ts`, and a test
-  // that kept one alive only to assert its absence would be the one reason the copy still existed.
-  // The checkbox stood in this row beside the two pickers, so the row holding none is the assertion.
-  const row = from.closest('div')
-  expect(row?.querySelectorAll('input[type=checkbox]')).toHaveLength(0)
-  vi.unstubAllGlobals()
-})
 
 /** The link that opens a part in a desktop app, offered only where a save can come back as a revision. */
-test('a controlled library’s part offers to open in a desktop app, and a hobby library’s does not', async () => {
-  const part = { ...BRACKET, sourceHash: '7'.repeat(64) }
-  let mode: 'controlled' | 'hobby' = 'controlled'
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      json: async () =>
-        url.endsWith('/api/libraries') ? [{ id: part.library, name: 'Workshop', mode, partCount: 6 }] : [],
-    })),
-  )
-  const page = (client: QueryClient) => (
-    <QueryClientProvider client={client}>
-      <Detail part={part} />
-    </QueryClientProvider>
-  )
-
-  const view = render(page(new QueryClient({ defaultOptions: { queries: { retry: false } } })))
-  const link = await screen.findByRole('link', { name: strings.download.openInApp })
-  expect(link.getAttribute('href')).toBe(`lapidary://open?part=${part.id}`)
-  expect(screen.getByText(strings.download.openInAppNote)).toBeTruthy()
-  view.unmount()
-
-  mode = 'hobby'
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(page(client))
-  // Settled, not merely asked: a link absent before the answer arrives proves nothing.
-  await waitFor(() => expect(client.getQueryState(['libraries'])?.status).toBe('success'))
-  expect(screen.queryByRole('link', { name: strings.download.openInApp })).toBeNull()
-  expect(screen.queryByText(strings.download.openInAppNote)).toBeNull()
-  vi.unstubAllGlobals()
-})
 
 /** A slicer reads an STL as it is, so only a part it does not read is offered a 3MF, written when asked. */
 test('a STEP part offers a 3MF for a slicer, watches it being written, then links to it', async () => {

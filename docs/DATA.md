@@ -561,8 +561,6 @@ revision(
   rev_label text NOT NULL, parent_revision_id uuid,
   origin text NOT NULL,                 -- ingest|external_edit|import|assembly_promote
   author uuid, message text, created_at timestamptz,
-  lifecycle_state text,                 -- in_work|in_review|released|obsolete
-  locked_by uuid, locked_at timestamptz,
   volume double precision, surface_area double precision,
   bbox_x double precision, bbox_y double precision, bbox_z double precision,
   triangle_count integer, is_watertight boolean, units text,
@@ -819,7 +817,7 @@ URL names a *revision*, whose source could be re-pointed, and sending no directi
 would leave heuristic freshness free to hand back a stale file.
 
 **Negotiated since goal 4.** A format is a download of that one format, a `Target` whose
-`accepts()` is just it, so the route runs the same `negotiate` as `lapidary open`:
+`accepts()` is just it, so the route runs `negotiate`:
 - the part's own file is already in that format: the original, byte-identical and under
   its own name (`variant=stl` on an STL);
 - else a mesh export the worker wrote from the part's mesh, `variant=3mf` or `variant=stl`,
@@ -833,10 +831,7 @@ longer offers a rung — those links are in people's bookmarks and in older harn
 stale one deserves a sentence rather than a 500. An export of a pre-pivot STEP revision is
 refused in `cad_refusal`'s own words rather than the parser's, because that path is reachable
 on an upgraded install: `build()` reads `latest_revision(part)` without looking at its format
-(R5). `lapidary open` negotiates with this computer's apps as
-the target: a STEP part on a computer with a slicer and no CAD app opens as a read-only
-3MF under `exports/` in the workspace, no lock taken, and it says that nothing saved from
-it comes back.
+(R5).
 
 Measured on the 150-file corpus: the served bytes `cmp` clean against the file on disk,
 and a name carrying parentheses arrives as `filename*=UTF-8''…tex%28B%29.stl` with an
@@ -882,7 +877,6 @@ bundle verifiable rather than a folder of mystery files.
   - A part the import creates also arrives with its number, its tags and its sources, the licence
     among them (`634df2c`). A part the library already holds keeps what was typed here instead: the
     bundle's values are older, and nothing records which of the two a person wrote.
-  - A hobby library receives the newest revision only.
 
 ### 5.4 Archive security
 
@@ -895,126 +889,26 @@ bundle verifiable rather than a folder of mystery files.
 
 ## 6. Versioning
 
-What transfers from Git: immutable history, content addressing, lineage, "what changed",
-authorship, tags, dedup. What does not: three-way merge (undefined for a B-rep solid),
-textual diff, branches, rebase.
+What transfers from Git: immutable history, content addressing, lineage, authorship, dedup. What does
+not: merge, textual diff, branches, rebase. **A part keeps its file history; there are no locks,
+states or approvals** (S4, 2026-10-16). Until then a library was `hobby` (no revisions) or
+`controlled` (revisions and check-out locks), and a desktop agent checked parts out and saved them back;
+migration `0057` dropped `part_lock`, `library.mode` and the never-written `revision.lifecycle_state`.
 
-So: **immutable snapshots + lineage DAG + pessimistic locks.**
+The rules, as built (design: `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md`):
 
-### 6.1 The figures are the diff
-
-Between two revisions: Δ volume (absolute and %), Δ bbox per axis, Δ centre of mass, Δ
-triangle count — and, for revisions a STEP file ingested before the pivot, Δ face and edge
-count, because those columns are still there and still read.
-
-**The shapes are not compared, and that is the pivot rather than a gap.** This section used
-to promise a visual overlay — the earlier revision drawn as a translucent ghost through the
-current solid — and a per-face Hausdorff heatmap as the premium version. Both needed
-geometry we produced: a tessellation of each revision, in one frame, rung for rung. There is
-none, so the ghost went with the render pipeline (R1) and the heatmap was never built. Every
-figure in the list above is read from the mesh and therefore **approximate and labelled so**,
-on both sides of the comparison.
-
-What a person gets instead is honest and cheap: the numbers, the two revisions' files, and
-**view** on either of them. A shape comparison is what the tool the part is opened in does.
-
-### 6.2 External round-trip (agent binary)
-
-Checkout to `workspace/{part_number}_{rev}/PartName.step` — flat, human-readable, because
-users open this folder in a file manager.
-
-Watcher rules, none optional:
-
-- Debounce 500 ms, then **wait for write-settle**: size and mtime stable for 2 s.
-- Ignore `.bak`, `.tmp`, `~$*`, `.lck`, `*.autosave`, `.DS_Store`, `Thumbs.db`, `.3dm.bak`.
-- **Hash before believing anything.** Editors touch mtime constantly without changing
-  content. Identical bytes are not a revision.
-- Windows `ReadDirectoryChangesW` has a fixed kernel buffer that overflows during bulk
-  operations and silently drops events — handle the overflow signal with a full rescan.
-- macOS FSEvents coalesces at directory granularity by default; enable file-level events
-  and expect duplicates.
-
-**inotify does not propagate through Docker Desktop bind mounts on macOS or Windows.**
-This is why the watcher lives in the native agent binary and not in a container.
-
-**Phase 4 slice 1 polls, on Linux only.**
-- The agent watches the one checked-out file every 500 ms, with the settle and hash rules above.
-- The ignore list holds by construction, because only that file is watched.
-- It needs no new dependency. OS events arrive with macOS, Windows, or a checkout of more than a
-  handful of files.
-- Only the file handed out comes back: a tool that saves another name or format is not picked up.
-
-**A watched folder polls too:** `lapidary watch <folder> --library <id>`
-(`2026-09-15-local-product-design.md` §5).
-- **The ignore list** above applies whole, because every file under the folder is watched. A server scan
-  skips the same names (`lapidary_core::is_ignored`), so a folder gives a library the same files whichever
-  reads it.
-- **Every 2 s** the tree is listed. A settled change is hashed, then uploaded with its path relative to
-  the folder.
-- **A local deletion** changes nothing in the library.
-- **What was sent,** each path's size, mtime and BLAKE3, is kept in
-  `$XDG_STATE_HOME/lapidary/watch-<library>-<folder>.json`, never inside the folder. `<folder>` is 16 hex
-  digits of the canonical path's BLAKE3, so two folders watched into one library keep separate states.
-  A restart sends nothing for a file that is unchanged.
-- **A file the library refuses** is not recorded as sent. It is sent again after 5 minutes, sooner if it
-  changes, and on a restart.
-- **Batches are followed a round at a time.** The watch keeps listing and sending while its uploads'
-  batches run, so a slow job or a stopped worker holds up nothing else. A send the server did not answer,
-  and a batch whose status did not arrive, wait 30 s.
-- **Polling costs a listing per interval:** 12 ms warm over 2,778 files. `notify` replaces it once a
-  tree is large enough for that to matter.
-
-### 6.3 Which tools round-trip — be honest in the UI
-
-| Tool | Round-trip | Why |
-|---|---|---|
-| Rhino, FreeCAD, Blender, SolidWorks (local) | yes | writes the file we handed it |
-| Orca / Bambu / Cura / PrusaSlicer | yes (project files) | 3MF saves back |
-| Fusion 360 | **no** | cloud-backed; import is a copy |
-| Onshape | **no** | browser, no local file |
-
-For cloud tools the honest flow is export-and-reimport, and the UI must say so.
-Overpromising here destroys trust in version history, which is the feature everything
-else hangs on.
-
-### 6.4 Revisions as built (Phase 4 slice 1)
-
-The design is `docs/superpowers/specs/2026-09-14-phase-4-slice-1-revisions-design.md`. The rules:
-
-- **Controlled libraries only.**
-  - A changed file at a known path becomes a new revision (`revised`). A revert is a revision too.
-  - In a hobby library it is `unkept`: nothing is written, and the batch line says so and how to
-    switch the library to controlled. The switch is one-way.
+- **Every library.** A changed file at a known path becomes a new revision (`revised`). A revert is a
+  revision too. The same bytes again are `skipped`. Finished jobs from before S4 may still hold
+  `unkept`, a hobby library's old answer; nothing writes or counts it.
 - **Newest on top.** `<model>/<name>` always holds the current revision. The previous file moves to
   `<model>/revisions/<rev_label>/<name>` in the revision's own transaction, with the part row locked
   first. `metadata.json` lists every revision, oldest first.
-- **Origin:** `ingest` (scan), `upload` (browser), `agent` (bytes carrying a lock).
-- **Diff:** volume, surface area, bbox and triangle count. A delta is approximate if either
-  operand is, and absent if either is missing.
-- **Locks:**
-  - one active lock per part, held by free text, with no auth;
-  - enforced only while held;
-  - a forced release is recorded.
-
-### 6.5 `lapidary://` (Phase 4 slice 2) — and the overlay that went with the renders
-
-The design is `docs/superpowers/specs/2026-09-15-phase-4-slice-2-design.md` §2–3.
-
-**The overlay is gone** (R1). It drew the earlier revision as a translucent amber ghost
-through the current part — amber rather than grey, because a grey ghost over a grey part was
-barely visible — from that revision's L1 or else its L0, in the same scene frame, never
-picked. Every clause of that depended on a rung per revision, and there are no rungs. What a
-revision comparison shows is §6.1's figures; the files themselves are a download away, and
-**view** draws either one on its own.
-
-**`lapidary://open?part=<uuid>`** is the only shape accepted.
-- `lapidary register` writes an XDG handler that carries the server and workspace, so a link can never
-  name either.
-- `lapidary open` reuses this machine's checkout of the part, or checks it out, then runs
-  `xdg-open` on the file.
-- A lock somebody else holds is refused. Linux only.
-
----
+- **Origin:** `ingest` (scan), `upload` (browser). `agent` is read, never written: rows and bundles from
+  the desktop agent still hold it.
+- **History:** `GET /api/parts/{id}/revisions`, newest first, each with its figures and a download of its
+  own original file. There is no comparison: the figure-by-figure diff went with S4.
+- **Bundles** replay every revision of every part, oldest first. A bundle written before S4 also carries
+  `library.mode`; it is read and ignored.
 
 ## 7. Sharing
 

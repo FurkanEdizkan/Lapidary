@@ -62,38 +62,6 @@ function settled(ingested: number, revised: number, skipped: number): string {
 }
 
 /**
- * Files whose bytes changed in a hobby library (Phase 4 slice 1). A notice, not a failure —
- * nothing broke, and the new bytes are still where they came from — so it says what happened
- * and the two ways to keep such a change, and nothing about trying again.
- */
-function notKept(unkept: number): string {
-  if (unkept === 0) return ''
-  const files =
-    unkept === 1
-      ? '1 file changed but was'
-      : `${unkept.toLocaleString('en-US')} files changed but were`
-  return ` ${files} not kept: this library keeps no revisions. Switch it to keep every change, or give a file a new name to add it as a new part.`
-}
-
-/**
- * A figure's change between two revisions: signed, and with its share of where it started
- * when that was not zero. No change says so in words, because "+0 cm³" reads as a
- * measurement of something. A change too small for two places says it is under 0.01, because
- * "−0 mm" reads as no change with a sign, and "No change" would hide it.
- */
-function change(value: number, unit: string, percent: number | null): string {
-  if (value === 0) return 'No change'
-  const sign = value > 0 ? '+' : '−'
-  const amount = Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })
-  const share =
-    percent === null
-      ? ''
-      : ` (${sign}${Math.abs(percent).toLocaleString('en-US', { maximumFractionDigits: 1 })}%)`
-  const shown = amount === '0' ? 'under 0.01' : `${sign}${amount}`
-  return `${shown}${unit === '' ? '' : ` ${unit}`}${share}`
-}
-
-/**
  * The counted phrases above read mid-sentence as well as at the head of one — "no models"
  * has to stay lowercase where a sentence has already started — so the one place that opens
  * a sentence with one raises its first letter itself.
@@ -466,8 +434,8 @@ export const strings = {
      */
     batchRunning: (done: number, total: number) =>
       `Adding — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
-    batchFinished: (ingested: number, skipped: number, revised = 0, unkept = 0) =>
-      `Upload complete — ${settled(ingested, revised, skipped)}.${notKept(unkept)}`,
+    batchFinished: (ingested: number, skipped: number, revised = 0) =>
+      `Upload complete — ${settled(ingested, revised, skipped)}.`,
     /**
      * The upload batch this page started cannot be read back. Never a mistyped id — it came
      * from the commit's `202` — so the advice is to reload, as `render.unknown`'s is.
@@ -561,9 +529,7 @@ export const strings = {
     watertightYes: 'Closed',
     watertightNo: 'Open',
     /**
-     * The part's own mass, on its page rather than only in its history — a hobby library keeps no
-     * revisions, so the history was the one place it appeared and there it never appeared at all.
-     * Always with the ≈: volume times a density somebody typed is never a measurement, whatever the
+     * The part's own mass, on its page rather than only in its history. Always with the ≈: volume times a density somebody typed is never a measurement, whatever the
      * volume was read from. `massSource` is what says so in words.
      */
     massValue: (grams: number) =>
@@ -598,44 +564,12 @@ export const strings = {
     history: 'History',
     historyRevision: (label: string) => `Revision ${label}`,
     /** Where a revision's bytes came from, in the words a person would use for it. */
-    origin: { ingest: 'Scanned', upload: 'Uploaded', agent: 'Saved from a checkout' },
+    origin: { ingest: 'Scanned', upload: 'Uploaded', agent: 'Saved from the desktop app' },
     historyDate: (iso: string) =>
       new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
     historyFailed: "Could not load this part's history. Reload the page to try again.",
-    /** Changes between revisions, in each figure's own unit. */
-    volumeChange: (mm3: number, percent: number | null) => change(mm3 / 1000, 'cm³', percent),
-    areaChange: (mm2: number, percent: number | null) => change(mm2 / 100, 'cm²', percent),
-    lengthChange: (mm: number, percent: number | null) => change(mm, 'mm', percent),
-    countChange: (count: number, percent: number | null) => change(count, '', percent),
-    massChange: (grams: number, percent: number | null) => change(grams, 'g', percent),
-    compare: 'Compare',
-    compareFrom: 'From',
-    compareTo: 'To',
-    compareFigure: 'Figure',
-    compareChange: 'Change',
     /** Volume times a typed density: never a measurement, so always shown with ≈. */
     mass: 'Mass',
-    /** Under a comparison that has a mass row. */
-    massNote:
-      'Mass is each revision’s volume times the density of the part’s material as it is now, so both revisions use today’s material and density.',
-    boundingBoxAxis: (axis: 0 | 1 | 2) => `Bounding box ${'XYZ'[axis]}`,
-    /** The centre of a revision's volume, per axis: exact from a B-rep, ≈ from a mesh. */
-    centreAxis: (axis: 0 | 1 | 2) => `Centre of mass ${'XYZ'[axis]}`,
-    /** A figure one of the two revisions did not record: no change can be read off it. */
-    notInBoth: 'Not measured in both',
-    compareFailed: 'Could not compare these revisions. Reload the page to try again.',
-    /** Who has the part checked out, and since when (Phase 4 slice 1). */
-    checkedOut: 'Checked out',
-    checkedOutBy: (holder: string, since: string) =>
-      `${holder}, since ${new Date(since).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    releaseLock: 'Release…',
-    releaseLockTitle: 'Release this check-out?',
-    releaseLockBody: (holder: string) =>
-      `${holder} will not be able to save their changes back: their next save is refused, and the refusal says the lock was released here. Release it only if they cannot check it in themselves.`,
-    releaseLockConfirm: 'Release',
-    releaseLockFailed: 'The check-out was not released. Reload the page, then try again.',
-    /** Recorded as who released a lock. The page has no signed-in person to name yet. */
-    releasedBy: 'the part page',
   },
   removal: {
     remove: 'Remove from library',
@@ -700,8 +634,8 @@ export const strings = {
      */
     running: (done: number, total: number) =>
       `Scanning — ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} files.`,
-    finished: (ingested: number, skipped: number, revised = 0, unkept = 0) =>
-      `Scan complete — ${settled(ingested, revised, skipped)}.${notKept(unkept)}`,
+    finished: (ingested: number, skipped: number, revised = 0) =>
+      `Scan complete — ${settled(ingested, revised, skipped)}.`,
     /**
      * A file that will never appear. The count is what belongs on screen; the reason per
      * file is the failed-file drawer, which arrives in Phase 2.
@@ -847,11 +781,6 @@ export const strings = {
      */
     noSource:
       'No source file on this revision, so there is nothing to download. Re-scan the library to attach one.',
-    /** A controlled library's part, opened in a desktop app through `lapidary://` (Phase 4 slice 2). */
-    openInApp: 'Open in desktop app',
-    /** DATA §6.3's honesty line: which tools send a save back, and the way without the agent. */
-    openInAppNote:
-      'Needs lapidary register and lapidary agent on this computer. Rhino, FreeCAD and Blender save back as a new revision; Fusion 360 and Onshape keep their own copy, so export from them and upload instead. Without the agent, use Download.',
     /**
      * A part no slicer reads as it is, a STEP or IGES part, handed to one as a 3MF Lapidary writes
      * from its mesh. Beside Download, which stays the part's own file.
@@ -1300,22 +1229,6 @@ export const strings = {
     createTitle: 'New library',
     nameLabel: 'Library name',
     createConfirm: 'Create',
-    modeLabel: 'Governance',
-    /**
-     * Chosen at creation, and switchable one way afterwards: a hobby library can start keeping
-     * every change, and nothing switches one back, because a controlled library switched back
-     * would hold revisions no screen shows. States and approvals are still Phase 8.
-     */
-    hobby: 'Hobby — no revisions or approvals',
-    controlled: 'Controlled — every change kept as a revision',
-    /** The one-way switch, named for what it does rather than for the mode it sets. */
-    makeControlled: 'Keep every change…',
-    makeControlledTitle: 'Keep every change in this library?',
-    makeControlledBody: (name: string) =>
-      `From now on, when a file in ${name} changes, the change is kept as a new revision and the previous file is kept beside it. This cannot be switched back.`,
-    makeControlledConfirm: 'Keep every change',
-    makeControlledFailed:
-      'The library was not switched. Check that the api service is running, then try again.',
     createFailed:
       'The library could not be created. Check that the api service is running, then try again.',
     refusedWithoutReason:

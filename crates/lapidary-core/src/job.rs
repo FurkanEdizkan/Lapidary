@@ -1,7 +1,7 @@
 //! The queue's wire shapes. `BatchStatus` is aggregated from job rows on every read and
 //! never stored, so it cannot disagree with the rows it summarises.
 
-use crate::{BatchId, BlobHash, CoreError, DerivativeKind, LibraryId, LockId, RevisionId};
+use crate::{BatchId, BlobHash, CoreError, DerivativeKind, LibraryId, RevisionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -34,11 +34,12 @@ pub enum JobState {
 /// store into that part's own directory. Reporting it as `Ingested` would put files a
 /// user already had into the "added" column of a batch they are watching.
 ///
-/// `Revised` and `Unkept` are the two answers to a file whose bytes changed at a path the
-/// library already indexes (Phase 4 slice 1). A controlled library keeps the change as a
-/// new revision; a hobby library keeps no revisions and says so. `Unkept` is a notice, not a
-/// failure: nothing broke, the new bytes are still where they came from, and a retry could
-/// not change the answer — so it is counted here rather than listed as a failed job.
+/// `Revised` is the answer to a file whose bytes changed at a path the library already indexes:
+/// the change is kept as a new revision, in every library.
+///
+/// **`Unkept` is gone from this enum, for `Profiled`'s reason below.** It was a hobby library's
+/// answer — no revisions kept — until S4 (2026-10-16) gave every library its history. Finished
+/// rows still hold it and `job_outcome_known` keeps it; nothing counts it any more.
 ///
 /// **`Profiled` is gone from this enum and must stay out of `job_outcome_known`.** R3 deleted
 /// shape similarity, so nothing writes it; migration `0047` added the value and finished rows
@@ -59,7 +60,6 @@ pub enum Outcome {
     Scanned,
     Migrated,
     Revised,
-    Unkept,
     /// A part's `metadata.json` written again from its rows.
     Described,
 }
@@ -101,9 +101,6 @@ pub enum JobPayload {
     IngestBlob {
         blake3: BlobHash,
         source_path: String,
-        /// The check-out these bytes were saved under, when the agent sent them (Phase 4
-        /// slice 1). `None` for a browser upload, and for every row queued before locks.
-        lock: Option<LockId>,
     },
     /// Move every source blob in this library out of the content-addressed store and into
     /// its model's own directory, writing a `metadata.json` beside it.
@@ -164,9 +161,6 @@ struct ImportPartPayload {
 struct IngestBlobPayload {
     blake3: BlobHash,
     path: String,
-    /// Absent from every row written before check-outs, which still parse.
-    #[serde(default)]
-    lock: Option<LockId>,
 }
 
 /// The `derive` payload's shape, deserialised as a whole rather than field by field so a
@@ -215,15 +209,7 @@ impl JobPayload {
             JobPayload::IngestBlob {
                 blake3,
                 source_path,
-                lock,
-            } => {
-                let mut payload = serde_json::json!({ "blake3": blake3, "path": source_path });
-                // Only when there is one, so a row without a lock is exactly what it always was.
-                if let Some(lock) = lock {
-                    payload["lock"] = serde_json::json!(lock);
-                }
-                payload
-            }
+            } => serde_json::json!({ "blake3": blake3, "path": source_path }),
             JobPayload::ImportBundle { blake3, path } => {
                 serde_json::json!({ "blake3": blake3, "path": path })
             }
@@ -268,7 +254,6 @@ impl JobPayload {
                 .map(|p| JobPayload::IngestBlob {
                     blake3: p.blake3,
                     source_path: p.path,
-                    lock: p.lock,
                 })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
@@ -335,11 +320,8 @@ pub struct BatchStatus {
     pub ingested: u32,
     pub skipped: u32,
     pub rendered: u32,
-    /// Files whose changed bytes a controlled library kept as a new revision.
+    /// Files whose changed bytes were kept as a new revision.
     pub revised: u32,
-    /// Files whose bytes changed in a hobby library, which keeps no revisions, so the change
-    /// was not stored. Counted rather than failed — see [`Outcome`].
-    pub unkept: u32,
     /// How many `scan_directory` jobs in this batch have finished their walk — in
     /// practice 0 or 1, since a scan enqueues one and its children join the same batch.
     ///
@@ -422,7 +404,6 @@ mod tests {
             skipped: 0,
             rendered: 0,
             revised: 0,
-            unkept: 0,
             // The walk that found the six files, one of which failed. Counted in `total`
             // as the job it is, and subtracted out wherever the number is called `files`.
             scanned: 1,
@@ -507,27 +488,22 @@ mod tests {
     // `JobState` are skipped for the same reason: their variants are single words,
     // so `JobState`'s existing literal-match test above is already sufficient.
 
-    /// The agent's save carries its check-out, and a row queued before check-outs existed —
-    /// no `lock` key at all — still parses, as a save under none.
+    /// A row the desktop agent queued under a check-out carries a `lock` key. Both are gone (S4), and
+    /// such a row still parses: the key is ignored, and the save is an ordinary one.
     #[test]
-    fn an_ingest_blob_payload_carries_its_lock_and_an_older_row_still_parses() {
-        let lock = LockId::new();
-        let payload = JobPayload::IngestBlob {
-            blake3: BlobHash::from_bytes([0x5d; 32]),
-            source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
-            lock: Some(lock),
-        };
+    fn an_ingest_blob_row_from_the_agent_still_parses_and_its_lock_is_ignored() {
+        let agent = serde_json::json!({
+            "blake3": "5d".repeat(32),
+            "path": "flange-dn40-lp-3310-02.stl",
+            "lock": "0193a0c2-7d40-7000-8000-00000000c0de",
+        });
         assert_eq!(
-            JobPayload::from_row("ingest_blob", &payload.to_json()).expect("parses"),
-            payload
+            JobPayload::from_row("ingest_blob", &agent).expect("an agent's row parses"),
+            JobPayload::IngestBlob {
+                blake3: BlobHash::from_bytes([0x5d; 32]),
+                source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
+            }
         );
-
-        let older =
-            serde_json::json!({ "blake3": "5d".repeat(32), "path": "flange-dn40-lp-3310-02.stl" });
-        match JobPayload::from_row("ingest_blob", &older).expect("an older row parses") {
-            JobPayload::IngestBlob { lock, .. } => assert_eq!(lock, None),
-            other => panic!("an ingest_blob row is an IngestBlob: {other:?}"),
-        }
     }
 
     #[test]
@@ -546,13 +522,8 @@ mod tests {
         let payload = JobPayload::IngestBlob {
             blake3: BlobHash::from_bytes([0x5c; 32]),
             source_path: "brackets/steel/LP-1042-03.stl".to_owned(),
-            lock: None,
         };
         let json = payload.to_json();
-        assert!(
-            json.get("lock").is_none(),
-            "a row without a check-out is written exactly as it always was"
-        );
         assert_eq!(payload.kind(), "ingest_blob");
         // The hash goes over as hex, like everywhere else a `BlobHash` is written, and
         // the path key is spelled the way `ingest_file` spells it.

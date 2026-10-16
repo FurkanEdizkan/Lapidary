@@ -5,14 +5,14 @@ use crate::DbError;
 use crate::repo::{RevisionWrite, StoredBlobRow, detail_hash, detail_stamp, insert_revision_chain};
 use lapidary_core::manifest::{ManifestFile, ManifestPart, ManifestRevision, ModelManifest};
 use lapidary_core::{
-    BlobHash, LibraryId, LibraryMode, LockId, MeasurementProvenance, MeshMeasurements, PartId,
-    RevisionId, RevisionOrigin,
+    BlobHash, LibraryId, MeasurementProvenance, MeshMeasurements, PartId, RevisionId,
+    RevisionOrigin,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
 
 /// What a library holds at one source path: the part, its current revision, and the facts a
-/// handler needs to tell a re-scan, a change to keep and a change to decline apart.
+/// handler needs to tell a re-scan from a change to keep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurrentRevision {
     pub part: PartId,
@@ -23,7 +23,6 @@ pub struct CurrentRevision {
     /// has not reached: there is no model directory to set the previous file aside in yet.
     pub storage_path: Option<String>,
     pub deleted: bool,
-    pub mode: LibraryMode,
 }
 
 /// The next revision of a part, as the kernel measured it.
@@ -32,8 +31,6 @@ pub struct RevisionRequest<'a> {
     /// The revision the job measured against. Refused if it is no longer current.
     pub parent: RevisionId,
     pub origin: RevisionOrigin,
-    /// The check-out the bytes were saved under. `None` for a scan or a browser upload.
-    pub lock: Option<LockId>,
     pub blob: &'a StoredBlobRow,
     pub measurements: &'a MeshMeasurements,
     pub provenance: MeasurementProvenance,
@@ -113,36 +110,27 @@ impl PgRevisions {
         source_path: &str,
     ) -> Result<Option<CurrentRevision>, DbError> {
         #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, Uuid, Option<String>, Option<String>, bool, String)> =
-            sqlx::query_as(
-                "SELECT p.id, r.id, f.blake3, f.storage_path, p.deleted_at IS NOT NULL, l.mode \
+        let row: Option<(Uuid, Uuid, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT p.id, r.id, f.blake3, f.storage_path, p.deleted_at IS NOT NULL \
                  FROM part p \
-                 JOIN library l ON l.id = p.library_id \
                  JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                                ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
                  LEFT JOIN LATERAL (SELECT blake3, storage_path FROM file \
                                     WHERE revision_id = r.id AND role = 'source' \
                                     ORDER BY id LIMIT 1) f ON true \
                  WHERE p.library_id = $1 AND p.source_path = $2",
-            )
-            .bind(library.as_uuid())
-            .bind(source_path)
-            .fetch_optional(&self.0)
-            .await?;
-        row.map(|(part, revision, hash, storage_path, deleted, mode)| {
+        )
+        .bind(library.as_uuid())
+        .bind(source_path)
+        .fetch_optional(&self.0)
+        .await?;
+        row.map(|(part, revision, hash, storage_path, deleted)| {
             Ok(CurrentRevision {
                 part: PartId::from_uuid(part),
                 revision: RevisionId::from_uuid(revision),
                 source_hash: detail_hash("file.blake3", hash)?,
                 storage_path,
                 deleted,
-                // Anything but `controlled` keeps no revisions: governance is opt-in, so a
-                // word this build does not know is not a reason to start keeping history.
-                mode: if mode == LibraryMode::Controlled.as_str() {
-                    LibraryMode::Controlled
-                } else {
-                    LibraryMode::Hobby
-                },
             })
         })
         .transpose()
@@ -201,43 +189,6 @@ impl PgRevisions {
             return Err(DbError::RevisionConflict { part: req.part });
         }
 
-        // A check-out is enforced only while one is held (spec §5), and read under the part's
-        // row lock, so a release cannot slip between this check and the commit.
-        let active: Option<(Uuid, String, i64)> = sqlx::query_as(
-            "SELECT id, holder, (extract(epoch FROM taken_at) * 1000000)::bigint \
-             FROM part_lock WHERE part_id = $1 AND released_at IS NULL",
-        )
-        .bind(req.part.as_uuid())
-        .fetch_optional(&mut *tx)
-        .await?;
-        match (active, req.lock) {
-            (Some((active, _, _)), Some(carried)) if active == carried.as_uuid() => {}
-            (Some((_, holder, taken_us)), _) => {
-                let since = detail_stamp("part_lock.taken_at", taken_us)?.to_string();
-                tx.rollback().await?;
-                return Err(DbError::PartCheckedOut { holder, since });
-            }
-            (None, Some(carried)) => {
-                let released: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
-                    "SELECT released_by, (extract(epoch FROM released_at) * 1000000)::bigint \
-                     FROM part_lock WHERE id = $1 AND part_id = $2",
-                )
-                .bind(carried.as_uuid())
-                .bind(req.part.as_uuid())
-                .fetch_optional(&mut *tx)
-                .await?;
-                tx.rollback().await?;
-                return Err(match released {
-                    Some((Some(released_by), Some(released_us))) => DbError::LockReleased {
-                        released_by,
-                        released_at: detail_stamp("part_lock.released_at", released_us)?
-                            .to_string(),
-                    },
-                    _ => DbError::UnknownLock,
-                });
-            }
-            (None, None) => {}
-        }
         let Some((directory, name)) = path.rsplit_once('/') else {
             tx.rollback().await?;
             return Err(DbError::RevisionFilesFailed {

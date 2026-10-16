@@ -85,7 +85,6 @@ async fn revise(pool: &sqlx::PgPool, root: &Path, part: PartId, bytes: &[u8]) {
                 part,
                 parent: current.revision,
                 origin: RevisionOrigin::Agent,
-                lock: None,
                 blob: &row(bytes),
                 measurements: &measurements(),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
@@ -255,7 +254,10 @@ async fn a_bundle_holds_every_revision_byte_identical_with_a_manifest_that_names
     let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("json");
     assert_eq!(manifest["format"], "lapidary-bundle");
     assert_eq!(manifest["version"], 1);
-    assert_eq!(manifest["library"]["mode"], "hobby");
+    assert!(
+        manifest["library"].get("mode").is_none(),
+        "bundles carry no mode since S4"
+    );
     let part = &manifest["parts"][0];
     assert_eq!(part["sourcePath"], FLANGE);
     assert_eq!(part["sources"][0]["license"], "CC-BY-4.0");
@@ -458,7 +460,7 @@ async fn a_removed_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
     );
 
     let jigs = PgParts(pool.clone())
-        .create_library("Workshop jigs", "hobby")
+        .create_library("Workshop jigs")
         .await
         .expect("a second library");
     let clamp = PgIngest(pool.clone())

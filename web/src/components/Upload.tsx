@@ -81,10 +81,9 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
       status.ingested,
       status.skipped,
       status.revised,
-      status.unkept,
     )
   }
-  return strings.scan.finished(status.ingested, status.skipped, status.revised, status.unkept)
+  return strings.scan.finished(status.ingested, status.skipped, status.revised)
 }
 
 /**

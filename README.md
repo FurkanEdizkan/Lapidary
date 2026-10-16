@@ -23,7 +23,7 @@ own picture, or names its format when nobody has given it one. Parts live in a f
 mirrored on disk — one directory per model, its file under its own name with a
 `metadata.json` beside it — under categories you can create and drag models between. Full
 text and part-number search, format and category facets, saved filters, a quick-look panel,
-revisions and locks for a `controlled` library, and a dashboard. Removing a part is reversible; purging it is a
+a file history for every part, and a dashboard. Removing a part is reversible; purging it is a
 separate, explicit action.
 
 **The pivot of 2026-10-03 is the thing to know before reading anything older.** Lapidary is
@@ -46,9 +46,8 @@ moment and predates it.
   every one read from the mesh and so labelled approximate, always. **View in 3D** loads the
   original file in the browser; there is no measuring here, because measuring a mesh against
   entities that were never placed would be a number that lies.
-- **Version** — immutable content-addressed revisions with a lineage DAG, pessimistic locks
-  and a figure-by-figure comparison. Open a part in FreeCAD, save it, and a new revision
-  appears automatically.
+- **Version** — a changed file becomes the part's next revision, and every earlier file stays
+  downloadable from its history.
 - **Route** — automatic format negotiation. A slicer gets the part's own file when it
   already reads it, and a `*.lapidary.*` export written from its mesh when it does not.
   Nothing is silently converted.

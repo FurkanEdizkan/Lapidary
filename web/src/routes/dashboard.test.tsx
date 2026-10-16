@@ -207,8 +207,8 @@ function stub(widgets: readonly StoredWidget[], override: Record<string, WidgetR
           ok: true,
           status: 200,
           json: async () => [
-            { id: LIBRARY, name: NAME, mode: 'hobby', partCount: 156 },
-            { id: OTHER, name: OTHER_NAME, mode: 'hobby', partCount: 12 },
+            { id: LIBRARY, name: NAME, partCount: 156 },
+            { id: OTHER, name: OTHER_NAME, partCount: 12 },
           ],
         }
       }

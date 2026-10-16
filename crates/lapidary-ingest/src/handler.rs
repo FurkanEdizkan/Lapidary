@@ -16,12 +16,11 @@
 //!    hold these bytes? yes -> `Skipped`, no further work at all: not a parse, not a raster,
 //!    not a query beyond this one
 //!    3b. `revisions.current(library, source_path)` — a part already here, with other bytes:
-//!    deleted -> `Skipped`, hobby library -> `Unkept`, controlled -> on to 5a. Nothing is
-//!    written before either refusal
+//!    deleted -> `Skipped`, live -> on to 5a. Nothing is written before that refusal
 //!    3a. `parts.library_exists(library)` — the library is still there;
 //!    deliberately below the short-circuit, so a re-scan still costs one query
 //! 4. `lapidary_cad::parse(bytes, format)` then `measure(&mesh)` — and nothing else
-//!    5a. a controlled part's next revision: `revisions.record_revision(...)` locks the part,
+//!    5a. the part's next revision: `revisions.record_revision(...)` locks the part,
 //!    sets its current file aside under `revisions/<label>/` and writes these bytes where it
 //!    was, then `metadata.json` is rewritten from the rows -> `Revised`. Steps 6 to 10 are
 //!    a new part's, not a revision's
@@ -119,8 +118,8 @@
 use lapidary_cad::CadError;
 use lapidary_core::slug::{disambiguate, disambiguate_with, slugify};
 use lapidary_core::{
-    BlobHash, FolderId, JobPayload, LibraryId, LibraryMode, MeasurementProvenance, Outcome,
-    Provenance, RevisionId, RevisionOrigin, source_format,
+    BlobHash, FolderId, JobPayload, LibraryId, MeasurementProvenance, Outcome, Provenance,
+    RevisionId, RevisionOrigin, source_format,
 };
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, PgRevisions,
@@ -190,11 +189,7 @@ impl JobHandler for WorkerHandler {
             JobPayload::IngestBlob {
                 blake3,
                 source_path,
-                lock,
-            } => {
-                self.ingest_blob(job.library_id, blake3, &source_path, lock)
-                    .await
-            }
+            } => self.ingest_blob(job.library_id, blake3, &source_path).await,
             // The batch comes from the row for `scan_directory`'s reason, and the library
             // for the same one: a migration re-enqueues itself until the library drains,
             // and it has to land in the batch whoever started it is already polling.
@@ -345,15 +340,8 @@ impl WorkerHandler {
 
         // 2. BLAKE3 -- hash first, always. Everything below branches on this.
         let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
-        self.index(
-            library,
-            source_path,
-            bytes,
-            hash,
-            RevisionOrigin::Ingest,
-            None,
-        )
-        .await
+        self.index(library, source_path, bytes, hash, RevisionOrigin::Ingest)
+            .await
     }
 
     /// One blob already in the store, start to finish: the upload route's half of the
@@ -382,7 +370,6 @@ impl WorkerHandler {
         library: LibraryId,
         hash: BlobHash,
         source_path: &str,
-        lock: Option<lapidary_core::LockId>,
     ) -> Result<Outcome, HandlerError> {
         // Not a filesystem join here — the path never touches one — but it becomes
         // `part.source_path`, and from there both a `Content-Disposition` filename on the
@@ -478,12 +465,7 @@ impl WorkerHandler {
             }
         };
 
-        // Bytes that carry a check-out came back from the agent; the rest from a browser.
-        let origin = match lock {
-            Some(_) => RevisionOrigin::Agent,
-            None => RevisionOrigin::Upload,
-        };
-        self.index(library, source_path, bytes, hash, origin, lock)
+        self.index(library, source_path, bytes, hash, RevisionOrigin::Upload)
             .await
     }
 
@@ -502,7 +484,6 @@ impl WorkerHandler {
         bytes: Vec<u8>,
         hash: BlobHash,
         origin: RevisionOrigin,
-        lock: Option<lapidary_core::LockId>,
     ) -> Result<Outcome, HandlerError> {
         // Here as well as in the routes that read a file first: a scan, an upload and a bundle's
         // part all name the path a part is filed under, and this is where all three pass.
@@ -529,7 +510,7 @@ impl WorkerHandler {
         }
 
         // 3b. A part already at this path, with other bytes (Phase 4 slice 1 spec §1). Only a
-        // live part in a controlled library goes on, to become its next revision at step 5a;
+        // live part goes on, to become its next revision at step 5a;
         // everything this decides against, it decides before the kernel, so it writes nothing.
         let existing = PgRevisions(self.db.clone())
             .current(library, source_path)
@@ -545,11 +526,6 @@ impl WorkerHandler {
             // was told it was a change nobody keeps.
             if existing.source_hash == Some(hash) {
                 return Ok(Outcome::Skipped);
-            }
-            // A hobby library keeps no revisions. Counted, not failed: nothing broke, the new
-            // bytes are still where they came from, and a retry could not change the answer.
-            if existing.mode != LibraryMode::Controlled {
-                return Ok(Outcome::Unkept);
             }
             if existing.storage_path.is_none() {
                 return Err(HandlerError::Transient {
@@ -619,7 +595,6 @@ impl WorkerHandler {
                         part: existing.part,
                         parent: existing.revision,
                         origin,
-                        lock,
                         blob: &blob,
                         measurements: &measurements,
                         // Every figure a mesh gives is tessellated, and a mesh is all this
@@ -651,14 +626,8 @@ impl WorkerHandler {
                 if let Some((current, aside)) = &moved {
                     put_back(&relocator, &source, current, aside);
                 }
-                // Except a check-out's refusal: these bytes, under this lock or none, are refused
-                // the same way on every attempt until somebody acts on what the message says.
-                let message = error.to_string();
-                return Err(match error {
-                    DbError::PartCheckedOut { .. }
-                    | DbError::LockReleased { .. }
-                    | DbError::UnknownLock => HandlerError::Permanent { message },
-                    _ => HandlerError::Transient { message },
+                return Err(HandlerError::Transient {
+                    message: error.to_string(),
                 });
             }
 

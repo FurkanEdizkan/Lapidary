@@ -195,7 +195,6 @@ function stubFetch(routes: {
   partImages?: () => Promise<StubResponse>;
   partSources?: () => Promise<StubResponse>;
   partRevisions?: () => Promise<StubResponse>;
-  libraryControlled?: () => Promise<StubResponse>;
   libraries?: () => Promise<StubResponse>;
   libraryCreate?: () => Promise<StubResponse>;
   facets?: () => Promise<StubResponse>;
@@ -290,7 +289,6 @@ function stubFetch(routes: {
     // the others is built on. Unstubbed it hangs like the rest, which is what leaves the
     // toggle in its unknown state for every test that is not about it.
     // The one-way switch, before the bare-library rule it is a prefix of.
-    if (url.endsWith("/controlled")) return (routes.libraryControlled ?? pending)();
     if (url.startsWith("/api/libraries/")) return (routes.library ?? pending)();
     return Promise.reject(new Error(`unstubbed request: ${url}`));
   });
@@ -326,7 +324,6 @@ const batchStatus = (over: Partial<BatchStatus> = {}): BatchStatus => ({
   skipped: 0,
   rendered: 0,
   revised: 0,
-  unkept: 0,
   migrated: 0,
   migrating: 0,
   failedTotal: 0,
@@ -2909,7 +2906,6 @@ function detailFor(card: typeof MOTOR_MOUNT) {
     bboxMm: { value: [61, 42, 18.5], approximate: true },
     volumeMm3: { value: 21478.5, approximate: true },
     surfaceAreaMm2: { value: 9804.25, approximate: true },
-    lock: null,
     sourceHash: card.sourceHash,
     sourceFormat: "stl",
     sourceBytes: card.sourceBytes,
@@ -2964,7 +2960,6 @@ const MOTOR_MOUNT_DETAIL = {
   bboxMm: { value: [61, 42, 18.5], approximate: true },
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
-  lock: null,
   sourceHash: MOTOR_MOUNT.sourceHash,
   sourceFormat: "stl",
   sourceBytes: MOTOR_MOUNT.sourceBytes,
@@ -3340,13 +3335,11 @@ test("preferences survive storage being unavailable", () => {
 const SEEDED_LIBRARY_ROW = {
   id: DEFAULT_LIBRARY_ID,
   name: "Default",
-  mode: "hobby",
   partCount: 156,
 };
 const SECOND_LIBRARY_ROW = {
   id: "01a07c40-0000-7000-8000-000000000002",
   name: "Tabletop terrain",
-  mode: "controlled",
   partCount: 0,
 };
 const LIBRARIES = [SEEDED_LIBRARY_ROW, SECOND_LIBRARY_ROW];
@@ -3439,54 +3432,6 @@ test("a library name another library has keeps the dialog open with the reason",
     (screen.getByRole("textbox", { name: strings.libraries.nameLabel }) as HTMLInputElement)
       .value,
   ).toBe("Tabletop terrain");
-});
-
-/**
- * The one-way switch a changed file in a hobby library points to. Offered on a hobby library,
- * asked about once in a dialog because it cannot be undone, and the list read again after.
- */
-test("a hobby library can be switched to keep every change, after one confirmation", async () => {
-  let switched = 0;
-  const fetchMock = stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    libraries: ok([{ ...SEEDED_LIBRARY_ROW, mode: "hobby" }]),
-    libraryControlled: async () => {
-      switched += 1;
-      return { ok: true, status: 204, json: async () => null };
-    },
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  fireEvent.click(await screen.findByRole("button", { name: strings.libraries.makeControlled }));
-  expect(screen.getByRole("dialog").textContent).toContain(
-    strings.libraries.makeControlledBody(SEEDED_LIBRARY_ROW.name),
-  );
-  expect(switched, "nothing is switched before the confirmation").toBe(0);
-
-  fireEvent.click(screen.getByRole("button", { name: strings.libraries.makeControlledConfirm }));
-  await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith(`/api/libraries/${DEFAULT_LIBRARY_ID}/controlled`, {
-      method: "POST",
-    }),
-  );
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(switched).toBe(1);
-});
-
-/** A controlled library already keeps every change, and there is no way back to offer. */
-test("a controlled library offers no switch", async () => {
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    libraries: ok([{ ...SEEDED_LIBRARY_ROW, mode: "controlled" }]),
-  });
-  renderIndex();
-  await openMenu(strings.toolbar.library);
-
-  expect(await screen.findByRole("button", { name: strings.libraries.create })).toBeDefined();
-  expect(screen.queryByRole("button", { name: strings.libraries.makeControlled })).toBeNull();
 });
 
 /** A refusal that names itself, the shape `folders.rs` and `derive.rs` both answer with. */
@@ -4073,14 +4018,13 @@ test("a bundle the server refuses says why and downloads nothing", async () => {
  */
 test.each([
   strings.libraries.create,
-  strings.libraries.makeControlled,
   strings.fields.menu,
   strings.densities.menu,
 ])("choosing %s from the library menu closes the menu", async (item) => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT])),
-    libraries: ok([{ ...SEEDED_LIBRARY_ROW, mode: "hobby" }]),
+    libraries: ok([SEEDED_LIBRARY_ROW]),
   });
   renderIndex();
   const menu = await openMenu(strings.toolbar.library);

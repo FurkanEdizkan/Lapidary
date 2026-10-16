@@ -7,9 +7,7 @@
 //! is this library's own, and the rules a scan follows (skipped, revised, unkept) apply unchanged.
 
 use crate::handler::WorkerHandler;
-use lapidary_core::{
-    BatchId, BlobHash, JobPayload, LibraryId, LibraryMode, Outcome, RevisionOrigin,
-};
+use lapidary_core::{BatchId, BlobHash, JobPayload, LibraryId, Outcome, RevisionOrigin};
 use lapidary_db::{NewPartSource, PgBlobs, PgJobs, PgParts, PgRevisions};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::SourceReader;
@@ -76,8 +74,7 @@ impl WorkerHandler {
     }
 
     /// One part: its revisions through `index`, oldest first, from wherever this library already is
-    /// in that history. A controlled library gets every revision. A hobby library keeps none, so it
-    /// gets the newest.
+    /// in that history. Every library gets every revision.
     pub(crate) async fn import_part(
         &self,
         library: LibraryId,
@@ -95,27 +92,21 @@ impl WorkerHandler {
                 "The bundle holds no part {index} for {path}. Import the bundle again."
             )));
         };
-        let controlled = PgParts(self.db.clone())
-            .libraries()
+        if !PgParts(self.db.clone())
+            .library_exists(library)
             .await
             .map_err(transient)?
-            .into_iter()
-            .find(|row| row.id == library)
-            .map(|row| row.mode == LibraryMode::Controlled.as_str())
-            .ok_or_else(|| {
-                permanent("The library this import was queued for no longer exists.".to_owned())
-            })?;
-        let revisions = if controlled {
-            part.revisions.clone()
-        } else {
-            part.revisions.last().cloned().into_iter().collect()
-        };
+        {
+            return Err(permanent(
+                "The library this import was queued for no longer exists.".to_owned(),
+            ));
+        }
+        let revisions = part.revisions.clone();
 
-        // Where this library already is in the part's history. A controlled part whose revisions are
+        // Where this library already is in the part's history. A part whose revisions are
         // the bundle's first ones, in order, resumes after them, which makes an import that stopped
         // half way, or one run twice, finish rather than fail, reverts included. A part with any
-        // other history is another part's, and is refused rather than grafted onto. A hobby library
-        // keeps one revision, and `index` decides between skipped and unkept.
+        // other history is another part's, and is refused rather than grafted onto.
         let revisions_db = PgRevisions(self.db.clone());
         let held: Vec<String> = match revisions_db
             .current(library, &part.source_path)
@@ -138,7 +129,7 @@ impl WorkerHandler {
                     .collect()
             }
         };
-        let start = if held.is_empty() || !controlled {
+        let start = if held.is_empty() {
             0
         } else if held.len() <= revisions.len()
             && held
@@ -180,7 +171,7 @@ impl WorkerHandler {
                 ))
             })?;
             let done = self
-                .index(library, &part.source_path, bytes, hash, origin, None)
+                .index(library, &part.source_path, bytes, hash, origin)
                 .await?;
             // The part's own answer: `ingested` for a new part, `revised` when this library already
             // held the start of its history, `skipped` when it held all of it.

@@ -12,7 +12,6 @@ lapidary-core.workspace = true
 lapidary-db.workspace = true
 lapidary-storage.workspace = true
 lapidary-jobs.workspace = true
-lapidary-vcs.workspace = true
 lapidary-targets.workspace = true
 axum.workspace = true
 base64.workspace = true

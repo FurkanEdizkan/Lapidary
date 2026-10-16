@@ -19,8 +19,7 @@ their own modelling, organised by folder and increasingly unfindable. They are l
 they open the result in Orca, Blender or FreeCAD.
 
 **Secondary: the engineer with an industrial mesh library.** The same scanning job at a
-different scale and under different rules — revisions, approvals, locks, air-gapped
-deployment. Phase 8 and the `controlled` library mode exist for them. **A STEP or IGES file
+different scale — revisions and air-gapped deployment. **A STEP or IGES file
 is refused at ingest, by name** (owner, 2026-10-03): they export a mesh from the CAD tool
 that owns the part, and the CAD file stays in the system that is built for it. That is a
 real narrowing of this audience and it was taken deliberately — the kernel that read B-rep
@@ -56,10 +55,6 @@ Three things a neighbouring product cannot truthfully copy without becoming this
   against the stored BLAKE3 on the way out. *(Until 2026-10-03 this read "CAD gets STEP, the
   viewer gets glTF"; the kernel that made the first true and the pipeline that made the
   second are both gone.)*
-- **Governance is opt-in per library.** Hobby libraries have no revisions, states or
-  approvals at all. The same binary serves a folder of printed brackets and a controlled
-  industrial catalogue, because the machinery is flipped on per library rather than sold as
-  a different product.
 
 The application is free and complete under AGPL-3.0 — no gated features in the app. Revenue
 is the server, the worker fleet, support and cloud (`docs/ROADMAP.md` § Commercial model:
@@ -96,10 +91,11 @@ Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
   different wording and must never read as data loss.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
   ingested bytes; anything produced is named `*.lapidary.*`.
-- **Versioning is Perforce-shaped, not Git-shaped.** Immutable content-addressed snapshots,
-  lineage DAG, pessimistic locks. No merge, no branches, no textual diff. A revision's
-  **figures** are compared; the geometric diff that compared shapes went with the render
-  pipeline.
+- **A part keeps its file history; no locks, states or approvals.** A changed file becomes the
+  part's next revision in every library, and the one before it stays on disk and downloadable.
+  Revisions are immutable and content-addressed. No merge, no branches, no diff. *(Until 2026-10-16
+  this read "Perforce-shaped, pessimistic locks" and "governance is opt-in per library"; S4 removed
+  check-outs, the library modes and the desktop agent.)*
 - **Opening a part reads metadata and pictures, never a model file.** The one exception is
   deliberate and asked for: pressing **view** hands the browser the original mesh to draw,
   which is the whole point of the button. Nothing loads a model because a page opened or a
@@ -114,7 +110,7 @@ Confirmed and load-bearing (`CLAUDE.md` holds the authoritative list):
   absence and are now explicitly interim rather than final — grid page size and card
   density live in per-viewer browser storage (`web/src/lib/preferences.ts`), and
   `docs/FEATURES.md` records that row as "per viewer, per library". Future design should
-  anticipate identity: shared preferences, attribution, permissions and locks. The existing
+  anticipate identity: shared preferences, attribution and permissions. The existing
   code is not wrong; it is honest about a gap that is now scheduled to close.
 - `part` has no tags or materials columns. Search covers names and part numbers; the
   user-defined fields Phase 5 owns are where tags and materials would live.

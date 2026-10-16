@@ -274,15 +274,14 @@ until_true() { # url, python test on `value`, what, seconds
   return 1
 }
 
-# A batch's counters until nothing is pending or running. check-plain.sh's settle, with `revised` and
-# `unkept` kept: those two are how a controlled library's second revision and a hobby library's refusal
-# to take new bytes at an old path tell themselves apart.
+# A batch's counters until nothing is pending or running. check-plain.sh's settle, with `revised` kept:
+# it is how a part's second revision shows.
 settle() { # library, batch, seconds
   local line began; began=$(date +%s)
   [ -n "${2:-}" ] || { echo "no batch id to follow"; return 1; }
   while [ $(($(date +%s) - began)) -lt "${3:-3600}" ]; do
     line=$(curl -sf "$API/api/libraries/$1/jobs/$2" |
-      field '" ".join(f"{k}={value[k]}" for k in ["total","pending","running","ingested","skipped","revised","unkept","failedTotal"])' 2>/dev/null)
+      field '" ".join(f"{k}={value[k]}" for k in ["total","pending","running","ingested","skipped","revised","failedTotal"])' 2>/dev/null)
     [[ "$line" == *" pending=0 running=0 "* ]] && { echo "$line"; return 0; }
     sleep 2
   done
@@ -719,11 +718,11 @@ check_worker_sees_ingest() {
 }
 
 # A library by name, made if it is not there. Names, not ids, so `seed` is re-runnable.
-library_named() { # name, mode
+library_named() { # name
   local existing
   existing=$(curl -sf "$API/api/libraries" | field "next((l['id'] for l in value if l['name'] == $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")), '')")
   if [ -n "$existing" ]; then echo "$existing"; return 0; fi
-  json POST "$API/api/libraries" "{\"name\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"),\"mode\":\"$2\"}" | field 'value["id"]'
+  json POST "$API/api/libraries" "{\"name\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")}" | field 'value["id"]'
 }
 
 # The chunked upload, following the plan the server answers rather than sending regardless.
@@ -797,9 +796,9 @@ cmd_seed() {
   echo "== INGEST TREE"
   build_ingest_tree
 
-  echo "== SWEEP (hobby), the whole tree"
+  echo "== SWEEP, the whole tree"
   local sweep began batch
-  sweep=$(library_named Sweep hobby)
+  sweep=$(library_named Sweep)
   [ -n "$sweep" ] || die "could not create the Sweep library."
   # One scan is the whole ingest directory into one library: POST /scan takes no subpath.
   began=$SECONDS
@@ -1017,36 +1016,35 @@ print(count(json.load(sys.stdin)))')
   echo "  $default_lib holds $default_count parts (the six examples, unscanned on purpose)"
   seed_check "the default library still holds its six examples" "$(holds "${default_count:-0}" -eq 6)" "$default_count"
 
-  echo "== GOVERNED (controlled), through the upload route"
-  local governed revised
-  governed=$(library_named Governed controlled)
-  [ -n "$governed" ] || die "could not create the Governed library."
+  echo "== UPLOADED, through the upload route"
+  local uploaded revised
+  uploaded=$(library_named Uploaded)
+  [ -n "$uploaded" ] || die "could not create the Uploaded library."
   # **Skipped when the path is already held, and that is a fix rather than an optimisation.** The
   # vee-block's path holds the *stamped* bytes after the re-upload below, so on a second seed the
-  # pristine file at that same path is new bytes at an old path — which in a controlled library is a
-  # REVISION, correctly. So the plain upload loop was quietly adding a third revision per run and the
+  # pristine file at that same path is new bytes at an old path — which is a REVISION, correctly. So the plain upload loop was quietly adding a third revision per run and the
   # "not adding another" guard underneath it never saw them: it only ever guarded its own re-upload.
   # Measured: a stack seeded three times had three revisions on that part, and the fixture is "two".
   for name in flange-dn40-lp-3310-02 hex-spacer-m4x20-lp-2145-01 mounting-plate-lp-1180-01 vee-block-lp-3072-02; do
     local held
-    held=$(sql "SELECT count(*) FROM part WHERE library_id = '$governed' AND source_path = 'uploads/$name.stl' AND deleted_at IS NULL")
+    held=$(sql "SELECT count(*) FROM part WHERE library_id = '$uploaded' AND source_path = 'uploads/$name.stl' AND deleted_at IS NULL")
     if [ "${held:-0}" -gt 0 ]; then
       echo "  upload $name.stl: already a part at uploads/$name.stl; not uploading over it"
       continue
     fi
-    echo "  upload $name.stl: $(upload_file "$governed" "$ROOT/example/parts/$name.stl" "uploads/$name.stl")"
+    echo "  upload $name.stl: $(upload_file "$uploaded" "$ROOT/example/parts/$name.stl" "uploads/$name.stl")"
   done
-  # A second revision, which is the only way to a history, a diff and a lock: a scan has no subpath so
-  # it cannot target one part, and a hobby library answers `Unkept` to new bytes at a path it holds.
+  # A second revision, which is the only way to a history: a scan has no subpath so it cannot target one
+  # part.
   # The stamp makes this re-runnable — the same bytes twice would be `Skipped`, not a revision.
   local vee
-  vee=$(sql "SELECT id FROM part WHERE library_id = '$governed' AND source_path = 'uploads/vee-block-lp-3072-02.stl'")
+  vee=$(sql "SELECT id FROM part WHERE library_id = '$uploaded' AND source_path = 'uploads/vee-block-lp-3072-02.stl'")
   revised=$(curl -sf "$API/api/parts/$vee/revisions" | field 'len(value)')
   if [ "${revised:-0}" -lt 2 ]; then
     local stamped=$WORK/revised-vee-block.stl
     cp "$ROOT/example/parts/vee-block-lp-3072-02.stl" "$stamped"
     printf 'lapidary e2e rev %s' "$(date +%s)" | dd of="$stamped" bs=1 seek=0 conv=notrunc status=none
-    echo "  re-upload vee-block with new bytes: $(upload_file "$governed" "$stamped" "uploads/vee-block-lp-3072-02.stl")"
+    echo "  re-upload vee-block with new bytes: $(upload_file "$uploaded" "$stamped" "uploads/vee-block-lp-3072-02.stl")"
     revised=$(curl -sf "$API/api/parts/$vee/revisions" | field 'len(value)')
   else
     # Only when it is needed: re-seeding one stack would otherwise stack up a fourth revision and a
@@ -1054,11 +1052,11 @@ print(count(json.load(sys.stdin)))')
     echo "  vee-block already has a second revision; not adding another"
   fi
   echo "  vee-block now has $revised revisions"
-  seed_check "a controlled part reached a second revision" "$(holds "${revised:-0}" -ge 2)" "$revised revisions"
+  seed_check "an uploaded part reached a second revision" "$(holds "${revised:-0}" -ge 2)" "$revised revisions"
 
   echo "== EMPTY, created and never scanned"
   local empty empty_count
-  empty=$(library_named Empty hobby)
+  empty=$(library_named Empty)
   empty_count=$(sql "SELECT count(*) FROM part WHERE library_id = '$empty'")
   echo "  $empty"
   # It must stay empty: it is the only fixture for the empty states, and any flow that scanned it would
@@ -1072,7 +1070,7 @@ json.dump({
               "formats": [f.strip() for f in "$formats".split(",") if f.strip()],
               "scan": "$scanned"},
     "default": {"id": "$default_lib", "parts": $default_count},
-    "governed": {"id": "$governed", "revisedPart": "$vee", "revisions": ${revised:-0}},
+    "uploaded": {"id": "$uploaded", "revisedPart": "$vee", "revisions": ${revised:-0}},
     "empty": {"id": "$empty"},
     "ingestFiles": $(find "$INGEST" -type f ! -name .seeded | wc -l),
     "checks": [

@@ -3,33 +3,6 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Governance is opt-in per library. Hobby libraries have no revisions, states or
-/// approvals; flipping a library to `Controlled` turns that machinery on.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub enum LibraryMode {
-    /// No revisions, no states, no approvals. What a library is unless somebody says
-    /// otherwise, which is why it is the `Default` — `CLAUDE.md`: governance is opt-in per
-    /// library.
-    #[default]
-    Hobby,
-    Controlled,
-}
-
-impl LibraryMode {
-    /// The value the `library.mode` column holds. One spelling, here, so a writer and a
-    /// reader cannot disagree about it — the same rule `DerivativeKind::as_str` follows and
-    /// for the same reason: a kind spelled differently on the two sides reads nothing while
-    /// looking entirely correct.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Hobby => "hobby",
-            Self::Controlled => "controlled",
-        }
-    }
-}
-
 /// Where a revision's bytes came from. `revision.origin` holds [`RevisionOrigin::as_str`].
 ///
 /// Only the revisions Phase 4 writes are told apart. A part's *first* revision is written by
@@ -43,12 +16,13 @@ pub enum RevisionOrigin {
     Ingest,
     /// Bytes a browser uploaded.
     Upload,
-    /// Bytes the agent uploaded while holding the part's check-out lock.
+    /// Bytes the desktop agent uploaded under a check-out. Nothing writes it since S4 removed the agent
+    /// (2026-10-16); kept so the rows and bundles that hold it still read.
     Agent,
 }
 
 impl RevisionOrigin {
-    /// The column's spelling, for `LibraryMode::as_str`'s reason.
+    /// The column's spelling. One spelling, here, so a writer and a reader cannot disagree about it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ingest => "ingest",

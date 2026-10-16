@@ -34,11 +34,11 @@ area — these encode decisions that are expensive to reverse.
   surface area, triangle count — so every one of them is **approximate and labelled so in the UI,
   always**. There is no analytic half any more, which makes this rule simpler rather than weaker: if a
   number reaches a person without its ≈, that is a bug.
-- **Versioning is Perforce-shaped, not Git-shaped.** Immutable content-addressed snapshots,
-  lineage DAG, pessimistic locks. No merge, no branches, no textual diff. A revision's figures are
-  compared; the geometric diff that compared *shapes* went with the render pipeline.
-- **Governance is opt-in per library.** Hobby libraries have no revisions, states or
-  approvals. Flipping a library to `controlled` turns that machinery on.
+- **A part keeps its file history; no locks, states or approvals.** A changed file becomes the
+  part's next revision in every library, and the one before it stays on disk and downloadable.
+  Revisions are immutable and content-addressed. No merge, no branches, no diff. *(Until 2026-10-16
+  this read "Perforce-shaped, pessimistic locks" and "governance is opt-in per library"; S4 removed
+  check-outs, the library modes and the desktop agent.)*
 - **The application is free and complete.** No gated features in the app. Revenue is the
   server, fleet, support and cloud.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
