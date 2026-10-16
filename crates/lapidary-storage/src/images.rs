@@ -191,6 +191,11 @@ fn encode_webp(image: &DynamicImage) -> Result<Vec<u8>, ImageError> {
     Ok(out)
 }
 
+/// Below this an image travels on its row; above it, it goes to the content-addressed
+/// store. `DATA.md` §1.5's line, and the same one `derivative` already uses — one rule in
+/// the store about small images rather than two.
+pub const INLINE_LIMIT: usize = 64 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,8 +333,3 @@ mod tests {
         ));
     }
 }
-
-/// Below this an image travels on its row; above it, it goes to the content-addressed
-/// store. `DATA.md` §1.5's line, and the same one `derivative` already uses — one rule in
-/// the store about small images rather than two.
-pub const INLINE_LIMIT: usize = 64 * 1024;
