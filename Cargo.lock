@@ -1169,6 +1169,7 @@ dependencies = [
  "lapidary-core",
  "lapidary-db",
  "lapidary-jobs",
+ "lapidary-sites",
  "lapidary-storage",
  "lapidary-targets",
  "reqwest",
@@ -1237,6 +1238,7 @@ dependencies = [
  "lapidary-core",
  "lapidary-db",
  "lapidary-jobs",
+ "lapidary-sites",
  "lapidary-storage",
  "lapidary-targets",
  "serde",
@@ -1290,6 +1292,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "lapidary-sites"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "lapidary-core",
+ "lapidary-sites",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "url",
 ]
 
 [[package]]

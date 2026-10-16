@@ -1,0 +1,35 @@
+[package]
+name = "lapidary-sites"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+# `Net::allowing_loopback`, so another crate's tests can serve a site from 127.0.0.1. Never on in
+# a build that ships: `lapidary-api` and `lapidary-ingest` enable it as dev-dependencies only.
+testing = []
+
+[dependencies]
+lapidary-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "net"] }
+url.workspace = true
+
+[dev-dependencies]
+# This crate's own `testing` feature, for `tests/sites.rs`: an integration test builds the library
+# as any other crate would, so the fixture constructors have to be switched on for it.
+lapidary-sites = { workspace = true, features = ["testing"] }
+axum.workspace = true
+# A streamed answer in the byte-cap tests.
+tokio-stream.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
