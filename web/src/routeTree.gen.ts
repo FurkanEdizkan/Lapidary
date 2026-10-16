@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as RemovedRouteImport } from './routes/removed'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 import { Route as TagsTagRouteImport } from './routes/tags_.$tag'
@@ -29,6 +30,11 @@ const DashboardRoute = DashboardRouteImport.update({
 const RemovedRoute = RemovedRouteImport.update({
   id: '/removed',
   path: '/removed',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TagsRoute = TagsRouteImport.update({
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
+  '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
+  '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
@@ -68,6 +76,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
+  '/settings': typeof SettingsRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags_/$tag': typeof TagsTagRoute
@@ -75,15 +84,28 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/dashboard' | '/removed' | '/tags' | '/parts/$partId' | '/tags/$tag'
+    | '/'
+    | '/dashboard'
+    | '/removed'
+    | '/settings'
+    | '/tags'
+    | '/parts/$partId'
+    | '/tags/$tag'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/dashboard' | '/removed' | '/tags' | '/parts/$partId' | '/tags/$tag'
+    | '/'
+    | '/dashboard'
+    | '/removed'
+    | '/settings'
+    | '/tags'
+    | '/parts/$partId'
+    | '/tags/$tag'
   id:
     | '__root__'
     | '/'
     | '/dashboard'
     | '/removed'
+    | '/settings'
     | '/tags'
     | '/parts/$partId'
     | '/tags_/$tag'
@@ -93,6 +115,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
   RemovedRoute: typeof RemovedRoute
+  SettingsRoute: typeof SettingsRoute
   TagsRoute: typeof TagsRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
   TagsTagRoute: typeof TagsTagRoute
@@ -119,6 +142,13 @@ declare module '@tanstack/react-router' {
       path: '/removed'
       fullPath: '/removed'
       preLoaderRoute: typeof RemovedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tags': {
@@ -149,6 +179,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
   RemovedRoute: RemovedRoute,
+  SettingsRoute: SettingsRoute,
   TagsRoute: TagsRoute,
   PartsPartIdRoute: PartsPartIdRoute,
   TagsTagRoute: TagsTagRoute,

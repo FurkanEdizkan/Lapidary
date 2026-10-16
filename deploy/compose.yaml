@@ -73,6 +73,10 @@ services:
       # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
       # absolute path, as .env.example recommends, and the paths appear.
       LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
+      # Importing a model from its Printables, Thingiverse or MyMiniFactory page (F3). `false` turns
+      # it off — the Settings page says so and nothing contacts those sites — for an install that
+      # must make no outbound request beyond a picture somebody pastes.
+      LAPIDARY_IMPORT_LINKS: ${LAPIDARY_IMPORT_LINKS:-true}
       # Job worker knobs, passed through empty when unset, which the server reads as "use the
       # default" (`empty_str_as_none` in bin/lapidary-server/src/main.rs). The defaults live in
       # lapidary_jobs::WorkerConfig; deploy/.env.example documents each one.

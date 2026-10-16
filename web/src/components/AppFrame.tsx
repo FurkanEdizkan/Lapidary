@@ -23,7 +23,13 @@ function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'removed'
+export type Place = 'parts' | 'dashboard' | 'removed' | 'siteSettings'
+
+/**
+ * Out of the JSX on purpose: `no-bare-strings` reads any attribute literal that contains a strings.ts
+ * fragment as copy, and "settings" is one (`dashboard.settingsTitle`). A route path is not copy.
+ */
+const SETTINGS_PATH = '/settings'
 
 const PLACE =
   'ease-mechanical flex min-h-7 items-center rounded-[5px] px-3 text-xs duration-[var(--duration-fast)]'
@@ -45,6 +51,7 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
   const inParts = current === 'parts'
   const inDashboard = current === 'dashboard'
   const inRemoved = current === 'removed'
+  const inSettings = current === 'siteSettings'
   return (
     <nav
       aria-label={strings.frame.places}
@@ -84,6 +91,16 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
       ) : (
         <Link to="/removed" search={search} className={THERE}>
           {strings.removal.removedTitle}
+        </Link>
+      )}
+      {/* The whole installation's, not one library's, so it carries no library. */}
+      {inSettings ? (
+        <span aria-current="page" className={HERE}>
+          {strings.settings.title}
+        </span>
+      ) : (
+        <Link to={SETTINGS_PATH} className={THERE}>
+          {strings.settings.title}
         </Link>
       )}
     </nav>

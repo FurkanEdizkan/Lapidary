@@ -22,6 +22,7 @@ import {
   renameSavedFilter,
   saveFilter,
   startScan,
+  importLink,
   UploadRefused,
 } from '../lib/api'
 import { FieldFilters } from '../components/Fields'
@@ -67,6 +68,7 @@ import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
+import { ImportLinkDialog } from '../components/ImportLink'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -746,6 +748,22 @@ export function Index({
     },
     onError: () => setUploadNote(strings.toolbar.importFailed),
   })
+  // Importing a model from its page (F3): the dialog, and the server's refusal shown inside it.
+  const [linking, setLinking] = useState(false)
+  const [linkNote, setLinkNote] = useState<string | null>(null)
+  const fromLink = useMutation({
+    mutationFn: (url: string) => importLink(library, url),
+    onSuccess: (answer) => {
+      if (answer.kind === 'refused') {
+        setLinkNote(answer.message)
+        return
+      }
+      setLinking(false)
+      setLinkNote(null)
+      watch(answer.accepted, 'link')
+    },
+    onError: () => setLinkNote(strings.importLink.failed),
+  })
   const startUpload = (picked: PickedFile[]) => {
     setUploadNote(picked.length === 0 ? strings.upload.empty : null)
     if (picked.length > 0) {
@@ -825,6 +843,7 @@ export function Index({
             scanBusy={scanNow.isPending}
             onSelectLibrary={onSelectLibrary}
             onImport={() => bundlePicker.current?.click()}
+            onImportLink={() => setLinking(true)}
             importBusy={importing.isPending}
           />
           <UploadButton onUpload={() => picker.current?.click()} busy={upload.isPending} progress={uploading} />
@@ -975,6 +994,17 @@ export function Index({
         />
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
+        )}
+        {!linking ? null : (
+          <ImportLinkDialog
+            busy={fromLink.isPending}
+            note={linkNote}
+            onImport={(url) => fromLink.mutate(url)}
+            onCancel={() => {
+              setLinking(false)
+              setLinkNote(null)
+            }}
+          />
         )}
         {activeBatch === undefined ? null : (
           <ScanProgress

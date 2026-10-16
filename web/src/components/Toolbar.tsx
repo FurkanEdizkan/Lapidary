@@ -39,6 +39,7 @@ export function LibraryMenu({
   onSelectLibrary,
   onImport,
   importBusy,
+  onImportLink,
 }: {
   onScan: () => void
   scanBusy: boolean
@@ -47,6 +48,8 @@ export function LibraryMenu({
   /** Opens the picker for a bundle exported from Lapidary. */
   onImport: () => void
   importBusy: boolean
+  /** Opens the dialog that imports a model from its page (F3). */
+  onImportLink: () => void
 }) {
   return (
     <Menu id="library-menu" label={strings.toolbar.library}>
@@ -68,6 +71,16 @@ export function LibraryMenu({
         className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
       >
         {strings.toolbar.importBundle}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          closeMenu(event.currentTarget)
+          onImportLink()
+        }}
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+      >
+        {strings.importLink.menuItem}
       </button>
     </Menu>
   )

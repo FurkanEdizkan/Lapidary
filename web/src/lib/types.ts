@@ -94,3 +94,11 @@ export type { WidgetValue } from '../bindings/WidgetValue'
 export type { RelatedTags } from '../bindings/RelatedTags'
 export type { TagCount } from '../bindings/TagCount'
 export type { TagIndex } from '../bindings/TagIndex'
+
+// F3: the Settings page's site keys, and importing from a model's page.
+export type { CheckSiteKey } from '../bindings/CheckSiteKey'
+export type { ImportLink } from '../bindings/ImportLink'
+export type { SetSiteKey } from '../bindings/SetSiteKey'
+export type { SiteCheck } from '../bindings/SiteCheck'
+export type { SiteSetting } from '../bindings/SiteSetting'
+export type { SiteSettings } from '../bindings/SiteSettings'
