@@ -1,78 +1,22 @@
-//! Static checks over `deploy/compose.yaml` and `deploy/Containerfile`.
+//! Static checks over `deploy/`, `deploy/Containerfile` and the source of the two crates that reach the store.
 //!
-//! Protects the same product rule `layers.rs`'s `FORBIDDEN_PAIRS` protects, from the
-//! deploy side rather than the dependency-graph side: the open path (opening a part for
-//! viewing) lives in `lapidary-api` and must never invoke the CAD kernel. `layers.rs`
-//! stops `lapidary-api` from depending on `lapidary-cad` at compile time; this module
-//! stops the `api` container image from *linking* the kernel at build time, by checking
-//! that `SERVER_FEATURES` — the build arg that pulls the kernel in — is set only for
-//! kernel-linked services (today just `worker`), and that `deploy/Containerfile` still
-//! routes that arg into the build rather than hardcoding a feature flag.
+//! Until S1 (2026-10-16) most of this file held the api/worker split in place: which compose service
+//! linked the kernel, which role each set, which build target each named. One process now runs both,
+//! so those rules went with the split. What is left guards two things that are still true:
 //!
-//! This check is **static**: it verifies the text of the two files, not the images built
-//! from them. A green `check-deploy` means the configuration is internally consistent, not
-//! that the last-built `api` image actually lacks the kernel — that would require
-//! inspecting a built artifact, which this does not do.
+//! - **The source-bytes boundary.** `lapidary-api` may name each narrow source-bytes handle only in
+//!   the one route it exists for, and never `SourceStore`; `lapidary-peer` the same, against its own
+//!   table. Textual, so a lint against the mistake rather than a seal.
+//! - **Named volumes are directories the image creates for `lapidary`**, or a fresh volume comes up
+//!   owned by root and the server cannot write to it.
 //!
-//! No YAML parser: `serde_yaml` is unmaintained, and pulling a parser to read two service
-//! blocks from a file we control is not the boring option. Parsing is line-wise instead —
-//! see the module doc on the failure mode below for why that is safe.
-//!
-//! Pure functions over `&str` file contents, unit-testable without touching the
-//! filesystem — `main.rs` reads the files and calls these, mirroring the `layers.rs` /
-//! `main.rs` split.
-//!
-//! ## The failure mode
-//!
-//! A line-wise parser that cannot find what it expects must fail loudly, not pass
-//! silently. If `deploy/compose.yaml` has no `services:` key, or no service blocks parse
-//! under it; if `deploy/Containerfile` has no `cargo build` line, or no `ARG
-//! SERVER_FEATURES` declaration at all — each is its own [`Violation`], distinct from an
-//! ordinary rule violation, whose message says the check's *parsing* is stale, not the
-//! configuration, and names the function to update. Collapsing "found nothing to check"
-//! into "found no violations" is exactly the bug this module exists to avoid: an earlier
-//! round shipped an assertion whose two halves could both degrade to an empty string,
-//! compare equal, and pass having verified nothing (see the rustc-version check in
-//! `deploy/Containerfile` for the fix pattern this module follows).
+//! No YAML parser: `serde_yaml` is unmaintained, and pulling a parser to read service blocks from a
+//! file we control is not the boring option. A line-wise parser that cannot find what it expects
+//! fails loudly with a parse-stale [`Violation`] rather than passing having verified nothing.
 
-/// Services allowed to set `SERVER_FEATURES` in `deploy/compose.yaml` — i.e. services that
-/// legitimately link the CAD kernel. In the same spirit as `FORBIDDEN_PAIRS` in
-/// `layers.rs`: a named list edited only to *permit* a new kernel-linked service, never to
-/// make an ordinary edit pass. Checked generically over every service block rather than
-/// naming `api`, so a future `api-replica` is covered without anyone remembering to add a
-/// check for it.
-const KERNEL_LINKED_SERVICES: &[&str] = &["worker"];
-
-/// The `build: dockerfile:` value that identifies a `deploy/compose.yaml` service as one
-/// that builds and runs `lapidary-server` — as opposed to `db` (`db/Containerfile`, runs
-/// Postgres) or `web` (`deploy/web/Containerfile`, a different binary entirely). Matching
-/// on the dockerfile path rather than naming `api`/`worker` in a list means a future
-/// `lapidary-server`-based service is covered by the `LAPIDARY_ROLE` rule below without
-/// anyone remembering to add its name anywhere.
+/// The `build: dockerfile:` value that identifies a compose service as one that runs
+/// `lapidary-server`, as opposed to `db`, which runs the stock Postgres image as its own user.
 const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
-
-/// The `LAPIDARY_ROLE` value that runs ingest. `bin/lapidary-server/src/main.rs` parses
-/// the same string; kept here so the rule below asserts the value and not merely that the
-/// key is present.
-const WORKER_ROLE: &str = "worker";
-
-/// The two build targets `deploy/Containerfile` ends in.
-///
-/// Named here rather than inferred from the file, because a Containerfile whose services forget
-/// to pick a target builds its *last* stage for every one of them, around a binary built with
-/// whatever `SERVER_FEATURES` that service passed, and nothing about that build fails.
-///
-/// There were three rules here until the CAD kernel came out: the `api` target must never carry
-/// OCCT, the `worker` target must, and `occt` is the stage it was built in. That stage has gone,
-/// so what separates the two images is the build arg alone — [`check_compose`] and
-/// [`check_workflow`] are the rules for that.
-const API_TARGET: &str = "api";
-const WORKER_TARGET: &str = "worker";
-
-/// The exact expansion `deploy/Containerfile`'s `cargo build` line must contain so the
-/// `SERVER_FEATURES` arg actually reaches the build. Kept as one constant so the check and
-/// its own doc comment can't drift apart.
-const ARG_EXPANSION: &str = "${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}";
 
 /// The source-bytes handles `lapidary-api` may name, each with the one file it may be
 /// named in — a path and not a file name, because the rule is about this exact file and
@@ -100,82 +44,18 @@ const SOURCE_HANDLE_EXEMPTIONS: &[(&str, &str)] = &[
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
-    /// A `deploy/compose.yaml` service sets `SERVER_FEATURES` but is not in
-    /// `KERNEL_LINKED_SERVICES`.
-    UnexpectedKernelLink { service: String },
-    /// A service in `KERNEL_LINKED_SERVICES` does not set `SERVER_FEATURES`.
-    MissingKernelLink { service: String },
-    /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` (i.e. runs
-    /// `lapidary-server`) but does not set `LAPIDARY_ROLE`.
-    MissingRole { service: String },
-    /// A service in `KERNEL_LINKED_SERVICES` sets `LAPIDARY_ROLE` to something other than
-    /// `worker`. Presence is not enough: a kernel-linked container running the `api` role
-    /// serves the grid out of the image that links the CAD kernel, and mounts `/scan`
-    /// nowhere at all.
-    KernelLinkedServiceWrongRole { service: String, role: String },
-    /// No service anywhere in `deploy/compose.yaml` sets `LAPIDARY_ROLE: worker`, so the
-    /// deployment has nothing that mounts the ingest routes.
-    NoWorkerService,
-    /// A `deploy/compose.yaml` service builds `LAPIDARY_SERVER_DOCKERFILE` without a
-    /// `target:`, so the runtime builds the file's last stage — the `worker` target —
-    /// whatever the service is.
-    MissingBuildTarget { service: String },
-    /// A `deploy/compose.yaml` service builds a target other than the one its place in
-    /// `KERNEL_LINKED_SERVICES` calls for: `worker` for a kernel-linked service, `api` for
-    /// every other `lapidary-server` service.
-    WrongBuildTarget {
-        service: String,
-        target: String,
-        expected: &'static str,
-    },
-    /// Parse-stale: `deploy/Containerfile` has no stage named `target`.
-    ContainerfileMissingTarget { target: &'static str },
-    /// `deploy/Containerfile`'s `cargo build` line does not contain the
-    /// `${SERVER_FEATURES:+...}` expansion.
-    BuildLineMissingArgExpansion,
-    /// `deploy/Containerfile`'s `cargo build` line contains a second, hardcoded
-    /// `--features` flag alongside the expansion.
-    BuildLineHardcodedFeatures,
-    /// `ARG SERVER_FEATURES` is declared somewhere the `cargo build` line that uses it
-    /// cannot see it — after that line, or in a different build stage (a `FROM` sits
-    /// between the `ARG` and the `RUN cargo build` line, and `ARG` scope does not cross a
-    /// `FROM`).
-    ArgNotVisibleToBuildLine,
-    /// Parse-stale: a service declares `build:` in the short form (`build: .`), which
-    /// names a context and leaves the dockerfile implicit, so this parser cannot tell
-    /// what the service builds.
-    ComposeUnreadableBuildSpec { service: String },
-    /// Parse-stale: `deploy/compose.yaml` has no top-level `services:` key this parser
-    /// recognizes.
+    /// Parse-stale: a compose file has no top-level `services:` key this parser recognizes.
     ComposeMissingServicesKey,
     /// Parse-stale: a `services:` key was found but no service blocks parsed under it.
     ComposeNoServicesParsed,
-    /// Parse-stale: no `cargo build` line found in `deploy/Containerfile`.
-    ContainerfileMissingBuildLine,
-    /// Parse-stale: no `ARG SERVER_FEATURES` declaration at all in
-    /// `deploy/Containerfile`.
-    ContainerfileMissingArgDeclaration,
     /// A file under `crates/lapidary-api/src/` names `SourceStore`. The open path
     /// (`lapidary-api`) must never touch a source file — only derivatives.
     OpenPathNamesSourceStore { path: String },
     /// A service that runs `lapidary-server` mounts a named volume at a path `deploy/Containerfile` does not create
     /// owned by `lapidary`, so the volume comes up owned by root and the service cannot write to it.
     NamedVolumeNotOwned { service: String, target: String },
-    /// A `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` names no `--target`, so it builds
-    /// the file's last stage around whatever binary its arguments give.
-    WorkflowBuildWithoutTarget { line: String },
-    /// A workflow build of the `worker` target without the feature that compiles its ingest
-    /// half in. It read "without both kernel features" until the CAD kernel came out.
-    WorkflowWorkerWithoutKernel { line: String },
-    /// A workflow build of the `api` target that passes `SERVER_FEATURES`.
-    WorkflowApiWithKernel { line: String },
-    /// A workflow build of a target that is not an image compose runs.
-    WorkflowBuildTarget { line: String, target: String },
     /// A file under `crates/lapidary-api/src/` names one of the narrow source-bytes
-    /// handles somewhere other than the single route that handle exists for. Handing a
-    /// user the exact bytes they asked for is a download, storing bytes a user just
-    /// handed us is an upload, and renaming a model's directory is a move; every other
-    /// route in `lapidary-api` is the open path and reads derivatives only.
+    /// handles somewhere other than the single route that handle exists for.
     OpenPathNamesSourceHandleOutsideItsModule {
         path: String,
         handle: &'static str,
@@ -193,123 +73,6 @@ pub enum Violation {
 impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Violation::UnexpectedKernelLink { service } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' sets SERVER_FEATURES but is not in \
-                 KERNEL_LINKED_SERVICES (xtask/src/deploy.rs). The open path must never \
-                 invoke the CAD kernel — if {service} genuinely needs it, add it to \
-                 KERNEL_LINKED_SERVICES; otherwise remove the SERVER_FEATURES build arg from \
-                 {service} in deploy/compose.yaml."
-            ),
-            Violation::MissingKernelLink { service } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' is listed in KERNEL_LINKED_SERVICES \
-                 (xtask/src/deploy.rs) but does not set SERVER_FEATURES — or is absent from \
-                 the file entirely — so its image would build without the CAD kernel it \
-                 needs. Add `args: SERVER_FEATURES: \
-                 worker` (or the current feature name) under {service} in \
-                 deploy/compose.yaml, or remove {service} from KERNEL_LINKED_SERVICES if it \
-                 no longer needs the kernel."
-            ),
-            Violation::MissingRole { service } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' builds {LAPIDARY_SERVER_DOCKERFILE} \
-                 (runs lapidary-server) but does not set LAPIDARY_ROLE. \
-                 bin/lapidary-server/src/main.rs requires it — there is no default, because \
-                 the two roles are not interchangeable and a missing value on the worker \
-                 service fails silently (the container starts, binds, and passes its \
-                 healthcheck, but never mounts /scan). Add `LAPIDARY_ROLE: api` (serves the \
-                 grid and the open path) or `LAPIDARY_ROLE: worker` (runs ingest) under \
-                 {service}'s environment: block in deploy/compose.yaml."
-            ),
-            Violation::KernelLinkedServiceWrongRole { service, role } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' is listed in \
-                 KERNEL_LINKED_SERVICES (xtask/src/deploy.rs) but sets LAPIDARY_ROLE to \
-                 `{role}`, not `worker`. The whole point of that list is that this service \
-                 runs ingest in the image that links the CAD kernel; any other role gives \
-                 you a kernel-linked container serving the open path with /scan mounted \
-                 nowhere — the exact failure this rule exists to prevent, and it starts, \
-                 binds and passes its healthcheck while doing it. Set `LAPIDARY_ROLE: \
-                 worker` under {service} in deploy/compose.yaml, or remove {service} from \
-                 KERNEL_LINKED_SERVICES if it no longer runs ingest."
-            ),
-            Violation::NoWorkerService => write!(
-                f,
-                "no service in deploy/compose.yaml sets `LAPIDARY_ROLE: worker`, so \
-                 nothing in this deployment drains the job queue — a scan would enqueue \
-                 its walk and no part could ever enter a library, because nothing walks \
-                 the mount. Give the ingest service `LAPIDARY_ROLE: worker` under \
-                 its environment: block in deploy/compose.yaml."
-            ),
-            Violation::MissingBuildTarget { service } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' builds {LAPIDARY_SERVER_DOCKERFILE} \
-                 without a `target:`, so Docker and Podman build the file's last stage — the \
-                 `{WORKER_TARGET}` target — whatever {service} is, around a binary built with \
-                 whatever SERVER_FEATURES that service passed. Add \
-                 `target: {API_TARGET}` (or `target: {WORKER_TARGET}` for a kernel-linked \
-                 service) under {service}'s build: block in deploy/compose.yaml."
-            ),
-            Violation::WrongBuildTarget {
-                service,
-                target,
-                expected,
-            } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' builds the `{target}` target of \
-                 {LAPIDARY_SERVER_DOCKERFILE}, but should build `{expected}`: kernel-linked \
-                 services (KERNEL_LINKED_SERVICES in xtask/src/deploy.rs) build \
-                 `{WORKER_TARGET}`, and every other lapidary-server service builds \
-                 `{API_TARGET}`. Set `target: {expected}` under \
-                 {service}'s build: block in deploy/compose.yaml."
-            ),
-            Violation::ContainerfileMissingTarget { target } => write!(
-                f,
-                "deploy/Containerfile has no stage named `{target}` this parser recognizes \
-                 (`FROM <image or stage> AS {target}`). If the stages were renamed, rename \
-                 API_TARGET and WORKER_TARGET in xtask/src/deploy.rs and the `target:` keys in \
-                 deploy/compose.yaml together — this check's parsing may be stale, not \
-                 necessarily the config."
-            ),
-            Violation::ComposeUnreadableBuildSpec { service } => write!(
-                f,
-                "deploy/compose.yaml service '{service}' declares `build:` in the short \
-                 form (`build: <context>`), which leaves the dockerfile implicit, so this \
-                 parser cannot tell whether the service runs lapidary-server and the \
-                 LAPIDARY_ROLE rules would silently not apply to it. This check's parsing \
-                 is stale, not necessarily the config — either write {service}'s build as \
-                 the long form with an explicit `dockerfile:` key, or teach parse_services \
-                 in xtask/src/deploy.rs to resolve the short form's implicit dockerfile."
-            ),
-            Violation::BuildLineMissingArgExpansion => write!(
-                f,
-                "deploy/Containerfile's `cargo build` line does not contain the \
-                 {ARG_EXPANSION} expansion, so the SERVER_FEATURES arg never reaches the \
-                 build — every image would build with the same fixed feature set regardless \
-                 of what deploy/compose.yaml sets per service. Restore the expansion in the \
-                 RUN cargo build line."
-            ),
-            Violation::BuildLineHardcodedFeatures => write!(
-                f,
-                "deploy/Containerfile's `cargo build` line contains a second, hardcoded \
-                 --features flag alongside the {ARG_EXPANSION} expansion. A hardcoded flag \
-                 applies to every image regardless of SERVER_FEATURES, which could link the \
-                 CAD kernel into the api image — the open path must never invoke the kernel. \
-                 Remove the hardcoded --features flag and let SERVER_FEATURES alone decide \
-                 which image gets the kernel."
-            ),
-            Violation::ArgNotVisibleToBuildLine => write!(
-                f,
-                "deploy/Containerfile declares ARG SERVER_FEATURES somewhere the `cargo \
-                 build` line that uses it cannot see it — either it comes after that line, \
-                 or a FROM starting a later build stage sits between the ARG and the RUN \
-                 cargo build line, and ARG scope does not cross a FROM. So the \
-                 {ARG_EXPANSION} expansion would silently see an empty value and the worker \
-                 image would ship without the CAD kernel it needs. Move ARG SERVER_FEATURES \
-                 to a line after the FROM that starts the stage containing `RUN cargo \
-                 build`, and before that RUN line, with no other FROM between them."
-            ),
             Violation::ComposeMissingServicesKey => write!(
                 f,
                 "deploy/compose.yaml has no top-level `services:` key this parser \
@@ -324,41 +87,6 @@ impl std::fmt::Display for Violation {
                  blocks under it. This check's parsing is stale, not the config — update \
                  parse_services in xtask/src/deploy.rs (it expects two-space-indented \
                  `name:` lines) to match the file's actual shape."
-            ),
-            Violation::ContainerfileMissingBuildLine => write!(
-                f,
-                "deploy/Containerfile has no line containing `cargo build`. This check's \
-                 parsing is stale, not the config — update check_containerfile in \
-                 xtask/src/deploy.rs to find wherever the build command now lives."
-            ),
-            Violation::ContainerfileMissingArgDeclaration => write!(
-                f,
-                "deploy/Containerfile has no `ARG SERVER_FEATURES` declaration this parser \
-                 recognizes. This check's parsing is stale, not the config — update \
-                 check_containerfile in xtask/src/deploy.rs to find it, whatever form it now \
-                 takes."
-            ),
-            Violation::WorkflowBuildWithoutTarget { line } => write!(
-                f,
-                ".github/workflows/containers.yml builds deploy/Containerfile with no --target: `{line}`. That takes \
-                 the file's last stage, the worker, around a binary built with whatever SERVER_FEATURES the line \
-                 passes, and with none it refuses to start as a worker. Build `--target api`, and `--target worker \
-                 --build-arg SERVER_FEATURES=worker`, as deploy/compose.yaml does."
-            ),
-            Violation::WorkflowWorkerWithoutKernel { line } => write!(
-                f,
-                ".github/workflows/containers.yml builds the worker target without its kernel: `{line}`. Pass \
-                 `--build-arg SERVER_FEATURES=worker`, as deploy/compose.yaml's worker does."
-            ),
-            Violation::WorkflowApiWithKernel { line } => write!(
-                f,
-                ".github/workflows/containers.yml builds the api target with SERVER_FEATURES: `{line}`. The api image \
-                 serves the open path and carries no worker; drop the build argument."
-            ),
-            Violation::WorkflowBuildTarget { line, target } => write!(
-                f,
-                ".github/workflows/containers.yml builds the `{target}` target: `{line}`. The images compose runs are \
-                 `api` and `worker`; build those, or say in xtask/src/deploy.rs why another belongs in the workflow."
             ),
             Violation::NamedVolumeNotOwned { service, target } => write!(
                 f,
@@ -415,26 +143,11 @@ impl std::fmt::Display for Violation {
     }
 }
 
-/// One `deploy/compose.yaml` service block, as far as these checks need it.
+/// One compose service block, as far as these checks need it.
 struct ServiceBlock {
     name: String,
-    /// Does the service set `SERVER_FEATURES` (any nesting depth)?
-    sets_features: bool,
-    /// The `dockerfile:` value under `build:`, if any — used to recognize a service that
-    /// builds `deploy/Containerfile` and therefore runs `lapidary-server`, without having
-    /// to name every such service (`api`, `worker`, and any future one) in a list.
+    /// The `dockerfile:` value under `build:`, if any.
     dockerfile: Option<String>,
-    /// The `LAPIDARY_ROLE` value, if the service sets it (any nesting depth). The *value*
-    /// and not merely a `bool`: presence alone let `LAPIDARY_ROLE: worker` be changed to
-    /// `api` on the kernel-linked service and still report OK.
-    role: Option<String>,
-    /// Did the service declare `build:` in the short form (`build: .`)? The dockerfile is
-    /// then implicit and this parser cannot resolve it, which is a parse-stale condition
-    /// rather than a pass.
-    build_short_form: bool,
-    /// `build: target:`, read only inside the `build:` block: a long-form volume mount has a
-    /// `target:` key too, and it names a path in the container, not a stage.
-    target: Option<String>,
     /// The container paths of the named volumes the service mounts, from `volumes:`' short syntax
     /// (`name:/path[:options]`). A source with a `/`, a `.`, a `~` or a `$` is a host path, and is not
     /// the image's to create.
@@ -459,16 +172,11 @@ fn scalar(value: &str) -> String {
     trimmed.to_owned()
 }
 
-/// Parse `deploy/compose.yaml`'s `services:` block into one [`ServiceBlock`] per service.
+/// Parse a compose file's `services:` block into one [`ServiceBlock`] per service.
 ///
 /// Line-wise, not a YAML parser: a service name is a line indented by exactly two spaces
-/// ending in `:` (`  worker:`); everything more deeply indented until the next such line —
-/// or the next unindented top-level key — belongs to that service's body. Within a body,
-/// any non-comment line starting with `SERVER_FEATURES:` or `LAPIDARY_ROLE:` (after its own
-/// leading whitespace) marks that service as setting it, regardless of nesting depth (each
-/// normally lives under a specific key — `build: args:`, `environment:` — but this does not
-/// require that exact path — a boring, tolerant check); a `dockerfile:` line records its
-/// value.
+/// ending in `:` (`  app:`); everything more deeply indented until the next such line —
+/// or the next unindented top-level key — belongs to that service's body.
 fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
     let lines: Vec<&str> = contents.lines().collect();
     let Some(start) = lines.iter().position(|l| *l == "services:") else {
@@ -477,17 +185,13 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
 
     let mut services: Vec<ServiceBlock> = Vec::new();
     let mut current: Option<ServiceBlock> = None;
-    let mut in_build = false;
     let mut in_volumes = false;
 
     for line in &lines[start + 1..] {
         // A non-blank, unindented line ends the services: block (e.g. a top-level
-        // `volumes:` key) — unless it's a comment. A column-0 comment (a section banner
-        // like `# ---- application services ----`) is ordinary YAML style *inside* a
-        // mapping and must not be mistaken for the next top-level key, or every service
-        // below the banner — kernel-linked or not — becomes invisible to this parser
-        // without raising ComposeNoServicesParsed, because the services found above the
-        // banner are still enough to make the file parse as "some services found".
+        // `volumes:` key) — unless it's a comment. A column-0 comment (a section banner)
+        // is ordinary YAML style *inside* a mapping and must not be mistaken for the next
+        // top-level key, or every service below the banner becomes invisible.
         if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
             if line.trim_start().starts_with('#') {
                 continue;
@@ -495,8 +199,6 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
             break;
         }
 
-        // A two-space-indented `name:` line (no deeper indent, no trailing content after
-        // the colon) starts a new service.
         if let Some(rest) = line.strip_prefix("  ")
             && !rest.starts_with(' ')
             && !rest.starts_with('\t')
@@ -512,14 +214,9 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                 }
                 current = Some(ServiceBlock {
                     name: name.to_owned(),
-                    sets_features: false,
                     dockerfile: None,
-                    role: None,
-                    build_short_form: false,
-                    target: None,
                     named_volumes: Vec::new(),
                 });
-                in_build = false;
                 in_volumes = false;
                 continue;
             }
@@ -528,10 +225,7 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
         if let Some(block) = current.as_mut() {
             let trimmed = line.trim_start();
             let indent = line.len() - trimmed.len();
-            // A service's own keys sit at four spaces; `build:` opens a block that the next
-            // four-space key closes.
             if indent == 4 && !trimmed.starts_with('#') && !trimmed.is_empty() {
-                in_build = trimmed.starts_with("build:");
                 in_volumes = trimmed.starts_with("volumes:");
             }
             if in_volumes
@@ -544,48 +238,10 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
                 let target = rest.split(':').next().unwrap_or_default();
                 block.named_volumes.push(target.to_owned());
             }
-            if in_build
-                && indent == 6
-                && let Some(value) = trimmed.strip_prefix("target:")
+            if !trimmed.starts_with('#')
+                && let Some(value) = trimmed.strip_prefix("dockerfile:")
             {
-                block.target = Some(scalar(value));
-            }
-            if !trimmed.starts_with('#') {
-                // Mapping form (`SERVER_FEATURES: worker`, the form deploy/compose.yaml
-                // actually uses) and list form (`- SERVER_FEATURES=worker`, equally
-                // valid Compose syntax for `args:`) both count. Recognizing only the mapping
-                // form would make a list-form worker report MissingKernelLink — telling the
-                // reader their image ships kernel-less when it would not.
-                let list_item = |key: &str| {
-                    trimmed
-                        .strip_prefix('-')
-                        .map(str::trim_start)
-                        .and_then(|rest| rest.strip_prefix(key))
-                };
-                if trimmed.starts_with("SERVER_FEATURES:")
-                    || list_item("SERVER_FEATURES=").is_some()
-                {
-                    block.sets_features = true;
-                }
-                if let Some(value) = trimmed
-                    .strip_prefix("LAPIDARY_ROLE:")
-                    .or_else(|| list_item("LAPIDARY_ROLE="))
-                {
-                    block.role = Some(scalar(value));
-                }
-                if let Some(value) = trimmed.strip_prefix("dockerfile:") {
-                    block.dockerfile = Some(scalar(value));
-                }
-                // `build:` with a value on the same line is Compose's short form — the
-                // context only, with the dockerfile left implicit. The long form
-                // (`build:` alone, `dockerfile:` on a deeper line) is what the rules
-                // below can read; the short form is recorded so it can be reported as
-                // unreadable rather than pass as "not a lapidary-server service".
-                if let Some(value) = trimmed.strip_prefix("build:")
-                    && !scalar(value).is_empty()
-                {
-                    block.build_short_form = true;
-                }
+                block.dockerfile = Some(scalar(value));
             }
         }
     }
@@ -597,151 +253,6 @@ fn parse_services(contents: &str) -> Result<Vec<ServiceBlock>, Violation> {
         return Err(Violation::ComposeNoServicesParsed);
     }
     Ok(services)
-}
-
-/// Rule 1: exactly the services in `KERNEL_LINKED_SERVICES` set `SERVER_FEATURES` in
-/// `deploy/compose.yaml` — no more, no fewer.
-///
-/// Rule 5: every service that builds `LAPIDARY_SERVER_DOCKERFILE` (i.e. runs
-/// `lapidary-server`) sets `LAPIDARY_ROLE` explicitly. `bin/lapidary-server/src/main.rs`
-/// deliberately has no default for it — the two roles are not interchangeable, and a
-/// missing `api` value looks fine (the process just stays `api`) while a missing `worker`
-/// value fails silently (the container starts, binds, passes its healthcheck, and never
-/// mounts `/scan`). This rule is the CI-time half of closing that hole: it catches
-/// `deploy/compose.yaml` losing the variable before anyone runs the container.
-///
-/// Rule 6: every `KERNEL_LINKED_SERVICES` member sets `LAPIDARY_ROLE` to `worker`.
-/// Rule 5 checked only that the key was *present*, so flipping the worker's value to
-/// `api` reported OK and produced verbatim the failure rule 5 exists to prevent: a
-/// container that links the CAD kernel, serves the grid, and mounts `/scan` nowhere.
-///
-/// Rule 7: some service sets `LAPIDARY_ROLE: worker`. Rule 6 says nothing if
-/// `KERNEL_LINKED_SERVICES` is ever emptied, and a compose file with no worker at all is
-/// a deployment into which no part can ever be ingested.
-pub fn check_compose(contents: &str) -> Vec<Violation> {
-    let services = match parse_services(contents) {
-        Ok(services) => services,
-        Err(parse_violation) => return vec![parse_violation],
-    };
-
-    let mut violations = per_service(&services);
-
-    // Rule 7: and somebody has to be the worker. Independent of the loop above, which is
-    // silent if KERNEL_LINKED_SERVICES is ever emptied — a compose file where no service
-    // runs ingest is a deployment where no part can enter a library.
-    if !services
-        .iter()
-        .any(|s| s.role.as_deref() == Some(WORKER_ROLE))
-    {
-        violations.push(Violation::NoWorkerService);
-    }
-
-    // The loop above only walks services the parser actually found, so a
-    // KERNEL_LINKED_SERVICES entry that never parsed at all — the service block was
-    // deleted, renamed, or hidden below a banner comment this parser used to choke on —
-    // raises nothing there. Check the reverse direction too: every name this module
-    // expects to exist must have been found among the parsed services.
-    for &expected in KERNEL_LINKED_SERVICES {
-        if !services.iter().any(|s| s.name == expected) {
-            violations.push(Violation::MissingKernelLink {
-                service: expected.to_owned(),
-            });
-        }
-    }
-
-    violations
-}
-
-/// The rules that are about one service, applied to each of them.
-///
-/// Split out so an overlay can be held to exactly these and no others. Everything here reads one
-/// `ServiceBlock`; the rules that read the file as a whole — somebody must be the worker, and
-/// every `KERNEL_LINKED_SERVICES` name must have parsed — stay in [`check_compose`], because they
-/// are false the moment a file is only part of a deployment.
-fn per_service(services: &[ServiceBlock]) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for service in services {
-        let is_kernel_linked = KERNEL_LINKED_SERVICES.contains(&service.name.as_str());
-        match (service.sets_features, is_kernel_linked) {
-            (true, false) => violations.push(Violation::UnexpectedKernelLink {
-                service: service.name.clone(),
-            }),
-            (false, true) => violations.push(Violation::MissingKernelLink {
-                service: service.name.clone(),
-            }),
-            _ => {}
-        }
-
-        // A short-form `build:` leaves the dockerfile implicit, so `runs_lapidary_server`
-        // below would read false and the role rules would quietly not apply. Report it as
-        // parse-stale rather than let a service opt out of the checks by changing syntax.
-        if service.build_short_form && service.dockerfile.is_none() {
-            violations.push(Violation::ComposeUnreadableBuildSpec {
-                service: service.name.clone(),
-            });
-        }
-
-        let runs_lapidary_server =
-            service.dockerfile.as_deref() == Some(LAPIDARY_SERVER_DOCKERFILE);
-        if runs_lapidary_server && service.role.is_none() {
-            violations.push(Violation::MissingRole {
-                service: service.name.clone(),
-            });
-        }
-
-        // Rule 6: the role's VALUE, not its presence. `LAPIDARY_ROLE: worker` -> `api` on
-        // the kernel-linked service used to report OK, giving a container that links the
-        // CAD kernel, serves the grid, and mounts /scan nowhere.
-        if runs_lapidary_server {
-            let expected = if is_kernel_linked {
-                WORKER_TARGET
-            } else {
-                API_TARGET
-            };
-            match service.target.as_deref() {
-                None => violations.push(Violation::MissingBuildTarget {
-                    service: service.name.clone(),
-                }),
-                Some(target) if target != expected => {
-                    violations.push(Violation::WrongBuildTarget {
-                        service: service.name.clone(),
-                        target: target.to_owned(),
-                        expected,
-                    })
-                }
-                Some(_) => {}
-            }
-        }
-        if is_kernel_linked
-            && let Some(role) = service.role.as_deref()
-            && role != WORKER_ROLE
-        {
-            violations.push(Violation::KernelLinkedServiceWrongRole {
-                service: service.name.clone(),
-                role: role.to_owned(),
-            });
-        }
-    }
-    violations
-}
-
-/// The same per-service rules, over a compose file that is layered onto `deploy/compose.yaml`
-/// rather than used alone — today `deploy/compose.sharing.yaml`, which adds the `peer` service.
-///
-/// Only the per-service rules. An overlay has no worker of its own and names no kernel-linked
-/// service, so [`check_compose`]'s two whole-file rules would fail it for being what it is. The
-/// two files are not checked as one either: [`parse_services`] takes the first `services:` key and
-/// stops at the next unindented one, so a concatenation would hide every service in whichever file
-/// came second.
-///
-/// What this does still catch is what matters about an overlay: a service that builds
-/// `deploy/Containerfile` without `LAPIDARY_ROLE`, one that builds the `worker` target when it runs
-/// no worker, and one that sets `SERVER_FEATURES` without being kernel-linked.
-pub fn check_overlay(contents: &str) -> Vec<Violation> {
-    match parse_services(contents) {
-        Ok(services) => per_service(&services),
-        Err(parse_violation) => vec![parse_violation],
-    }
 }
 
 /// Join backslash line-continuations into logical lines, so a `RUN` instruction wrapped
@@ -808,85 +319,6 @@ fn logical_lines(contents: &str) -> Vec<String> {
         logical.push(buffer);
     }
     logical
-}
-
-/// Rules 2 and 3: `deploy/Containerfile` still routes `SERVER_FEATURES` through the arg
-/// expansion in its `cargo build` line, and `ARG SERVER_FEATURES` is declared where that
-/// line can actually see it.
-///
-/// "Visible" is not "after the first FROM" — a multi-stage Containerfile can declare the
-/// arg in one stage and use `cargo build` in a later one, or (the bug this replaced) place
-/// the arg after some *other* FROM while `cargo build` runs in an earlier stage. `ARG`
-/// scope does not cross a `FROM`, so the real requirement is: the arg's declaration comes
-/// before the `cargo build` line, and no `FROM` sits between them. That is checked against
-/// every `FROM` in the file, not just the first, so it stays correct if a third stage is
-/// ever added.
-pub fn check_containerfile(contents: &str) -> Vec<Violation> {
-    let lines = logical_lines(contents);
-    let mut violations = Vec::new();
-
-    // Case-insensitive: Dockerfile instructions are case-insensitive, and a lowercase
-    // `from` between the ARG and the build line would hide a stage boundary from a
-    // case-sensitive match — the exact silent-pass failure mode this module exists to
-    // avoid, just less likely than the compose one. (`ARG`/`RUN` don't need the same
-    // treatment: a lowercase `arg` or `run` just fails to match at all, which degrades
-    // loudly to a parse-stale violation rather than passing silently.)
-    let from_indices: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| {
-            let trimmed = l.trim_start();
-            trimmed
-                .get(..5)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("from "))
-        })
-        .map(|(i, _)| i)
-        .collect();
-
-    let arg_decl = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("ARG SERVER_FEATURES"));
-    if arg_decl.is_none() {
-        violations.push(Violation::ContainerfileMissingArgDeclaration);
-    }
-
-    // Anchored on `RUN cargo build`, not the bare substring "cargo build": a comment
-    // mentioning "cargo build" above the real RUN line must not be mistaken for it. Excludes
-    // comment lines the same way parse_services does for deploy/compose.yaml. Uses the
-    // first match: deploy/Containerfile has exactly one `cargo build` invocation today, so
-    // there is nothing to disambiguate. A second RUN cargo build line appearing in the
-    // future is a sign this check needs a design update, not a case whose first match is
-    // authoritative — no such fixture exists here and none should be added to paper over
-    // it.
-    let build_line = lines.iter().enumerate().find(|(_, l)| {
-        let trimmed = l.trim_start();
-        !trimmed.starts_with('#') && trimmed.starts_with("RUN cargo build")
-    });
-
-    match build_line {
-        None => violations.push(Violation::ContainerfileMissingBuildLine),
-        Some((build_i, build_content)) => {
-            if !build_content.contains(ARG_EXPANSION) {
-                violations.push(Violation::BuildLineMissingArgExpansion);
-            }
-            if build_content.matches("--features").count() > 1 {
-                violations.push(Violation::BuildLineHardcodedFeatures);
-            }
-            if let Some(arg_i) = arg_decl {
-                let visible = arg_i < build_i
-                    && !from_indices
-                        .iter()
-                        .any(|&from_i| from_i > arg_i && from_i < build_i);
-                if !visible {
-                    violations.push(Violation::ArgNotVisibleToBuildLine);
-                }
-            }
-            // If arg_decl is None, ContainerfileMissingArgDeclaration was already pushed
-            // above — nothing more useful to say about where it's visible from.
-        }
-    }
-
-    violations
 }
 
 /// Rules 4, 5 and 6, over the same file list: `lapidary-api` must never name
@@ -1003,44 +435,6 @@ fn is_module(path: &str, module: &str) -> bool {
     std::path::Path::new(path).ends_with(module)
 }
 
-/// Both build targets `deploy/compose.yaml` names exist in `deploy/Containerfile`.
-///
-/// All that is left of a rule that also followed each target down its `FROM` chain looking for
-/// OCCT. With the kernel out, the two targets differ only by the `SERVER_FEATURES` a service
-/// passes — but they must still both be *there*, or a service naming one gets a build failure
-/// instead of an image. Keywords are matched case-insensitively, as the builder matches them.
-pub fn check_targets(containerfile: &str) -> Vec<Violation> {
-    let named: Vec<String> = logical_lines(containerfile)
-        .iter()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .filter_map(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            if !words.first()?.eq_ignore_ascii_case("FROM") {
-                return None;
-            }
-            // `FROM [--platform=…] <image or stage> [AS <name>]`
-            let rest: Vec<&str> = words[1..]
-                .iter()
-                .copied()
-                .filter(|word| !word.starts_with("--"))
-                .collect();
-            match rest.as_slice() {
-                [_, keyword, name, ..] if keyword.eq_ignore_ascii_case("AS") => {
-                    Some(name.to_ascii_lowercase())
-                }
-                _ => None,
-            }
-        })
-        .collect();
-    [API_TARGET, WORKER_TARGET]
-        .into_iter()
-        .filter(|target| !named.iter().any(|name| name == target))
-        .map(|target| Violation::ContainerfileMissingTarget { target })
-        .collect()
-}
-
-/// Run every rule over both files and collect the violations, in the order `main.rs`
-/// should report them.
 /// Every named volume a `lapidary-server` service mounts, in any of `compose_files`, is a directory the Containerfile
 /// creates owned by `lapidary` (`install -d -o lapidary …`): the image is what gives a fresh named volume its owner. Bind
 /// mounts are the operator's, and a service that does not build the Containerfile (`db`) runs as its own image's user.
@@ -1060,10 +454,18 @@ pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Ve
                 .collect::<Vec<_>>()
         })
         .collect();
-    compose_files
+    let mut violations = Vec::new();
+    let mut services = Vec::new();
+    for contents in compose_files {
+        // A file this parser cannot read is reported, not skipped: a check that found nothing to
+        // verify must not look like one that verified everything.
+        match parse_services(contents) {
+            Ok(parsed) => services.extend(parsed),
+            Err(stale) => violations.push(stale),
+        }
+    }
+    let unowned = services
         .iter()
-        .filter_map(|contents| parse_services(contents).ok())
-        .flatten()
         .filter(|service| service.dockerfile.as_deref() == Some(LAPIDARY_SERVER_DOCKERFILE))
         .flat_map(|service| {
             let owned = &owned;
@@ -1076,639 +478,14 @@ pub fn check_volume_ownership(compose_files: &[&str], containerfile: &str) -> Ve
                     target: target.clone(),
                 })
                 .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-/// Every `docker build` of `deploy/Containerfile` in `.github/workflows/containers.yml` builds what compose builds: `--target
-/// api` with no `SERVER_FEATURES`, or `--target worker` with the `worker` feature. Line-wise, with `\`-continued lines joined.
-pub fn check_workflow(contents: &str) -> Vec<Violation> {
-    logical_lines(contents)
-        .iter()
-        .map(|line| {
-            line.trim_start()
-                .trim_start_matches("- ")
-                .trim_start_matches("run:")
-                .trim()
-                .to_owned()
-        })
-        .filter(|line| line.contains("docker build") && line.contains(LAPIDARY_SERVER_DOCKERFILE))
-        .filter_map(|line| {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            let target = words
-                .windows(2)
-                .find(|pair| pair[0] == "--target")
-                .map(|pair| pair[1].to_owned())
-                .or_else(|| {
-                    words
-                        .iter()
-                        .find_map(|word| word.strip_prefix("--target=").map(str::to_owned))
-                });
-            let features = words
-                .iter()
-                .find_map(|word| word.strip_prefix("SERVER_FEATURES="))
-                .unwrap_or_default();
-            match target.as_deref() {
-                None => Some(Violation::WorkflowBuildWithoutTarget { line }),
-                Some("worker") if !features.split(',').any(|f| f == "worker") => {
-                    Some(Violation::WorkflowWorkerWithoutKernel { line })
-                }
-                Some("api") if !features.is_empty() => {
-                    Some(Violation::WorkflowApiWithKernel { line })
-                }
-                Some("api" | "worker") => None,
-                Some(other) => Some(Violation::WorkflowBuildTarget {
-                    target: other.to_owned(),
-                    line,
-                }),
-            }
-        })
-        .collect()
-}
-
-pub fn check(compose_contents: &str, containerfile_contents: &str) -> Vec<Violation> {
-    let mut violations = check_compose(compose_contents);
-    violations.extend(check_containerfile(containerfile_contents));
-    violations.extend(check_targets(containerfile_contents));
+        });
+    violations.extend(unowned);
     violations
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Shaped like the real deploy/compose.sharing.yaml, trimmed to what these checks read: one
-    // service, no worker, and no kernel-linked service anywhere in the file.
-    const SHARING_OVERLAY: &str = "\
-services:
-  peer:
-    build:
-      context: ..
-      dockerfile: deploy/Containerfile
-      target: api
-    environment:
-      LAPIDARY_BIND: 0.0.0.0:8082
-      LAPIDARY_ROLE: peer
-    ports:
-      - \"8082:8082\"
-
-volumes:
-  lapidary-peer:
-";
-
-    #[test]
-    fn an_overlay_holding_only_the_peer_service_is_accepted() {
-        assert!(
-            check_overlay(SHARING_OVERLAY).is_empty(),
-            "the overlay as it ships: {:?}",
-            check_overlay(SHARING_OVERLAY)
-        );
-    }
-
-    /// Why `check_overlay` exists at all. The overlay is layered onto `deploy/compose.yaml` rather
-    /// than used alone, so the whole-file rules would fail it for being what it is.
-    #[test]
-    fn the_whole_file_rules_would_refuse_an_overlay() {
-        assert!(
-            check_compose(SHARING_OVERLAY)
-                .iter()
-                .any(|v| matches!(v, Violation::NoWorkerService)),
-            "checked as a whole deployment, an overlay has no worker"
-        );
-    }
-
-    /// An overlay is still a file that starts `lapidary-server`, so the rules about one service
-    /// apply to it exactly as they do in the base file.
-    #[test]
-    fn an_overlay_service_without_a_role_is_refused() {
-        let no_role = SHARING_OVERLAY.replace("      LAPIDARY_ROLE: peer\n", "");
-        assert!(
-            check_overlay(&no_role)
-                .iter()
-                .any(|v| matches!(v, Violation::MissingRole { service } if service == "peer")),
-            "a service that runs lapidary-server must say which role"
-        );
-    }
-
-    #[test]
-    fn an_overlay_service_building_the_kernel_target_is_refused() {
-        let kernel_target =
-            SHARING_OVERLAY.replace("      target: api\n", "      target: worker\n");
-        assert!(
-            check_overlay(&kernel_target).iter().any(
-                |v| matches!(v, Violation::WrongBuildTarget { service, .. } if service == "peer")
-            ),
-            "the peer role links no CAD kernel, so it must not build the target that carries one"
-        );
-    }
-
-    // Shaped like the real deploy/compose.yaml, trimmed to what these checks read.
-    const CORRECT_COMPOSE: &str = "\
-name: lapidary
-
-services:
-  db:
-    build:
-      context: .
-      dockerfile: db/Containerfile
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lapidary}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-
-  api:
-    build:
-      context: ..
-      dockerfile: deploy/Containerfile
-      target: api
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
-      LAPIDARY_BIND: 0.0.0.0:8080
-      LAPIDARY_ROLE: api
-    ports:
-      - \"8080:8080\"
-
-  worker:
-    build:
-      context: ..
-      dockerfile: deploy/Containerfile
-      target: worker
-      args:
-        # Only the worker links the CAD kernel — the open path (api) never invokes it.
-        SERVER_FEATURES: worker
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary
-      LAPIDARY_ROLE: worker
-
-  web:
-    build:
-      context: ..
-      dockerfile: deploy/web/Containerfile
-    depends_on:
-      - api
-
-volumes:
-  lapidary-db:
-";
-
-    // Shaped like the real deploy/Containerfile, trimmed to what these checks read.
-    const CORRECT_CONTAINERFILE: &str = "\
-# syntax=docker/dockerfile:1
-FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
-ARG SERVER_FEATURES=
-WORKDIR /src
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
-
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime
-COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
-EXPOSE 8080 8081
-ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
-FROM runtime AS api
-FROM runtime AS worker
-";
-
-    #[test]
-    fn correct_configuration_passes() {
-        assert_eq!(check(CORRECT_COMPOSE, CORRECT_CONTAINERFILE), vec![]);
-    }
-
-    #[test]
-    fn server_features_on_a_non_listed_service_fails_and_names_it() {
-        let bad = CORRECT_COMPOSE.replacen(
-            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
-            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: worker\n",
-            1,
-        );
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![Violation::UnexpectedKernelLink {
-                service: "api".to_owned()
-            }]
-        );
-        assert!(violations[0].to_string().contains("api"));
-    }
-
-    #[test]
-    fn worker_missing_server_features_fails() {
-        let bad = CORRECT_COMPOSE.replacen(
-            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n",
-            "",
-            1,
-        );
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![Violation::MissingKernelLink {
-                service: "worker".to_owned()
-            }]
-        );
-        assert!(violations[0].to_string().contains("worker"));
-    }
-
-    #[test]
-    fn column_zero_comment_banner_does_not_hide_services_below_it() {
-        // The bug this replaced: a section banner comment at column 0 (ordinary YAML style
-        // inside a mapping — today's file merely happens to indent its comments) satisfied
-        // the old "non-blank, unindented line ends the block" terminator, so every service
-        // below it — api included — became invisible and its kernel-linked SERVER_FEATURES
-        // raised nothing.
-        let bad = CORRECT_COMPOSE.replacen(
-            "  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
-            "# ---- application services ----\n  api:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      args:\n        SERVER_FEATURES: worker\n",
-            1,
-        );
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![Violation::UnexpectedKernelLink {
-                service: "api".to_owned()
-            }]
-        );
-    }
-
-    #[test]
-    fn kernel_linked_service_absent_from_the_file_entirely_fails_and_names_it() {
-        // Deleting the worker service outright used to give a green run: check_compose only
-        // ever walked the services the parser found, so a KERNEL_LINKED_SERVICES entry that
-        // never parsed at all raised nothing. This pins the reverse check.
-        let bad = CORRECT_COMPOSE.replacen(
-            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n      target: worker\n      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n    environment:\n      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/lapidary\n      LAPIDARY_ROLE: worker\n\n",
-            "",
-            1,
-        );
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![
-                // Deleting the worker also deletes the only `LAPIDARY_ROLE: worker` in
-                // the file, which rule 7 reports independently of the list — and before
-                // the reverse-direction "expected service never parsed" sweep runs.
-                Violation::NoWorkerService,
-                Violation::MissingKernelLink {
-                    service: "worker".to_owned()
-                },
-            ]
-        );
-        assert!(violations[1].to_string().contains("worker"));
-    }
-
-    #[test]
-    fn list_form_args_setting_server_features_is_recognized() {
-        // Compose accepts `args:` as a list (`- SERVER_FEATURES=worker`) as well as a
-        // mapping. Recognizing only the mapping form would make this fixture report
-        // MissingKernelLink — telling the reader their worker ships kernel-less when it
-        // would not, since the arg genuinely reaches the build either way.
-        let list_form = CORRECT_COMPOSE.replacen(
-            "      args:\n        # Only the worker links the CAD kernel — the open path (api) never invokes it.\n        SERVER_FEATURES: worker\n",
-            "      args:\n        - SERVER_FEATURES=worker\n",
-            1,
-        );
-        assert_eq!(check_compose(&list_form), vec![]);
-    }
-
-    #[test]
-    fn worker_missing_lapidary_role_fails_and_names_it() {
-        // The worker case matters most: losing LAPIDARY_ROLE here is the silent failure
-        // this rule exists to catch — the container would still start, bind, and pass its
-        // healthcheck, and simply never mount /scan.
-        let bad = CORRECT_COMPOSE.replacen("      LAPIDARY_ROLE: worker\n", "", 1);
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![
-                Violation::MissingRole {
-                    service: "worker".to_owned()
-                },
-                Violation::NoWorkerService,
-            ]
-        );
-        assert!(violations[0].to_string().contains("worker"));
-        assert!(violations[0].to_string().contains("LAPIDARY_ROLE"));
-    }
-
-    #[test]
-    fn api_missing_lapidary_role_fails_and_names_it() {
-        // The rule is generic over every service that builds deploy/Containerfile, not
-        // special-cased to worker — pin that api is checked too.
-        let bad = CORRECT_COMPOSE.replacen("      LAPIDARY_ROLE: api\n", "", 1);
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![Violation::MissingRole {
-                service: "api".to_owned()
-            }]
-        );
-        assert!(violations[0].to_string().contains("api"));
-    }
-
-    #[test]
-    fn the_worker_running_the_api_role_fails_even_though_the_key_is_present() {
-        // Rule 5 checked presence, so this reported OK: a container built WITH the CAD
-        // kernel, serving the grid, with /scan mounted nowhere — verbatim the failure the
-        // rule exists to prevent, reached by editing one word.
-        let bad = CORRECT_COMPOSE.replacen(
-            "      LAPIDARY_ROLE: worker\n",
-            "      LAPIDARY_ROLE: api\n",
-            1,
-        );
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![
-                Violation::KernelLinkedServiceWrongRole {
-                    service: "worker".to_owned(),
-                    role: "api".to_owned(),
-                },
-                Violation::NoWorkerService,
-            ]
-        );
-        assert!(violations[0].to_string().contains("worker"));
-        assert!(violations[0].to_string().contains("/scan"));
-    }
-
-    #[test]
-    fn quoted_scalars_are_read_as_the_values_they_are() {
-        // Quoting is a no-op to every Compose implementation and must be one here. It was
-        // not: quoting both `dockerfile:` values made runs_lapidary_server false for
-        // BOTH lapidary-server services, so deleting LAPIDARY_ROLE outright still
-        // reported OK — the silent-failure shape these rules exist to close, relocated
-        // into the parser.
-        let quoted = CORRECT_COMPOSE
-            .replace(
-                "dockerfile: deploy/Containerfile",
-                "dockerfile: \"deploy/Containerfile\"",
-            )
-            .replace("LAPIDARY_ROLE: worker", "LAPIDARY_ROLE: 'worker'");
-        assert_eq!(check_compose(&quoted), vec![]);
-
-        let quoted_and_role_deleted = quoted.replacen("      LAPIDARY_ROLE: 'worker'\n", "", 1);
-        assert_eq!(
-            check_compose(&quoted_and_role_deleted),
-            vec![
-                Violation::MissingRole {
-                    service: "worker".to_owned()
-                },
-                Violation::NoWorkerService,
-            ]
-        );
-    }
-
-    #[test]
-    fn the_build_short_form_is_reported_as_unreadable_not_silently_skipped() {
-        // `build: .` names a context and leaves the dockerfile implicit. The parser
-        // cannot resolve it, and the old code's answer was "then it is not a
-        // lapidary-server service" — so a worker rewritten this way opted out of every
-        // role rule by changing syntax. It now says it cannot read the spec.
-        let short_form = CORRECT_COMPOSE.replacen(
-            "  worker:\n    build:\n      context: ..\n      dockerfile: deploy/Containerfile\n",
-            "  worker:\n    build: ..\n",
-            1,
-        );
-        let violations = check_compose(&short_form);
-        assert!(
-            violations.contains(&Violation::ComposeUnreadableBuildSpec {
-                service: "worker".to_owned()
-            }),
-            "the short form must be reported, got {violations:?}"
-        );
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.to_string().contains("parse_services")),
-            "the message must say the parser is stale and name what to update"
-        );
-    }
-
-    #[test]
-    fn a_compose_file_with_no_worker_at_all_fails() {
-        // Independent of KERNEL_LINKED_SERVICES: even if that list were emptied, a
-        // deployment with no worker is one no part can ever be ingested into.
-        let bad = CORRECT_COMPOSE.replacen(
-            "      LAPIDARY_ROLE: worker\n",
-            "      LAPIDARY_ROLE: api\n",
-            1,
-        );
-        assert!(check_compose(&bad).contains(&Violation::NoWorkerService));
-        assert!(
-            Violation::NoWorkerService.to_string().contains("scan"),
-            "the message must name what stops working"
-        );
-    }
-
-    #[test]
-    fn services_not_running_lapidary_server_need_no_lapidary_role() {
-        // CORRECT_COMPOSE's db (db/Containerfile) and web (deploy/web/Containerfile)
-        // services never set LAPIDARY_ROLE and never should — neither builds
-        // deploy/Containerfile, so neither runs lapidary-server. Pinned directly (not just
-        // via correct_configuration_passes returning an empty vec) so a future reader can
-        // see this was checked on purpose.
-        let violations = check_compose(CORRECT_COMPOSE);
-        assert!(
-            !violations.iter().any(|v| matches!(
-                v,
-                Violation::MissingRole { service } if service == "db" || service == "web"
-            )),
-            "db and web must never be asked for LAPIDARY_ROLE: {violations:?}"
-        );
-    }
-
-    #[test]
-    fn hardcoded_features_flag_in_build_line_fails() {
-        let bad = CORRECT_CONTAINERFILE.replace(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "RUN cargo build --release --locked -p lapidary-server --features worker ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-        );
-        let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::BuildLineHardcodedFeatures]);
-    }
-
-    #[test]
-    fn arg_before_first_from_fails() {
-        // Pins the first-ARG-wins semantics of `arg_decl = lines.iter().position(...)`:
-        // this fixture prepends an invalid top-level ARG in front of CORRECT_CONTAINERFILE,
-        // which still carries its own correctly-placed `ARG SERVER_FEATURES=` inside the
-        // build stage. A real `docker build` would see the in-stage re-declaration and
-        // succeed — but `.position()` locks onto the *first* occurrence (the prepended,
-        // invalid one) and flags a violation anyway. That's over-flagging a file that would
-        // actually build fine, not under-flagging a broken one — the safe direction for a
-        // static check — so it's left as-is rather than taught to consider every ARG
-        // occurrence. A future fixer: this is intended behavior, not a bug this test missed.
-        let bad = format!("ARG SERVER_FEATURES=\n{CORRECT_CONTAINERFILE}");
-        let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
-    }
-
-    #[test]
-    fn arg_after_second_from_fails_even_though_it_is_after_the_first() {
-        // The bug this replaced: checking only `arg_i < first_from_i` accepts this,
-        // because the ARG is indeed after the *first* FROM — it just isn't in the stage
-        // that runs `cargo build`, so the expansion sees nothing.
-        let bad = CORRECT_CONTAINERFILE
-            .replacen("ARG SERVER_FEATURES=\n", "", 1)
-            .replacen(
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime\n",
-                "FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS runtime\nARG SERVER_FEATURES=\n",
-                1,
-            );
-        let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
-        let msg = violations[0].to_string();
-        assert!(
-            msg.contains("FROM") && msg.contains("stage"),
-            "message must describe the actual problem (wrong stage), not just \
-             'before the first FROM' — got {msg:?}"
-        );
-    }
-
-    #[test]
-    fn lowercase_from_between_arg_and_build_line_hides_the_stage_boundary() {
-        // Dockerfile instructions are case-insensitive, so a lowercase `from` starts a
-        // real stage exactly like `FROM` does. Before from_indices matched
-        // case-insensitively, this `from` would not register as a stage boundary at all —
-        // ARG SERVER_FEATURES would look visible to the build line (no FROM detected
-        // between them), and the check would report OK on a Containerfile where the arg
-        // silently does not reach the build. Asserting the full vector, not just
-        // `contains`, also catches a case-insensitive match firing twice (once via a
-        // hypothetical fallback) and producing a spurious second violation.
-        let bad = CORRECT_CONTAINERFILE.replacen(
-            "ARG SERVER_FEATURES=\nWORKDIR /src\n",
-            "ARG SERVER_FEATURES=\nfrom docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS extra\nWORKDIR /src\n",
-            1,
-        );
-        let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::ArgNotVisibleToBuildLine]);
-    }
-
-    #[test]
-    fn arg_correctly_placed_in_a_three_stage_file_passes() {
-        let three_stage = "\
-# syntax=docker/dockerfile:1
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f AS deps
-RUN apt-get update
-
-FROM docker.io/library/rust:1.95-trixie@sha256:443dd9a3260cf23c22fc05051dd5661dd7b4028d3d25dbaffab6563b63c3539c AS build
-ARG SERVER_FEATURES=
-WORKDIR /src
-RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}
-
-FROM docker.io/library/debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
-COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
-EXPOSE 8080 8081
-ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
-";
-        assert_eq!(check_containerfile(three_stage), vec![]);
-    }
-
-    #[test]
-    fn comment_mentioning_cargo_build_above_the_real_run_line_does_not_misfire() {
-        let with_comment = CORRECT_CONTAINERFILE.replacen(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "# Remember: cargo build needs SERVER_FEATURES threaded through the ARG below.\nRUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            1,
-        );
-        assert_eq!(check_containerfile(&with_comment), vec![]);
-    }
-
-    #[test]
-    fn wrapped_run_cargo_build_line_with_expansion_on_the_continuation_passes() {
-        let wrapped = CORRECT_CONTAINERFILE.replacen(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "RUN cargo build --release --locked -p lapidary-server \\\n    ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            1,
-        );
-        assert_eq!(check_containerfile(&wrapped), vec![]);
-    }
-
-    #[test]
-    fn backslash_terminated_comment_above_the_run_line_does_not_absorb_it() {
-        // A comment ending in `\` is still just a comment — Docker does not extend
-        // comments across a trailing backslash. Joining it into the RUN line below would
-        // make the whole thing one `#`-prefixed logical line, which the comment-excluding
-        // search then skips, misreporting ContainerfileMissingBuildLine on a valid file.
-        let with_comment = CORRECT_CONTAINERFILE.replacen(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "# feature list comes from the SERVER_FEATURES build arg \\\nRUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            1,
-        );
-        assert_eq!(check_containerfile(&with_comment), vec![]);
-    }
-
-    #[test]
-    fn backslash_terminated_comment_above_the_arg_declaration_does_not_absorb_it() {
-        // Symmetric case: a `\`-terminated comment directly above ARG SERVER_FEATURES=
-        // must not swallow it into a comment line either, or the check would misreport
-        // ContainerfileMissingArgDeclaration on a file that declares the arg correctly.
-        let with_comment = CORRECT_CONTAINERFILE.replacen(
-            "ARG SERVER_FEATURES=\n",
-            "# threaded in by deploy/compose.yaml \\\nARG SERVER_FEATURES=\n",
-            1,
-        );
-        assert_eq!(check_containerfile(&with_comment), vec![]);
-    }
-
-    #[test]
-    fn comment_inside_an_open_continuation_is_skipped_not_spliced_in() {
-        // Pins the deliberate choice documented on logical_lines: a comment appearing
-        // between two backslash-continued physical lines is dropped from the joined
-        // content (matching BuildKit, which ignores it) rather than ending the
-        // continuation early or being spliced into the instruction text.
-        let with_mid_comment = CORRECT_CONTAINERFILE.replacen(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "RUN cargo build --release --locked -p lapidary-server \\\n    # SERVER_FEATURES flows through the ARG above\n    ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            1,
-        );
-        assert_eq!(check_containerfile(&with_mid_comment), vec![]);
-    }
-
-    #[test]
-    fn compose_with_no_services_key_fails_as_parse_stale_not_as_clean() {
-        let no_services = "name: lapidary\n\nvolumes:\n  lapidary-db:\n";
-        let violations = check_compose(no_services);
-        assert_eq!(violations, vec![Violation::ComposeMissingServicesKey]);
-        // Must not be mistaken for "no violations found".
-        assert_ne!(violations, Vec::<Violation>::new());
-    }
-
-    #[test]
-    fn containerfile_with_no_cargo_build_line_fails_as_parse_stale() {
-        let no_build = "FROM docker.io/library/rust:1.95-trixie AS build\nARG SERVER_FEATURES=\nWORKDIR /src\n";
-        let violations = check_containerfile(no_build);
-        assert_eq!(violations, vec![Violation::ContainerfileMissingBuildLine]);
-    }
-
-    #[test]
-    fn missing_arg_declaration_entirely_fails_as_parse_stale() {
-        let no_arg = "FROM docker.io/library/rust:1.95-trixie AS build\nWORKDIR /src\nRUN cargo build --release -p lapidary-server\n";
-        let violations = check_containerfile(no_arg);
-        assert!(violations.contains(&Violation::ContainerfileMissingArgDeclaration));
-    }
-
-    #[test]
-    fn compose_with_services_key_but_no_blocks_fails_as_parse_stale() {
-        // services: present but with no two-space-indented name: lines under it.
-        let odd = "services:\n# nothing recognizable here\nvolumes:\n  lapidary-db:\n";
-        let violations = check_compose(odd);
-        assert_eq!(violations, vec![Violation::ComposeNoServicesParsed]);
-    }
-
-    #[test]
-    fn missing_arg_expansion_fails() {
-        let bad = CORRECT_CONTAINERFILE.replace(
-            "RUN cargo build --release --locked -p lapidary-server ${SERVER_FEATURES:+--features \"$SERVER_FEATURES\"}",
-            "RUN cargo build --release --locked -p lapidary-server",
-        );
-        let violations = check_containerfile(&bad);
-        assert_eq!(violations, vec![Violation::BuildLineMissingArgExpansion]);
-    }
-
-    #[test]
-    fn violation_messages_point_at_the_check_not_the_config_when_parsing_is_stale() {
-        let no_services = "name: lapidary\n\nvolumes:\n  lapidary-db:\n";
-        let msg = check_compose(no_services)[0].to_string();
-        assert!(msg.contains("This check's parsing is stale, not the config"));
-        assert!(msg.contains("deploy.rs"));
-    }
 
     #[test]
     fn a_file_naming_source_store_fails_and_names_the_file() {
@@ -1904,69 +681,6 @@ ENTRYPOINT [\"/usr/local/bin/lapidary-server\"]
         );
     }
     #[test]
-    fn a_lapidary_server_service_with_no_build_target_fails_and_names_it() {
-        // No `target:` builds the file's last stage, which is the worker's, and nothing about
-        // that build fails.
-        let bad = CORRECT_COMPOSE.replacen("      target: api\n", "", 1);
-        let violations = check_compose(&bad);
-        assert_eq!(
-            violations,
-            vec![Violation::MissingBuildTarget {
-                service: "api".to_owned()
-            }]
-        );
-        assert!(violations[0].to_string().contains("target: api"));
-    }
-
-    #[test]
-    fn the_api_building_the_worker_target_fails() {
-        let bad = CORRECT_COMPOSE.replacen("      target: api\n", "      target: worker\n", 1);
-        assert_eq!(
-            check_compose(&bad),
-            vec![Violation::WrongBuildTarget {
-                service: "api".to_owned(),
-                target: "worker".to_owned(),
-                expected: API_TARGET,
-            }]
-        );
-    }
-
-    #[test]
-    fn the_worker_building_the_api_target_fails() {
-        let bad = CORRECT_COMPOSE.replacen("      target: worker\n", "      target: api\n", 1);
-        assert_eq!(
-            check_compose(&bad),
-            vec![Violation::WrongBuildTarget {
-                service: "worker".to_owned(),
-                target: "api".to_owned(),
-                expected: WORKER_TARGET,
-            }]
-        );
-    }
-
-    #[test]
-    fn a_containerfile_with_no_api_stage_is_reported_as_unreadable() {
-        let bad = CORRECT_CONTAINERFILE.replacen("FROM runtime AS api\n", "", 1);
-        assert_eq!(
-            check_targets(&bad),
-            vec![Violation::ContainerfileMissingTarget { target: API_TARGET }]
-        );
-    }
-
-    #[test]
-    fn lowercase_from_and_as_still_name_the_targets() {
-        // Instructions and the `AS` keyword are case-insensitive to the builder, so they must
-        // be to this check — or a lowercase file reads as having no targets at all.
-        let lower = CORRECT_CONTAINERFILE
-            .replacen("FROM runtime AS api\n", "from runtime as api\n", 1)
-            .replacen("FROM runtime AS worker\n", "from runtime as worker\n", 1);
-        assert_eq!(check_targets(&lower), vec![]);
-    }
-
-    /// The peer role reads the store to serve a file and writes it to keep one it pulled, each in one
-    /// file; a table that only checked its first row, or a file allowed one handle passing with the
-    /// other, would pass a single-case test.
-    #[test]
     fn the_peer_reads_the_store_only_in_blob_rs_and_writes_it_only_in_pull_rs() {
         let sources = vec![
             (
@@ -2023,17 +737,12 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      target: api
-    environment:
-      LAPIDARY_ROLE: api
     volumes:
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
       - ../example/parts:/ingest:ro,z
       - lapidary-uploads:/var/lib/lapidary-uploads:Z
   db:
-    build:
-      context: .
-      dockerfile: db/Containerfile
+    image: docker.io/library/postgres:18
     volumes:
       - lapidary-db:/var/lib/postgresql:Z
 ";
@@ -2085,62 +794,45 @@ RUN install -d -m 0755 /var/lib/lapidary-peer-staging
         );
     }
 
-    fn workflow(builds: &[&str]) -> String {
-        // Indented by two at most: the rule reads each `run:` line, not the YAML around it.
-        let mut text = String::from("jobs:\n  build:\n  steps:\n");
-        for build in builds {
-            text.push_str(&format!("      - run: {build}\n"));
-        }
-        text
+    #[test]
+    fn a_compose_file_this_parser_cannot_read_is_reported_not_passed() {
+        let containerfile = "FROM debian AS runtime\n";
+        assert_eq!(
+            check_volume_ownership(
+                &["name: lapidary\n\nvolumes:\n  lapidary-db:\n"],
+                containerfile
+            ),
+            vec![Violation::ComposeMissingServicesKey]
+        );
+        let odd = "services:\n# nothing recognizable here\nvolumes:\n  lapidary-db:\n";
+        assert_eq!(
+            check_volume_ownership(&[odd], containerfile),
+            vec![Violation::ComposeNoServicesParsed]
+        );
+        let message = Violation::ComposeMissingServicesKey.to_string();
+        assert!(
+            message.contains("This check's parsing is stale, not the config"),
+            "{message}"
+        );
     }
 
-    /// What `.github/workflows/containers.yml` built until goal 8: no target, so the file's last stage, around a binary
-    /// with neither kernel, which refuses to start as a worker.
     #[test]
-    fn a_workflow_build_of_the_server_image_names_its_target_and_its_kernels() {
-        let old = workflow(&[
-            "docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} .",
-        ]);
+    fn a_column_zero_comment_banner_does_not_hide_the_services_below_it() {
+        let compose = "\
+services:
+# ---- the application ----
+  app:
+    build:
+      dockerfile: deploy/Containerfile
+    volumes:
+      - lapidary-uploads:/var/lib/lapidary-uploads:Z
+";
         assert_eq!(
-            check_workflow(&old),
-            vec![Violation::WorkflowBuildWithoutTarget {
-                line: "docker build -f deploy/Containerfile -t lapidary-server:${{ github.sha }} ."
-                    .to_owned()
+            check_volume_ownership(&[compose], "FROM debian AS runtime\n"),
+            vec![Violation::NamedVolumeNotOwned {
+                service: "app".to_owned(),
+                target: "/var/lib/lapidary-uploads".to_owned(),
             }]
-        );
-
-        let right = workflow(&[
-            "docker build -f deploy/Containerfile --target api -t lapidary-api:1 .",
-            "docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=worker -t lapidary-worker:1 .",
-            "docker build -f deploy/web/Containerfile -t lapidary-web:1 .",
-        ]);
-        assert_eq!(check_workflow(&right), vec![]);
-
-        let kernel_less_worker = "docker build -f deploy/Containerfile --target worker -t w .";
-        let kernel_api = "docker build -f deploy/Containerfile --target api --build-arg SERVER_FEATURES=worker -t a .";
-        let test_stage = "docker build -f deploy/Containerfile --target runtime -t t .";
-        assert_eq!(
-            check_workflow(&workflow(&[kernel_less_worker, kernel_api, test_stage])),
-            vec![
-                Violation::WorkflowWorkerWithoutKernel {
-                    line: kernel_less_worker.to_owned()
-                },
-                Violation::WorkflowApiWithKernel {
-                    line: kernel_api.to_owned()
-                },
-                Violation::WorkflowBuildTarget {
-                    line: test_stage.to_owned(),
-                    target: "runtime".to_owned()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn the_real_containers_workflow_builds_what_compose_builds() {
-        assert_eq!(
-            check_workflow(include_str!("../../.github/workflows/containers.yml")),
-            vec![]
         );
     }
 }

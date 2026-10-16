@@ -32,92 +32,12 @@ services:
       timeout: 3s
       retries: 20
 
-  api:
-    # Resource ceiling. Lapidary must run on a modest workstation, not only on
-    # a machine with spare gigabytes -- the open path reads rows and blobs; it never meshes.
-    # Compose v2 honours deploy.resources outside swarm.
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: "1.0"
-    build:
-      context: ..
-      dockerfile: deploy/Containerfile
-      # No ingest half in this image: see the two targets at the end of deploy/Containerfile.
-      target: api
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
-      LAPIDARY_BIND: 0.0.0.0:8080
-      LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
-      # Serves the grid and the open path. Never the scan route — this image deliberately
-      # is built without the ingest half (no SERVER_FEATURES build arg below).
-      LAPIDARY_ROLE: api
-      # Names the mount below. Required for the api role as of the LOD ladder: this is
-      # where GET /api/blob/{blake3} reads a rung from, and a router with that route and
-      # no root to read from would answer 500 for every part anyone opened.
-      LAPIDARY_BLOB_ROOT: /var/lib/lapidary
-      # Names the second mount below, and required for the api role since uploads: a
-      # partial upload is assembled here and only enters the blob store once its bytes
-      # have been verified against the hash the browser claimed. Deliberately not a
-      # subdirectory of LAPIDARY_BLOB_ROOT — everything under that root is
-      # content-addressed and complete, and a half-transferred file is neither.
-      LAPIDARY_UPLOAD_DIR: /var/lib/lapidary-uploads
-      # The same value as the mount below, told to the process rather than only to the
-      # runtime. Nothing reads a file through it: the api reads the store at
-      # LAPIDARY_BLOB_ROOT, which is a path inside this container and exists on nobody's
-      # machine. This is what the card shows when it says where a model is, and the store's
-      # whole layout is built on that being somewhere a person can actually open.
-      #
-      # Ignored by the binary unless absolute, which is why the fallback below is harmless:
-      # `../storage` is resolved against deploy/ by compose and means nothing to a process
-      # that cannot see deploy/. Set LAPIDARY_STORAGE_ROOT to an absolute path — which
-      # .env.example already recommends for other reasons — and the paths appear.
-      LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    volumes:
-      # The user's own storage root — a bind-mounted host directory, not a named volume.
-      # The whole point of this layout (docs/DATA.md §1.1) is that a user can open it in
-      # a file manager and find a model by name; a named volume they cannot locate on
-      # disk would defeat that. `z`, lowercase — see the ingest mount below for why.
-      #
-      # UPGRADING: a deployment that ran before this line kept its whole store in the
-      # `lapidary-blobs` named volume this file no longer declares. Bringing the stack up
-      # points api and worker at an empty directory while the volume keeps the bytes, and
-      # nothing here copies them across. docs/DATA.md §1.1, "Upgrading a store created
-      # before this layout", has the command and the symptom to expect if it is skipped.
-      #
-      # Same host directory the worker writes into, mounted read-write rather than :ro.
-      #
-      # Slice 1's grid does not actually read this yet — thumbnails are small enough to
-      # live inline in Postgres as `derivative.thumbnail_webp` (DATA.md §1.5), so a page
-      # of cards costs one query and no per-card round trip. The mount is here because
-      # the open path's next step is derivatives too large to inline (glTF for the
-      # viewer), and those are read from, and cached into, this store.
-      #
-      # Read-write is deliberate and is not a hole in "the open path never touches a
-      # source file". That boundary is a type, not a mount flag: `SourceStore` — the
-      # handle that can read, write and reap any source blob — demands a `WorkerRole`
-      # token this crate cannot obtain, and the three narrow handles it can construct do
-      # exactly one thing each, in exactly one named route each, enforced by
-      # `cargo xtask check-deploy`. A read-only mount would break both the derivative
-      # cache writes and the upload commit the api legitimately needs, while adding
-      # nothing that boundary does not already give.
-      - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
-      # Partial uploads, and only the api's: the worker mounts nothing here and serves no
-      # upload route. A named volume and not part of the storage root, so a
-      # half-transferred file is never inside a directory whose whole contract is that
-      # everything in it is complete and browsable, and so an operator reclaiming
-      # abandoned transfers is looking at a volume that holds nothing else.
-      - lapidary-uploads:/var/lib/lapidary-uploads:Z
-
-  worker:
-    # Resource ceiling. Lapidary must run on a modest workstation, not only on
-    # a machine with spare gigabytes -- the only service that parses meshes, so it gets the largest share.
+  app:
+    # The API, the job worker and the browser app, in one process (S1, 2026-10-16). Until then
+    # they were three containers, `api`, `worker` and a Caddy `web`, split so the api image never
+    # linked the OCCT kernel; the kernel is gone and ingest takes about 200 ms a file.
+    # Resource ceiling: Lapidary must run on a modest workstation, not only on a machine with
+    # spare gigabytes. The mesh parsers are the largest user, so this is the old worker's share.
     # Compose v2 honours deploy.resources outside swarm.
     deploy:
       resources:
@@ -127,105 +47,78 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      # The worker target. It differs from `api` only by the build arg below, since the CAD
-      # kernel came out, but every service still names its target: an untargeted build takes
-      # the file's last stage, whatever that becomes.
-      target: worker
-      args:
-        # Only the worker links the parsers and the scan route — the open path (api) never does.
-        SERVER_FEATURES: worker
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
-      LAPIDARY_BIND: 0.0.0.0:8081
+      LAPIDARY_BIND: 0.0.0.0:8080
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
-      # Runs ingest. Must never be "api" — see lapidary-api::Role and ApiError::UnknownRole.
-      LAPIDARY_ROLE: worker
-      # Both are required for LAPIDARY_ROLE=worker and have no default in the binary —
-      # bin/lapidary-server refuses to start without them rather than guessing a path.
-      # They name the two mounts below.
-      LAPIDARY_INGEST_DIR: /ingest
-      # The bundled examples, copied into the image by deploy/Containerfile. Seeded once,
-      # on the first start of a library nothing has ever run in — see
-      # `lapidary_ingest::seed`. Unset it to start with an empty grid.
-      LAPIDARY_EXAMPLE_DIR: /usr/share/lapidary/example-parts
+      # The browser app, built into the image by deploy/Containerfile's `web` stage.
+      LAPIDARY_WEB_DIR: /usr/share/lapidary/web
+      # The store every model is kept in: the bind mount below.
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
-      # Job worker knobs, worker-only — the api service has no worker to configure.
-      # Passed through empty when unset, which bin/lapidary-server reads as "use the
-      # default": the defaults live in lapidary_jobs::WorkerConfig so exactly one place
-      # decides them, and restating the numbers here would let the two drift apart.
-      #
-      # Empty is load-bearing, not sloppiness. `${VAR:-}` yields a variable that is
-      # present and empty for every operator who never set one, and an empty string is
-      # not a usize — see empty_str_as_none in bin/lapidary-server/src/main.rs, which
-      # exists so that case starts the worker instead of refusing to boot.
-      #
-      # deploy/.env.example documents what each knob does and what it defaults to.
+      # A partial upload is assembled here and only enters the store once its bytes have been
+      # verified against the hash the browser claimed. Deliberately not a subdirectory of
+      # LAPIDARY_BLOB_ROOT — everything under that root is complete, and a half-sent file is not.
+      LAPIDARY_UPLOAD_DIR: /var/lib/lapidary-uploads
+      # The folder the scan button reads, mounted read-only below.
+      LAPIDARY_INGEST_DIR: /ingest
+      # The bundled examples, copied into the image by deploy/Containerfile. Seeded once, on
+      # the first start of a library nothing has ever run in — see `lapidary_ingest::seed`.
+      # Unset it to start with an empty grid.
+      LAPIDARY_EXAMPLE_DIR: /usr/share/lapidary/example-parts
+      # The same value as the storage mount below, told to the process rather than only to the
+      # runtime. Nothing reads a file through it: it is what the card shows when it says where a
+      # model is, which is only useful if it is somewhere a person can open. Ignored unless
+      # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
+      # absolute path, as .env.example recommends, and the paths appear.
+      LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
+      # Job worker knobs, passed through empty when unset, which the server reads as "use the
+      # default" (`empty_str_as_none` in bin/lapidary-server/src/main.rs). The defaults live in
+      # lapidary_jobs::WorkerConfig; deploy/.env.example documents each one.
       LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-2}
       LAPIDARY_JOB_LEASE_SECS: ${LAPIDARY_JOB_LEASE_SECS:-}
-      LAPIDARY_KERNEL_TIMEOUT: ${LAPIDARY_KERNEL_TIMEOUT:-}
       LAPIDARY_JOB_POLL_SECS: ${LAPIDARY_JOB_POLL_SECS:-}
       LAPIDARY_WORKER_ID: ${LAPIDARY_WORKER_ID:-}
     depends_on:
       db:
         condition: service_healthy
     ports:
-      # The scan route lives here, not on api:8080. Published so the documented
-      # `curl -X POST localhost:8081/api/libraries/<id>/scan` works from the host.
-      - "8081:8081"
+      # The app and its API on one port. 3000 on the host, as the web container had.
+      - "${LAPIDARY_PORT:-3000}:8080"
     volumes:
-      # The directory of parts to ingest, read-only: ingest hashes and copies bytes into
-      # the blob store, and must never be able to modify what it was pointed at. The
-      # default is this repository's `example/parts`, so a first run with no .env edits
-      # still lands six real parts in the grid; point LAPIDARY_INGEST_DIR at your own
-      # folder to scan that instead.
+      # The user's own storage root — a bind-mounted host directory, not a named volume. The
+      # whole point of this layout (docs/DATA.md §1.1) is that a user can open it in a file
+      # manager and find a model by name.
       #
-      # `z`, lowercase, not `Z`. This is one of two bind mounts in the file now — the
-      # storage root below (and api's mount of that same host directory) is the other —
-      # and on an SELinux-enforcing host (Fedora, RHEL, the platform the README
-      # recommends Podman for) a bind mount with no label gets the worker EACCES on
-      # every file, so the documented first-run curl answers 500 with a directory the
-      # operator can read perfectly well themselves. The difference between the two
-      # flags matters here: `Z` relabels the directory with a private, per-container
-      # label, and this directory belongs to the *user* — it is their parts folder (or,
-      # below, their storage root), possibly shared with other programs open on the same
-      # files. Taking exclusive ownership of it just to read or write it once would be a
-      # worse bug than the one being fixed. `z` applies a shared label, which is what a
-      # directory that remains the user's, not ours, wants — whether we only read it
-      # (here) or read and write it (the storage root below). Only `lapidary-db` is
-      # still a named volume.
-      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
+      # `z`, lowercase, not `Z`, on both bind mounts. On an SELinux-enforcing host (Fedora, RHEL)
+      # a bind mount with no label gets EACCES on every file. `Z` would relabel the directory
+      # with a private, per-container label, and these directories belong to the *user* —
+      # possibly shared with other programs. `z` applies a shared label.
+      #
+      # UPGRADING: a deployment that ran before this layout kept its store in the
+      # `lapidary-blobs` named volume this file no longer declares. docs/DATA.md §1.1,
+      # "Upgrading a store created before this layout", has the command.
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
-
-  web:
-    # Resource ceiling. Lapidary must run on a modest workstation, not only on
-    # a machine with spare gigabytes -- a static bundle behind a tiny server.
-    # Compose v2 honours deploy.resources outside swarm.
-    deploy:
-      resources:
-        limits:
-          memory: 256m
-          cpus: "0.5"
-    build:
-      context: ..
-      dockerfile: deploy/web/Containerfile
-    depends_on:
-      - api
-    ports:
-      - "3000:8080"
+      # The folder of parts to scan, read-only: ingest hashes and copies bytes into the store,
+      # and must never be able to modify what it was pointed at. The default is this
+      # repository's `example/parts`; point LAPIDARY_INGEST_DIR at your own folder.
+      - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
+      # Partial uploads. A named volume and not part of the storage root, so a half-transferred
+      # file is never inside a directory whose contract is that everything in it is complete.
+      - lapidary-uploads:/var/lib/lapidary-uploads:Z
 
 volumes:
   # Postgres data only. Named, not a bind mount: opaque relational storage nobody needs
   # to open in a file manager, and deleting the compose project must not take it with it
-  # either. The storage root (api and worker's `/var/lib/lapidary` mounts, above) is a
+  # either. The storage root (app's `/var/lib/lapidary` mount, above) is a
   # bind mount instead, precisely so a user CAN find it on disk — see the comment on
-  # api's volumes for why. A bind-mounted host directory comes up owned by whatever
+  # app's volumes for why. A bind-mounted host directory comes up owned by whatever
   # created it, not by deploy/Containerfile's `lapidary` user, so an operator pointing
   # `LAPIDARY_STORAGE_ROOT` at a fresh directory must make sure it is writable by the
   # container.
   lapidary-db:
   # Chunks in flight. A named volume and not part of the storage root — the store is the
   # user's files and a half-sent chunk is not one — and persistent on purpose: the staged
-  # file's length is what a resuming upload asks for, so a volume is what makes an api
+  # file's length is what a resuming upload asks for, so a volume is what makes a
   # restart cost nothing instead of a re-transfer. Nothing sweeps it yet; the derivative
   # reaper owns reclaiming disk, and a second reaper written now would be one to keep in
   # step with the real one.

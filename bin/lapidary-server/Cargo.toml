@@ -7,51 +7,16 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-default = []
-# Everything the worker role needs and the api role must not link: the mesh parsers
-# (lapidary-cad), the scan handler (lapidary-ingest — see its module doc for why ingest is a
-# separate crate rather than a route inside lapidary-api), and the job loop they feed
-# (lapidary-jobs). `deploy/Containerfile` takes the value as a build arg (SERVER_FEATURES),
-# empty by default, so `api` builds without linking any of the three.
-#
-# **It was called `mock-kernel`** — for a test double that is deleted and a feature that
-# never gated it — and this manifest said in as many words that the name was "a slight
-# misnomer" kept because renaming it would mean touching deploy/compose.yaml,
-# deploy/Containerfile and xtask/src/deploy.rs's tests "for no behavioural gain". That cost is
-# paid here. A gate whose name describes something that no longer exists is worse than the
-# churn of renaming it: an operator reading `SERVER_FEATURES: mock-kernel` on the one service
-# that runs real ingest has every reason to think the worker is a stub.
-worker = [
-    "dep:lapidary-cad",
-    "dep:lapidary-ingest",
-    "dep:lapidary-jobs",
-]
-
 [dependencies]
 lapidary-api.workspace = true
 lapidary-db.workspace = true
-# The peer role's router and its pinned-key TLS. Not optional and not behind `worker`,
-# unlike lapidary-cad and lapidary-ingest below: the peer role parses nothing, so every
-# build can carry it, and a role the binary cannot serve would be a role compose could set and
-# nothing would answer.
+# The peer role's router and its pinned-key TLS, until sharing comes out (S3).
 lapidary-peer.workspace = true
-# Optional, off by default: only the `worker` feature pulls this in. lapidary-api
-# never depends on lapidary-cad — the open path lives there and must never read a model
-# file — so the worker reaches it directly, through this binary.
-lapidary-cad = { workspace = true, optional = true }
-# The worker-only ingest router. Gated the same way as lapidary-cad above (see the
-# `worker` feature doc) — a binary built without this feature has no
-# lapidary_ingest::router at all; main.rs fails fast at startup if LAPIDARY_ROLE=worker
-# is requested against such a build, rather than silently serving a worker with no scan
-# route.
-lapidary-ingest = { workspace = true, optional = true }
-# The worker loop this binary spawns under LAPIDARY_ROLE=worker. Gated the same way as
-# the two above, for the same reason: only the worker image runs it, and only that image
-# has a JobHandler (lapidary-ingest's) to hand it. lapidary-jobs itself is L2 and never
-# reaches a parser — that is what the JobHandler seam is for — so this gating is about
-# keeping the api image to what it actually uses, not about the open-path boundary.
-lapidary-jobs = { workspace = true, optional = true }
+# The mesh parsers, the ingest job handler and the job loop that feeds it. The server runs all
+# three in-process; `lapidary-api` itself still never links `lapidary-cad` (check-layers).
+lapidary-cad.workspace = true
+lapidary-ingest.workspace = true
+lapidary-jobs.workspace = true
 anyhow.workspace = true
 # This binary owns the listener, so it calls axum::serve directly. lapidary-api builds
 # the Router and does not re-export axum. Both resolve to the one version pinned in
@@ -59,19 +24,20 @@ anyhow.workspace = true
 axum.workspace = true
 figment.workspace = true
 serde.workspace = true
-# `time` for the api role's five-minute flush of which blobs were read (DATA.md §1.4).
+# `time` for the five-minute flush of which blobs were read (DATA.md §1.4).
 tokio = { workspace = true, features = ["time"] }
-# CancellationToken. Not optional: main() creates one for both roles so that the
-# graceful-shutdown path is one code path rather than two, only one of which is compiled.
+# CancellationToken: one shutdown path for the listener, the job loop and the sweep.
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# `ServeDir` for the browser app (src/web.rs) and the header layer for its cache rules.
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["fs", "set-header"] }
 
 [dev-dependencies]
 # A connection kept open across a removal, in `tests/peer_mirror.rs`.
 reqwest.workspace = true
-# Only for #[sqlx::test] against the merged worker router (main.rs's worker_router), the
-# api role's router, and the peer role's hello round (tests/peer_sync.rs) — see deny.toml's
+# Only for #[sqlx::test] against the app's router and the peer role's hello round (tests/peer_sync.rs) — see deny.toml's
 # sqlx wrapper allow-list, which lists this crate for exactly this reason. No real SQL lives
 # here; lapidary-db still owns all of it.
 sqlx.workspace = true
@@ -84,7 +50,6 @@ lapidary-storage.workspace = true
 # The digest those bytes are filed under.
 blake3.workspace = true
 tempfile.workspace = true
-tower = { workspace = true, features = ["util"] }
 # Only for building the raw fixture rows `enqueue_pending_migrations`'s own tests seed
 # directly (a part/revision/file with no storage_path) -- the same reason lapidary-ingest
 # and lapidary-api's own test suites already depend on it.

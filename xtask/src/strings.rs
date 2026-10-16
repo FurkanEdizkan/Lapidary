@@ -129,8 +129,13 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "7083e391ca680109",
-        reason: "a compose.yaml fixture (an api service mounting a bind-mounted store and a named volume, and a db) for the named-volume ownership rule; the YAML indentation is the structure under test",
+        content: "49bda18946204dd1",
+        reason: "a compose.yaml fixture (an api service mounting a bind-mounted store and a named volume, and a db on the stock image) for the named-volume ownership rule; the YAML indentation is the structure under test. Re-keyed by S1, which dropped the fixture's role and build target",
+    },
+    Exemption {
+        file: "xtask/src/deploy.rs",
+        content: "e424f2cca583b454",
+        reason: "a compose.yaml fixture with a column-0 banner comment above its one service, for parse_services; the indentation is the structure under test",
     },
     Exemption {
         file: "xtask/src/deploy.rs",
@@ -141,66 +146,6 @@ pub const EXEMPT: &[Exemption] = &[
         file: "xtask/src/deploy.rs",
         content: "c967147b7cf9b3e2",
         reason: "a doc comment quoting a real indented BuildKit RUN-continuation example (RUN foo, a comment line, then an indented bar) where the indentation is the example itself",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "e0980ae3da57905f",
-        reason: "the deploy/compose.sharing.yaml overlay fixture check_overlay's tests parse; the indentation is YAML's own and is exactly what those rules read -- a service name at two spaces, its build: and environment: keys below it -- so collapsing it would leave nothing to check",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "c1088efc609814b9",
-        reason: "CORRECT_COMPOSE: a deliberate compose.yaml fixture; YAML indentation is meaningful. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "77fb09a87b017307",
-        reason: "a compose.yaml api-service fixture, same reason as CORRECT_COMPOSE. Covers two literals: two tests build a byte-identical fixture, so one digest keys both",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "d8e5a33d9e8e894f",
-        reason: "a compose.yaml api-service (with args) fixture, same reason as CORRECT_COMPOSE. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "5eb03f9adf603167",
-        reason: "a compose.yaml args-block fixture, same reason as CORRECT_COMPOSE. Covers two literals, as above. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "3fffa36e67e3b72e",
-        reason: "a compose.yaml api-service (with a banner comment) fixture, same reason as CORRECT_COMPOSE. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "9a214d621e23ac7e",
-        reason: "a compose.yaml worker-service fixture (the whole block, build target included), same reason as CORRECT_COMPOSE. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "9c2c2dffae4672ab",
-        reason: "a compose.yaml args-block (list form) fixture, same reason as CORRECT_COMPOSE. Re-keyed by R5, which renamed the `mock-kernel` feature these fixtures pass as SERVER_FEATURES to `worker`: the digest keys on the literal's own text, so it moved -- which is the check doing its job",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "9ebb5fb17a772eb7",
-        reason: "a compose.yaml worker-service fixture (long build form), same reason as CORRECT_COMPOSE",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "231b666657f9bed3",
-        reason: "a compose.yaml worker-service fixture (short build form), same reason as CORRECT_COMPOSE",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "b2c554d6013a2e04",
-        reason: "a Containerfile RUN cargo build fixture; the leading spaces are the line-continuation indent this module's own parser is being tested against",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
-        content: "441045200970187e",
-        reason: "a Containerfile RUN cargo build (with an interior comment) fixture, same reason as the entry above",
     },
     Exemption {
         file: "xtask/src/strings.rs",

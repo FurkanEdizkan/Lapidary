@@ -524,41 +524,21 @@ fn check_commit_msg() -> Result<()> {
     bail!("commit message check failed")
 }
 
-/// Static checks over `deploy/compose.yaml` and `deploy/Containerfile` — see
-/// `xtask/src/deploy.rs` for the rules. This check is static: it verifies the
-/// configuration text, not the images actually built from it. A green result means the
-/// files are internally consistent with each other, not that the last-built `api` image
-/// lacks the CAD kernel.
+/// Static checks over `deploy/` and the store's two boundaries — see `xtask/src/deploy.rs`. Static:
+/// it verifies configuration and source text, not the images built from them.
 fn check_deploy() -> Result<()> {
     let root = workspace_root()?;
-    let compose_path = root.join("deploy/compose.yaml");
-    let containerfile_path = root.join("deploy/Containerfile");
+    let read = |path: &str| {
+        let path = root.join(path);
+        std::fs::read_to_string(&path).with_context(|| format!("Could not read {}", path.display()))
+    };
+    let compose = read("deploy/compose.yaml")?;
+    // Sharing's own service, kept in an overlay so that bringing the plain stack up opens no
+    // listener to the network. Its volumes are held to the same rule.
+    let overlay = read("deploy/compose.sharing.yaml")?;
+    let containerfile = read("deploy/Containerfile")?;
 
-    // Sharing's own service lives in an overlay, so that bringing the plain stack up opens no
-    // listener to the network. It is still a file that builds `deploy/Containerfile` and sets a
-    // role, so it is held to the same per-service rules — see `deploy::check_overlay` for why it
-    // cannot simply be concatenated onto the file above.
-    let overlay_path = root.join("deploy/compose.sharing.yaml");
-
-    let compose = std::fs::read_to_string(&compose_path)
-        .with_context(|| format!("Could not read {}", compose_path.display()))?;
-    let containerfile = std::fs::read_to_string(&containerfile_path)
-        .with_context(|| format!("Could not read {}", containerfile_path.display()))?;
-    let overlay = std::fs::read_to_string(&overlay_path)
-        .with_context(|| format!("Could not read {}", overlay_path.display()))?;
-
-    let mut violations = deploy::check(&compose, &containerfile);
-    violations.extend(deploy::check_overlay(&overlay));
-    violations.extend(deploy::check_volume_ownership(
-        &[&compose, &overlay],
-        &containerfile,
-    ));
-    // The workflow that builds the images for a release builds what compose builds.
-    let workflow_path = root.join(".github/workflows/containers.yml");
-    let workflow = std::fs::read_to_string(&workflow_path)
-        .with_context(|| format!("Could not read {}", workflow_path.display()))?;
-    violations.extend(deploy::check_workflow(&workflow));
-
+    let mut violations = deploy::check_volume_ownership(&[&compose, &overlay], &containerfile);
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));
     let mut peer_sources = Vec::new();
@@ -567,17 +547,10 @@ fn check_deploy() -> Result<()> {
 
     if violations.is_empty() {
         println!(
-            "deploy check OK — deploy/compose.yaml and deploy/Containerfile agree on which \
-             services link the CAD kernel (static check: configuration only, not built images), \
-             every service that runs lapidary-server sets LAPIDARY_ROLE, every kernel-linked \
-             service sets it to worker and something does, each builds its own Containerfile target \
-             and both targets exist, and lapidary-api never names \
-             SourceStore, names SourceReader only in crates/lapidary-api/src/download.rs, and \
-             names SourceRelocator only in crates/lapidary-api/src/moves.rs, and lapidary-peer \
-             reads the store only in blob.rs and writes it only in pull.rs, every named volume is a \
-             directory the image makes for lapidary, and the Containers workflow builds the api and worker \
-             targets as compose does \
-             ({} source file(s) checked)",
+            "deploy check OK — every named volume a lapidary-server service mounts is a directory \
+             the image makes for lapidary, lapidary-api never names SourceStore and names each \
+             narrow source handle only in its one route, and lapidary-peer reads the store only in \
+             blob.rs and writes it only in pull.rs ({} source file(s) checked)",
             api_sources.len() + peer_sources.len()
         );
         Ok(())
@@ -590,23 +563,8 @@ fn check_deploy() -> Result<()> {
             eprintln!("  {v}");
         }
         eprintln!(
-            "\nThis check is static — it verifies deploy/compose.yaml and \
-             deploy/Containerfile, not a built image. The open path (lapidary-api) must \
-             never invoke the CAD kernel; only services in KERNEL_LINKED_SERVICES \
-             (xtask/src/deploy.rs) may set SERVER_FEATURES. Every service that builds \
-             deploy/Containerfile (i.e. runs lapidary-server) must set LAPIDARY_ROLE \
-             explicitly — it has no default, so a compose file that loses it would start a \
-             worker container that silently never mounts /scan, and a kernel-linked \
-             service must set it to `worker` specifically, since any other value produces \
-             that same container by a different route. The open path also never touches a \
-             source file — lapidary-api must never name SourceStore, and may name each \
-             narrow source-bytes handle only in the single route it exists for \
-             (SOURCE_HANDLE_EXEMPTIONS in xtask/src/deploy.rs) — that path exactly, not \
-             any file that happens to share its name. Those routes hand a user the exact \
-             bytes they asked for, and store the exact bytes a user handed us; every \
-             other file reads metadata and derivatives only. The check greps source text, \
-             so a doc comment that spells one of these type names trips it too — name the \
-             handle by role there, not by type."
+            "\nThe check greps source text, so a doc comment that spells one of the source-handle \
+             type names trips it too — name the handle by role there, not by type."
         );
         bail!("deploy check failed")
     }
