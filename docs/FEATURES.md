@@ -261,6 +261,9 @@ none of it depends on anything Phase 2 onwards adds.
 
 | Feature | Phase |
 |---|---|
+| A 3MF’s own thumbnail as its picture, through the package’s relationship, never over one somebody chose (84 of the owner’s 89 3MFs; the other 5 exceed the triangle cap) | F1, built |
+| Keep the 3D view on screen as the picture of a part that has none | F1, built |
+| Bambu Studio and Orca 3MFs (Production extension `p:path` components) ingest | F1, built |
 | Attach product/source URL, vendor, SKU, price | 1 |
 | Licence field surfaced on the **detail page and quick-look**, not the card | 1 |
 | Image: upload file | 1 |
