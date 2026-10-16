@@ -8,7 +8,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 
 | Feature | Phase |
 |---|---|
-| Create libraries; `hobby` or `controlled` mode per library | 1 |
+| Create libraries | 1 |
 | Drag-drop upload: files, folders, mixed formats | 1 |
 | Client-side BLAKE3 + probe → transfer only unknown blobs | 1 |
 | Resumable chunked upload, server-verified hash | 1 |
@@ -68,17 +68,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 -->
 | B-rep formats: STEP, IGES | 2 |
 | Failed-file drawer with actionable errors and per-file retry | 2 |
-| Watched-folder ingest (agent) | 4 |
-<!--
-  Built in the local product goal, on Linux: `lapidary watch <folder> --library <id>`.
-  - Polls the tree every 2 s, applies DATA §6.2's ignore list whole, settles, and hashes.
-  - Uploads through the probe, chunks and commit that check-in uses, with no lock. The server
-    decides ingested, skipped, revised or unkept.
-  - A local deletion changes nothing in the library.
-  - A file the library refuses, such as a change to a part checked out to somebody, is sent again
-    after 5 minutes, or sooner when it changes.
-  - Not yet: `notify` in place of the poll, macOS and Windows.
--->
+| Watched-folder ingest (agent) | **[—]** removed, S4 — the scan folder covers it |
 | Auto-detect and offer duplicate merge on ingest | 6 |
 
 ## 2. Browse, search, triage
@@ -212,36 +202,19 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 |---|---|
 | Immutable revisions, content-addressed | 4 |
 | Lineage DAG with `origin` on each revision | 4 |
-| Version history strip: thumbnails + volume delta between revisions | 4 |
-| Geometric diff: Δ volume, bbox, mass, counts | 4 |
-| Visual overlay diff (grey ghost vs solid) | 4 |
-| Pessimistic check-out / check-in locks | 4 |
+| Version history: every revision, its figures, and a download of its own file | 4 |
+| Geometric diff: Δ volume, bbox, mass, counts | **[—]** removed, S4 |
+| Visual overlay diff (grey ghost vs solid) | **[—]** removed, R3 |
+| Pessimistic check-out / check-in locks | **[—]** removed, S4 |
 <!--
-  Phase 4 slice 1 (2026-09-14; ROADMAP.md, Phase 4) delivered part of this section.
-
-  - Revisions: in `controlled` libraries only. A hobby library says a changed file was not
-    kept.
-  - `origin`: `ingest`, `upload` or `agent`, and a parent on every revision after the first.
-  - History strip: thumbnails and the volume delta against each revision's parent.
-  - Geometric diff, part of it:
-    - delivered: volume, surface area, bbox per axis and triangle count, each ≈ when either
-      figure is mesh-derived;
-    - face and edge counts since goal 4 (`718d8ad`), exact, for a CAD part read by bridge 7 or later;
-    - mass since goal 5: each revision's volume times the density of the part's one material as
-      it is today, worked out when read and always ≈: its change beside volume's in the history,
-      and a Mass row in the comparison; **its own row on the part page since L3 (2026-09-27)**, always ≈ because a
-      typed density is not a measurement whatever the volume was, with a reason given when there is none;
-    - centre of mass since goal 5, per axis: exact from a B-rep (bridge 8), ≈ from a closed mesh,
-      stored at ingest; a revision recorded before then has none and its rows say so. **L3 (2026-09-27) re-derives the
-    missing ones for mesh formats at worker start** — the CAD ones were already swept, since the bridge version is part
-    of the kernel version that sweep keys on.
-  - Locks: one per part, free-text holder, no auth; a forced release is recorded.
-  - Overlay diff (Phase 4 slice 2): the From revision is drawn as an amber ghost through the part,
-    its L1 or else its L0, and never picked.
+  Every library keeps a part's history since S4 (2026-10-16): a changed file is the next revision, the
+  previous file kept under `revisions/<label>/`. `origin` is `ingest` or `upload`; `agent` is read from
+  older rows. Each revision shows its own figures, always ≈, mass from today's density, and centre of
+  mass. The diff, the locks and the library modes that gated revisions were removed with S4.
 -->
 
 
-| Lifecycle states + approvals (`controlled` libraries only) | 8 |
+| Lifecycle states + approvals | **[—]** removed, S4 — never built |
 | Per-face Hausdorff heatmap, async | 8 |
 | Merge, branches, textual diff | **[—]** |
 
@@ -266,30 +239,13 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
   - At most 500 parts, and under 4 GiB (no ZIP64).
   - Import built too: POST /api/libraries/{id}/imports.
     - The worker checks the whole bundle, then replays each part's revisions.
-    - A controlled library gets its history, a hobby library the newest revision.
+    - Every library gets each part's whole history.
     - A part the import creates arrives with its number, tags and sources, licence included; one
       the library already holds keeps what was typed here.
     - Checked with 40 parts, lineage identical.
 -->
-| `lapidary://` URI scheme + agent launch | 4 |
-| Native watcher → automatic new revision on external save | 4 |
-<!--
-  Phase 4 slice 1: Linux only.
-  - Commands: `lapidary checkout`, `checkin` and `agent`.
-  - The agent polls the checked-out file every 500 ms, waits for a 2 s settle, and hashes
-    before believing. A touch that changes no bytes, and files beside it, are not saves.
-  - Only the file handed out comes back: a tool that saves another name or format is not picked
-    up.
-  - Phase 4 slice 2 adds `lapidary register`, `unregister` and `open`.
-    - A `lapidary://open?part=<uuid>` link from a controlled library's part page checks the part
-      out, or reuses this computer's checkout, and opens the file in the app this desktop has for
-      its format: started by its desktop file with `gio launch`, else by `xdg-open`.
-    - Goal 4 negotiates the format through `Target`: the part's own file when an app here
-      opens it, else a read-only 3MF or STL export an app here does, which takes no lock and
-      sends nothing back.
-  - Phase 4's exit met on Linux in goal 4's stage 8, with FreeCAD 0.21.2.
-  - Not yet: macOS and Windows watchers.
--->
+| `lapidary://` URI scheme + agent launch | **[—]** removed, S4 |
+| Native watcher → automatic new revision on external save | **[—]** removed, S4 |
 
 | Time-limited supplier share links | 9 |
 | Rhino `.rhp` / Blender addon | **[—]** until a customer asks by name |
