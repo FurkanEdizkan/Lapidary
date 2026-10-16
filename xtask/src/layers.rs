@@ -24,12 +24,12 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
     Some(match crate_name {
         "lapidary-core" => Layer::L0,
         "lapidary-db" | "lapidary-storage" => Layer::L1,
-        "lapidary-cad" | "lapidary-jobs" | "lapidary-vcs" | "lapidary-targets" => Layer::L2,
+        "lapidary-cad" | "lapidary-jobs" | "lapidary-targets" => Layer::L2,
         // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
         // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
         // exists as its own crate rather than a module inside lapidary-api.
         "lapidary-api" | "lapidary-ingest" => Layer::L3,
-        "lapidary-server" | "lapidary" | "xtask" => Layer::Bin,
+        "lapidary-server" | "xtask" => Layer::Bin,
         _ => return None,
     })
 }
@@ -39,7 +39,7 @@ pub type Graph = BTreeMap<String, Vec<String>>;
 
 /// Named-pair prohibitions a tier rule cannot express, because they forbid one specific
 /// edge rather than a layer relation. `lapidary-api` (L3) legitimately depends on most L2
-/// crates — `lapidary-jobs`, `lapidary-targets`, `lapidary-vcs` and friends — so L3→L2 stays
+/// crates — `lapidary-jobs`, `lapidary-targets` and friends — so L3→L2 stays
 /// permitted in `edge_allowed`. `lapidary-cad` is the one L2 crate it may never reach: the
 /// open path (opening a part for viewing) lives in `lapidary-api`, and a non-negotiable
 /// product rule says the open path never invokes the CAD kernel. Keep the reason next to
@@ -231,14 +231,14 @@ mod tests {
     fn rejects_l2_depending_on_l2() {
         let g = graph(&[
             ("lapidary-core", &[]),
-            ("lapidary-vcs", &["lapidary-targets"]),
+            ("lapidary-cad", &["lapidary-targets"]),
             ("lapidary-targets", &["lapidary-core"]),
         ]);
         let violations = check(&g).expect_err("L2 -> L2 must be rejected");
         assert_eq!(
             violations,
             vec![Violation::ForbiddenEdge {
-                from: "lapidary-vcs".to_owned(),
+                from: "lapidary-cad".to_owned(),
                 from_layer: Layer::L2,
                 to: "lapidary-targets".to_owned(),
                 to_layer: Layer::L2,
@@ -280,13 +280,13 @@ mod tests {
     #[test]
     fn violation_message_names_the_edge_and_the_remedy() {
         let v = Violation::ForbiddenEdge {
-            from: "lapidary-vcs".to_owned(),
+            from: "lapidary-cad".to_owned(),
             from_layer: Layer::L2,
             to: "lapidary-targets".to_owned(),
             to_layer: Layer::L2,
         };
         let msg = v.to_string();
-        assert!(msg.contains("lapidary-vcs"));
+        assert!(msg.contains("lapidary-cad"));
         assert!(msg.contains("lapidary-targets"));
         assert!(
             msg.contains("lapidary-core"),
@@ -371,13 +371,19 @@ mod tests {
         // BTreeMap iteration order is deterministic (alphabetical by crate name).
         let g = graph(&[
             ("lapidary-core", &["lapidary-db"]),     // L0 -> L1 forbidden
-            ("lapidary-vcs", &["lapidary-targets"]), // L2 -> L2 forbidden
+            ("lapidary-cad", &["lapidary-targets"]), // L2 -> L2 forbidden
             ("lapidary-jobs", &["lapidary-api"]),    // L2 -> L3 forbidden
         ]);
         let violations = check(&g).expect_err("multiple violations must be collected");
         assert_eq!(
             violations,
             vec![
+                Violation::ForbiddenEdge {
+                    from: "lapidary-cad".to_owned(),
+                    from_layer: Layer::L2,
+                    to: "lapidary-targets".to_owned(),
+                    to_layer: Layer::L2,
+                },
                 Violation::ForbiddenEdge {
                     from: "lapidary-core".to_owned(),
                     from_layer: Layer::L0,
@@ -389,12 +395,6 @@ mod tests {
                     from_layer: Layer::L2,
                     to: "lapidary-api".to_owned(),
                     to_layer: Layer::L3,
-                },
-                Violation::ForbiddenEdge {
-                    from: "lapidary-vcs".to_owned(),
-                    from_layer: Layer::L2,
-                    to: "lapidary-targets".to_owned(),
-                    to_layer: Layer::L2,
                 },
             ]
         );
@@ -478,12 +478,11 @@ mod tests {
             "lapidary-cad",
             "lapidary-jobs",
             "lapidary-targets",
-            "lapidary-vcs",
+            "lapidary-cad",
             "lapidary-targets",
             "lapidary-api",
             "lapidary-ingest",
             "lapidary-server",
-            "lapidary",
             "xtask",
         ];
         for name in members {

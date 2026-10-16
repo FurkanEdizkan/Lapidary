@@ -907,7 +907,6 @@ async fn plan_bundle(
         version: bundle::VERSION,
         library: bundle::ManifestLibrary {
             name: owner.name.clone(),
-            mode: owner.mode.clone(),
         },
         parts: manifest_parts,
     };

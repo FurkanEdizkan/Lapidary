@@ -2,7 +2,6 @@
 
 mod approximate;
 mod derivative;
-mod diff;
 mod error;
 mod event;
 mod ids;
@@ -14,18 +13,17 @@ pub mod slug;
 
 pub use approximate::Approximate;
 pub use derivative::DerivativeKind;
-pub use diff::{Delta, RevisionDiff};
 pub use error::CoreError;
 pub use event::AppEvent;
 pub use ids::{
-    BatchId, BlobHash, FolderId, JobId, LibraryId, LockId, PartId, PartImageId, PartSourceId,
-    RevisionId, SavedFilterId,
+    BatchId, BlobHash, FolderId, JobId, LibraryId, PartId, PartImageId, PartSourceId, RevisionId,
+    SavedFilterId,
 };
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
-    CAD_FORMATS, LibraryMode, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal,
-    is_ignored, is_model_file, path_escapes, source_format,
+    CAD_FORMATS, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal, is_ignored,
+    is_model_file, path_escapes, source_format,
 };
 
 #[cfg(test)]

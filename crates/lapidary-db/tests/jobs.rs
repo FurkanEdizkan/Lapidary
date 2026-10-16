@@ -1053,7 +1053,6 @@ async fn a_failed_upload_job_reports_its_source_path(pool: PgPool) {
             &[JobPayload::IngestBlob {
                 blake3: lapidary_core::BlobHash::from_bytes([0x5c; 32]),
                 source_path: "Flanges/flange-dn40-lp-3310-02.stl".to_owned(),
-                lock: None,
             }],
         )
         .await

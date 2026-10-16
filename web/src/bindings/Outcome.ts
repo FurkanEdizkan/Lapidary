@@ -19,11 +19,12 @@
  * store into that part's own directory. Reporting it as `Ingested` would put files a
  * user already had into the "added" column of a batch they are watching.
  *
- * `Revised` and `Unkept` are the two answers to a file whose bytes changed at a path the
- * library already indexes (Phase 4 slice 1). A controlled library keeps the change as a
- * new revision; a hobby library keeps no revisions and says so. `Unkept` is a notice, not a
- * failure: nothing broke, the new bytes are still where they came from, and a retry could
- * not change the answer — so it is counted here rather than listed as a failed job.
+ * `Revised` is the answer to a file whose bytes changed at a path the library already indexes:
+ * the change is kept as a new revision, in every library.
+ *
+ * **`Unkept` is gone from this enum, for `Profiled`'s reason below.** It was a hobby library's
+ * answer — no revisions kept — until S4 (2026-10-16) gave every library its history. Finished
+ * rows still hold it and `job_outcome_known` keeps it; nothing counts it any more.
  *
  * **`Profiled` is gone from this enum and must stay out of `job_outcome_known`.** R3 deleted
  * shape similarity, so nothing writes it; migration `0047` added the value and finished rows
@@ -35,4 +36,4 @@
  * `Rendered` is **not** dead with the renders: it is the common tail of every `derive` job and
  * the exports are still built on demand.
  */
-export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated" | "revised" | "unkept" | "described";
+export type Outcome = "ingested" | "skipped" | "rendered" | "scanned" | "migrated" | "revised" | "described";

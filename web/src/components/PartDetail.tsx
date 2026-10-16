@@ -8,14 +8,11 @@ import {
   downloadUrl,
   exportUrl,
   fetchBatchStatus,
-  fetchDiff,
   fetchFields,
   fetchLibraries,
   fetchPartImages,
   fetchPartSources,
   fetchRevisions,
-  openLink,
-  releaseLock,
   requestExport,
   setFieldValue,
   setImageFraming,
@@ -34,11 +31,9 @@ import type {
   BatchId,
   BlobHash,
   CustomField,
-  Delta,
   PartDetail as PartDetailData,
   PartId,
   PartImage,
-  PartLock,
   PartRevision,
   RevisionId,
 } from '../lib/types'
@@ -865,12 +860,6 @@ export function Detail({
     const blocks = [head.current, ...Array.from(info.current?.children ?? [])]
     arrive(blocks.filter((block): block is HTMLElement => block instanceof HTMLElement))
   }, [part.id])
-  // Opening in a desktop app is a checkout, which only a controlled library takes: a hobby library
-  // keeps no revision for the save to come back as.
-  const libraries = useQuery({ queryKey: ['libraries'], queryFn: fetchLibraries })
-  const controlled =
-    libraries.data?.find((library) => library.id === part.library)?.mode === 'controlled' &&
-    part.sourceHash !== null
   const page = layout === 'page'
   // `?? []` for a server from before materials, as the list below does: read once, because both the
   // list and the mass row have to agree about how many the part holds.
@@ -913,14 +902,6 @@ export function Detail({
         {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
           <SlicerExport key={part.revision} part={part} />
         ) : null}
-        {controlled ? (
-          <a
-            href={openLink(part.id)}
-            className="ease-mechanical inline-block rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
-            {strings.download.openInApp}
-          </a>
-        ) : null}
         {/*
           A slot rather than a component, so that what changes the part stays with the
           page and the panel gets only what is safe to show in something transient.
@@ -929,9 +910,6 @@ export function Detail({
         */}
         {actions}
       </div>
-      {controlled ? (
-        <p className="mt-2 max-w-md text-xs text-[var(--color-muted)]">{strings.download.openInAppNote}</p>
-      ) : null}
     </>
   )
   const gallery = (
@@ -1115,11 +1093,6 @@ export function Detail({
           <code className="text-xs">{part.sourcePath}</code>
         </Row>
         <Row label={strings.detail.revision}>{part.revLabel}</Row>
-        {part.lock === null ? null : (
-          <Row label={strings.detail.checkedOut}>
-            <LockLine part={part.id} lock={part.lock} recordable={recordable} />
-          </Row>
-        )}
       </Section>
 
       <History part={part.id} />
@@ -1283,15 +1256,6 @@ function History({ part }: { part: PartId }) {
             {revision.volumeMm3 === null ? null : (
               <Figure figure={revision.volumeMm3} render={strings.detail.volumeValue} />
             )}
-            {revision.deltaFromParent?.volumeMm3 ? (
-              <Change
-                delta={revision.deltaFromParent.volumeMm3}
-                render={strings.detail.volumeChange}
-              />
-            ) : null}
-            {revision.deltaFromParent?.massG ? (
-              <Change delta={revision.deltaFromParent.massG} render={strings.detail.massChange} />
-            ) : null}
             <a
               href={downloadUrl(revision.id)}
               download
@@ -1302,237 +1266,7 @@ function History({ part }: { part: PartId }) {
           </li>
         ))}
       </ol>
-      {/* Keyed: its picks are revision ids of this part, and another part's would be refused. */}
-      <Compare key={part} part={part} revisions={all} />
     </section>
-  )
-}
-
-/**
- * Who holds the part's check-out, and since when. Releasing it is offered only where the page
- * is recordable, and behind a dialog, because the holder's next save will be refused.
- */
-function LockLine({
-  part,
-  lock,
-  recordable,
-}: {
-  part: PartId
-  lock: PartLock
-  recordable: boolean
-}) {
-  const queryClient = useQueryClient()
-  const [asking, setAsking] = useState(false)
-  const release = useMutation({
-    mutationFn: () => releaseLock(part),
-    onSuccess: () => {
-      setAsking(false)
-      void queryClient.invalidateQueries({ queryKey: ['part', part] })
-    },
-  })
-  return (
-    <span className="flex flex-wrap items-center gap-2">
-      <span>{strings.detail.checkedOutBy(lock.holder, lock.takenAt)}</span>
-      {!recordable ? null : (
-        <button
-          type="button"
-          onClick={() => setAsking(true)}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-0.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          {strings.detail.releaseLock}
-        </button>
-      )}
-      {!asking ? null : (
-        <Dialog title={strings.detail.releaseLockTitle} onClose={() => setAsking(false)}>
-          <p className="mt-3 text-sm">{strings.detail.releaseLockBody(lock.holder)}</p>
-          {release.isError ? (
-            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
-              {strings.detail.releaseLockFailed}
-            </p>
-          ) : null}
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              autoFocus
-              onClick={() => setAsking(false)}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-            >
-              {strings.folders.cancel}
-            </button>
-            <button
-              type="button"
-              disabled={release.isPending}
-              onClick={() => release.mutate()}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-            >
-              {strings.detail.releaseLockConfirm}
-            </button>
-          </div>
-        </Dialog>
-      )}
-    </span>
-  )
-}
-
-/** A change between two revisions, through `Figure`, so a difference of mesh figures keeps its ≈. */
-function Change({
-  delta,
-  render,
-}: {
-  delta: Delta
-  render: (change: number, percent: number | null) => string
-}) {
-  return (
-    <Figure
-      figure={{ value: delta.change, approximate: delta.approximate }}
-      render={(value) => render(value, delta.percent)}
-    />
-  )
-}
-
-/**
- * Any two revisions, figure by figure. Opens on the newest against the one before it, the change
- * a person most likely came for, and asks the server, which keeps the ≈ rule in one place
- * instead of a second copy of the arithmetic here.
- */
-function Compare({ part, revisions }: { part: PartId; revisions: PartRevision[] }) {
-  const [from, setFrom] = useState<RevisionId | undefined>(revisions[1]?.id)
-  const [to, setTo] = useState<RevisionId | undefined>(revisions[0]?.id)
-  const compared = useQuery({
-    queryKey: ['diff', part, from, to],
-    queryFn: () => fetchDiff(part, from as RevisionId, to as RevisionId),
-    enabled: from !== undefined && to !== undefined,
-  })
-  const pick = (
-    label: string,
-    value: RevisionId | undefined,
-    onChange: (id: RevisionId) => void,
-  ) => (
-    <label className="flex items-center gap-2">
-      {label}
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as RevisionId)}
-        className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1"
-      >
-        {revisions.map((revision) => (
-          <option key={revision.id} value={revision.id}>
-            {strings.detail.historyRevision(revision.revLabel)}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-  const diff = compared.data
-  const rows =
-    diff === undefined
-      ? []
-      : [
-          {
-            label: strings.detail.volume,
-            delta: diff.volumeMm3,
-            render: strings.detail.volumeChange,
-            missing: strings.detail.notInBoth,
-          },
-          // Only where there is one: a part without one material and its density has no mass to compare,
-          // which is not a figure "not measured in both".
-          ...(diff.massG
-            ? [
-                {
-                  label: strings.detail.mass,
-                  delta: diff.massG,
-                  render: strings.detail.massChange,
-                  missing: strings.detail.notInBoth,
-                },
-              ]
-            : []),
-          {
-            label: strings.detail.surfaceArea,
-            delta: diff.surfaceAreaMm2,
-            render: strings.detail.areaChange,
-            missing: strings.detail.notInBoth,
-          },
-          ...([0, 1, 2] as const).map((axis) => ({
-            label: strings.detail.boundingBoxAxis(axis),
-            delta: diff.bboxMm?.[axis] ?? null,
-            render: strings.detail.lengthChange,
-            missing: strings.detail.notInBoth,
-          })),
-          ...([0, 1, 2] as const).map((axis) => ({
-            label: strings.detail.centreAxis(axis),
-            delta: diff.centreMm?.[axis] ?? null,
-            render: strings.detail.lengthChange,
-            // **"Not measured in both", and nothing more hopeful than that.** This used to say "a
-            // re-read is queued", keyed on a predicate that had to equal the worker's
-            // centre-of-mass backfill. R3 deleted that backfill — it worked by rebuilding an L0
-            // rung to obtain one float — so a revision recorded before centres were keeps none
-            // until somebody re-ingests the file. `handler.rs` records the centre on the ingest
-            // path, so nothing from here on is missing one.
-            missing: strings.detail.notInBoth,
-          })),
-          {
-            label: strings.detail.triangles,
-            delta: diff.triangleCount,
-            render: strings.detail.countChange,
-            missing: strings.detail.notInBoth,
-          },
-          {
-            label: strings.detail.faces,
-            delta: diff.faceCount,
-            render: strings.detail.countChange,
-            missing: strings.detail.notInBoth,
-          },
-          {
-            label: strings.detail.edges,
-            delta: diff.edgeCount,
-            render: strings.detail.countChange,
-            missing: strings.detail.notInBoth,
-          },
-        ]
-  return (
-    <div className="mt-3 text-sm">
-      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
-        {strings.detail.compare}
-        {pick(strings.detail.compareFrom, from, setFrom)}
-        {pick(strings.detail.compareTo, to, setTo)}
-      </div>
-      {compared.isError ? (
-        <p role="alert" className="text-[var(--color-muted)]">
-          {strings.detail.compareFailed}
-        </p>
-      ) : null}
-      {diff === undefined ? null : (
-        <table>
-          <thead>
-            <tr>
-              <th scope="col" className="pr-6 text-left font-normal text-[var(--color-muted)]">
-                {strings.detail.compareFigure}
-              </th>
-              <th scope="col" className="text-left font-normal text-[var(--color-muted)]">
-                {strings.detail.compareChange}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.label}>
-                <th scope="row" className="pr-6 text-left font-normal text-[var(--color-muted)]">
-                  {row.label}
-                </th>
-                <td>
-                  {row.delta ? (
-                    <Change delta={row.delta} render={row.render} />
-                  ) : (
-                    row.missing
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {diff?.massG ? <p className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">{strings.detail.massNote}</p> : null}
-    </div>
   )
 }
 

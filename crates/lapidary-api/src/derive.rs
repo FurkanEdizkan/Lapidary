@@ -25,9 +25,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{
-    BlobHash, DerivativeKind, JobPayload, LibraryId, LibraryMode, PartId, ScanAccepted,
-};
+use lapidary_core::{BlobHash, DerivativeKind, JobPayload, LibraryId, PartId, ScanAccepted};
 use lapidary_db::{DbError, PgJobs, PgParts, PgPool};
 use lapidary_targets::Format;
 use serde::{Deserialize, Serialize};
@@ -43,10 +41,6 @@ use ts_rs::TS;
 pub struct LibrarySummary {
     pub id: LibraryId,
     pub name: String,
-    /// `hobby` or `controlled`. A controlled library keeps a changed file as a new revision
-    /// (Phase 4 slice 1); a hobby library says the change was not kept. States and approvals
-    /// are still Phase 8.
-    pub mode: LibraryMode,
     #[ts(type = "number")]
     pub part_count: i64,
 }
@@ -62,13 +56,6 @@ pub async fn list_libraries(State(state): State<AppState>) -> Response {
                 .map(|row| LibrarySummary {
                     id: row.id,
                     name: row.name,
-                    // Parsed rather than passed through: an unknown value in that column is
-                    // a row this application does not understand, and answering it as though
-                    // it were `hobby` would be quietly deciding it is one.
-                    mode: match row.mode.as_str() {
-                        "controlled" => LibraryMode::Controlled,
-                        _ => LibraryMode::Hobby,
-                    },
                     part_count: row.part_count,
                 })
                 .collect::<Vec<_>>(),
@@ -84,11 +71,6 @@ pub async fn list_libraries(State(state): State<AppState>) -> Response {
 #[serde(rename_all = "camelCase")]
 pub struct NewLibrary {
     pub name: String,
-    /// Chosen at creation and not asked about later, because later means asking about a
-    /// library somebody has already filled. Defaults to `hobby`, which is what a library
-    /// with no governance is.
-    #[serde(default)]
-    pub mode: LibraryMode,
 }
 
 /// `POST /api/libraries` — make one.
@@ -105,7 +87,7 @@ pub async fn create_library(
         return refused(
             StatusCode::BAD_REQUEST,
             "badBody",
-            "A library needs a name, and `mode` must be `hobby` or `controlled` if you send it.",
+            "A library needs a name.",
         );
     };
     let name = body.name.trim();
@@ -117,16 +99,12 @@ pub async fn create_library(
         );
     }
 
-    match PgParts(state.db)
-        .create_library(name, body.mode.as_str())
-        .await
-    {
+    match PgParts(state.db).create_library(name).await {
         Ok(id) => (
             StatusCode::CREATED,
             Json(LibrarySummary {
                 id,
                 name: name.to_owned(),
-                mode: body.mode,
                 // Brand new, so empty. Stated rather than re-queried.
                 part_count: 0,
             }),
@@ -153,22 +131,6 @@ fn refused(status: StatusCode, reason: &'static str, message: &str) -> Response 
         Json(serde_json::json!({ "reason": reason, "message": message })),
     )
         .into_response()
-}
-
-/// `POST /api/libraries/{id}/controlled` — keep every change from now on.
-///
-/// One-way, and a route of its own rather than a `mode` field on `PATCH`: nothing switches a
-/// library back (slice 1 spec §1), and a field taking both values would be a control offering
-/// the one this build refuses. Idempotent: a controlled library switched again is `204` too.
-pub async fn make_controlled(
-    State(state): State<AppState>,
-    Path(library): Path<LibraryId>,
-) -> Response {
-    match PgParts(state.db).make_controlled(library).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => no_such_library(),
-        Err(err) => internal_error(&err, "library mode update failed"),
-    }
 }
 
 /// One batch, `202`, and the id to poll it with. Shared by every enqueue route in this
@@ -257,9 +219,7 @@ pub(crate) async fn accept(db: PgPool, library: LibraryId, jobs: &[JobPayload]) 
     }
 }
 
-/// Shared by `make_controlled` and `scan.rs`. "Nothing was changed" is true of both — a
-/// switch that matched no row and a scan that queued no walk — and a second message saying
-/// the same thing differently would be a string to keep in step for no reason.
+/// "Nothing was changed": a scan that queued no walk, for a library that is not there.
 pub(crate) fn no_such_library() -> Response {
     (
         StatusCode::NOT_FOUND,

@@ -212,7 +212,6 @@ fn blob_job(hash: BlobHash, source_path: &str) -> JobRow {
     let payload = JobPayload::IngestBlob {
         blake3: hash,
         source_path: source_path.to_owned(),
-        lock: None,
     };
     JobRow {
         id: JobId::new(),
@@ -2753,15 +2752,6 @@ async fn two_worker_starts_over_a_library_of_dead_derivatives_queue_nothing(pool
 
 const SPACER_FIXTURE: &[u8] = include_bytes!("../../../fixtures/spacer-lp-2001-00.stl");
 
-/// Governance is opt-in: the seeded library is hobby until somebody switches it.
-async fn make_controlled(pool: &PgPool, library: LibraryId) {
-    sqlx::query("UPDATE library SET mode = 'controlled' WHERE id = $1")
-        .bind(library.as_uuid())
-        .execute(pool)
-        .await
-        .expect("switches the library to controlled");
-}
-
 fn hex_of(bytes: &[u8]) -> String {
     BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()).to_hex()
 }
@@ -2811,13 +2801,10 @@ async fn a_closed_meshs_centre_of_mass_is_recorded_on_its_revision(pool: PgPool)
 /// The whole round trip the slice exists for, as a scan sees it: the owner edits a file in
 /// place, re-scans, and gets a second revision rather than "already here".
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_changed_file_in_a_controlled_library_becomes_revision_two_beside_the_first(
-    pool: PgPool,
-) {
+async fn a_changed_file_becomes_revision_two_beside_the_first(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
 
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
     assert_eq!(
@@ -2828,7 +2815,7 @@ async fn a_changed_file_in_a_controlled_library_becomes_revision_two_beside_the_
     assert_eq!(
         handler.handle(&job_for(BRACKET)).await.expect("revises"),
         Outcome::Revised,
-        "changed bytes in a controlled library are a revision, not a skip"
+        "changed bytes are a revision, not a skip"
     );
 
     let rows = revision_rows(&pool).await;
@@ -2878,11 +2865,10 @@ async fn a_changed_file_in_a_controlled_library_becomes_revision_two_beside_the_
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_same_bytes_again_in_a_controlled_library_are_skipped_not_revised(pool: PgPool) {
+async fn the_same_bytes_again_are_skipped_not_revised(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
 
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
@@ -2901,7 +2887,6 @@ async fn going_back_to_an_older_revisions_bytes_is_a_new_revision(pool: PgPool) 
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
 
     for (bytes, expected) in [
         (BRACKET_FIXTURE, Outcome::Ingested),
@@ -2927,39 +2912,6 @@ async fn going_back_to_an_older_revisions_bytes_is_a_new_revision(pool: PgPool) 
             .unwrap_or_else(|e| panic!("{path} is not on disk: {e}"));
         assert_eq!(&hex_of(&bytes), hash, "{path} holds its row's bytes");
     }
-}
-
-/// A hobby library keeps no revisions, and still does not — but it no longer calls the
-/// change "already here". Nothing is written: no row, no rung, no file.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_changed_file_in_a_hobby_library_is_unkept_and_writes_nothing(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    handler.handle(&job_for(BRACKET)).await.expect("ingests");
-    let files_before = all_files(blob_root.path());
-    let blobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
-        .fetch_one(&pool)
-        .await
-        .expect("blob count");
-
-    stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("settles"),
-        Outcome::Unkept
-    );
-
-    let rows = revision_rows(&pool).await;
-    assert_eq!(rows.len(), 1, "no second revision in a hobby library");
-    assert_eq!(rows[0].3, hex_of(BRACKET_FIXTURE));
-    assert_eq!(all_files(blob_root.path()), files_before, "no file written");
-    let blobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM blob")
-        .fetch_one(&pool)
-        .await
-        .expect("blob count");
-    assert_eq!(blobs_after, blobs_before, "no blob row written");
 }
 
 /// The model directory a race gives the file: the plain name is taken, so it takes the
@@ -3054,15 +3006,14 @@ fn held() -> (Pause, impl std::future::Future<Output = ()>) {
 
 /// Two jobs, different bytes, one new path (slice 1 spec §3.3). The loser read no part there, and
 /// the winner files one while the loser is in the kernel. The loser is decided again rather than
-/// skipped, and its retry reads the winner's part: unkept in a hobby library, a revision in a
-/// controlled one. Neither file replaces the other, and the loser leaves no copy behind.
+/// skipped, and its retry reads the winner's part and becomes its next revision. Neither file
+/// replaces the other, and the loser leaves no copy behind.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
-    let controlled = second_library(&pool).await;
-    make_controlled(&pool, controlled).await;
+    let other = second_library(&pool).await;
 
-    for (library, settled) in [(seeded(), Outcome::Unkept), (controlled, Outcome::Revised)] {
+    for library in [seeded(), other] {
         let winner_dir = tempfile::tempdir().expect("temp dir");
         let loser_dir = tempfile::tempdir().expect("temp dir");
         stage(winner_dir.path(), BRACKET, BRACKET_FIXTURE);
@@ -3095,7 +3046,7 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
         let retry = handler_over(&pool, loser_dir.path(), blob_root.path());
         assert_eq!(
             retry.handle(&job).await.expect("the retry settles"),
-            settled
+            Outcome::Revised
         );
     }
 
@@ -3157,7 +3108,6 @@ async fn purging_a_revised_part_leaves_no_file_or_directory_behind(pool: PgPool)
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
     stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
@@ -3285,7 +3235,6 @@ fn bundle_describing(parts: &[(&str, &[&[u8]], PartMeta)]) -> Vec<u8> {
         version: bundle::VERSION,
         library: ManifestLibrary {
             name: "Workshop".to_owned(),
-            mode: "controlled".to_owned(),
         },
         parts: manifest_parts,
     })
@@ -3343,16 +3292,13 @@ async fn import(
     Ok(outcomes)
 }
 
-/// Phase 4 slice 2 spec §7: a controlled library replays every revision, so labels, parents and
+/// Phase 4 slice 2 spec §7: a library replays every revision, so labels, parents and
 /// origins survive; importing the same bundle again finds every part already there.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_bundle_imported_into_a_controlled_library_keeps_each_parts_labels_parents_and_origins(
-    pool: PgPool,
-) {
+async fn a_bundle_import_keeps_each_parts_labels_parents_and_origins(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     let bundle = bundle_of(&[
         (
             "brackets/bracket-lp-1042-03.stl",
@@ -3523,34 +3469,12 @@ async fn a_second_import_leaves_a_parts_own_tags_alone(pool: PgPool) {
     );
 }
 
-/// A hobby library keeps no history, so a part arrives as its newest revision alone.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_hobby_library_imports_each_parts_newest_revision_only(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    let bundle = bundle_of(&[(
-        "brackets/bracket-lp-1042-03.stl",
-        &[BRACKET_FIXTURE, SPACER_FIXTURE],
-    )]);
-
-    let outcomes = import(&handler, &pool, blob_root.path(), &bundle)
-        .await
-        .expect("imports");
-    assert_eq!(outcomes, [lapidary_core::Outcome::Ingested]);
-    let rows = revision_rows(&pool).await;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0, "1");
-    assert_eq!(rows[0].3, hash_hex(SPACER_FIXTURE));
-}
-
 /// A part already holding a file that is none of the bundle's revisions is another part's history.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_bundle_part_landing_on_another_parts_history_is_refused(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     stage(
         ingest_dir.path(),
         "brackets/bracket-lp-1042-03.stl",
@@ -3654,7 +3578,6 @@ async fn a_history_with_a_revert_imports_once_and_a_second_import_skips_it(pool:
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     let bundle = bundle_of(&[(
         "brackets/bracket-lp-1042-03.stl",
         &[BRACKET_FIXTURE, SPACER_FIXTURE, BRACKET_FIXTURE],
@@ -3689,7 +3612,6 @@ async fn a_part_whose_history_began_elsewhere_is_refused_though_it_ends_on_a_bun
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    make_controlled(&pool, seeded()).await;
     let path = "brackets/bracket-lp-1042-03.stl";
     stage(ingest_dir.path(), path, CUBE_FIXTURE);
     handler.handle(&job_for(path)).await.expect("scans");
@@ -3721,7 +3643,6 @@ async fn purged_bytes_in_the_way(
     ingest_dir: &Path,
     blob_root: &Path,
 ) -> String {
-    make_controlled(pool, seeded()).await;
     std::fs::create_dir_all(blob_root.join("libraries/default/bracket-lp-1042-03"))
         .expect("the owner's directory");
     stage(ingest_dir, BRACKET, BRACKET_FIXTURE);
@@ -3762,7 +3683,7 @@ async fn purged_bytes_in_the_way(
     short
 }
 
-/// Goal 2's recorded failure. A controlled part in a disambiguated directory is revised, then purged, so its newest
+/// Goal 2's recorded failure. A part in a disambiguated directory is revised, then purged, so its newest
 /// file waits out its quarantine at that path. The part's first file dropped back at the same source path resolves
 /// to the same directory and meets those bytes. No part names them, so the file takes a longer name instead of
 /// failing every attempt, and the quarantined bytes stay for the sweep.

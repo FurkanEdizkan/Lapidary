@@ -63,7 +63,6 @@ fn request<'a>(
         part,
         parent,
         origin: RevisionOrigin::Upload,
-        lock: None,
         blob,
         measurements,
         provenance: lapidary_core::MeasurementProvenance::TESSELLATED,

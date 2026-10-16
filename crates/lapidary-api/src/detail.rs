@@ -29,14 +29,13 @@
 
 use crate::AppState;
 use crate::derive::internal_error;
-use crate::locks::PartLock;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use lapidary_core::{Approximate, BlobHash, LibraryId, PartId, Provenance, RevisionId};
-use lapidary_db::{PartDetailRow, PgDensities, PgLocks, PgParts};
+use lapidary_db::{PartDetailRow, PgDensities, PgParts};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -116,8 +115,6 @@ pub struct PartDetail {
     pub storage_path: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
-    /// The part's active check-out, when somebody holds one (Phase 4 slice 1).
-    pub lock: Option<PartLock>,
 }
 
 /// `GET /api/parts/{id}` — one part, in full.
@@ -128,32 +125,25 @@ pub struct PartDetail {
 /// cannot see it.
 pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
     match PgParts(state.db.clone()).detail(part).await {
-        // The lock is its own read rather than a column on the detail query: it is a row of
-        // its own table, and that query is already at its column ceiling.
-        Ok(Some(row)) => match PgLocks(state.db.clone()).active(part).await {
-            Ok(lock) => {
-                // Opening a part no longer touches a derivative: it has none to touch. The
-                // rungs this recorded a read of were what told the render cache a part was
-                // still in use before it counted it (Phase 4 slice 2 spec §4), and nothing
-                // produces one. An export's read is recorded by the blob route that serves it.
-                let mut detail = to_detail(row, lock.map(PartLock::from));
-                // One more `part` row read, not a source file: still the open path. `of_part` answers
-                // only where the part holds exactly one material with a density, which is the only
-                // case a single mass means anything at all.
-                match PgDensities(state.db.clone()).of_part(part).await {
-                    Ok(density) => {
-                        detail.mass_g = density.zip(detail.volume_mm3).map(|(density, volume)| {
-                            // `tessellated`, never the volume's own provenance: a typed density is not
-                            // a measurement, so the product of the two is never exact.
-                            Approximate::tessellated(volume.value() * density * 1e-6)
-                        });
-                    }
-                    Err(err) => return internal_error(&err, "part density lookup failed"),
+        Ok(Some(row)) => {
+            // Opening a part no longer touches a derivative: it has none to touch. An export's
+            // read is recorded by the blob route that serves it.
+            let mut detail = to_detail(row);
+            // One more `part` row read, not a source file: still the open path. `of_part` answers
+            // only where the part holds exactly one material with a density, which is the only
+            // case a single mass means anything at all.
+            match PgDensities(state.db.clone()).of_part(part).await {
+                Ok(density) => {
+                    detail.mass_g = density.zip(detail.volume_mm3).map(|(density, volume)| {
+                        // `tessellated`, never the volume's own provenance: a typed density is not
+                        // a measurement, so the product of the two is never exact.
+                        Approximate::tessellated(volume.value() * density * 1e-6)
+                    });
                 }
-                Json(detail).into_response()
+                Err(err) => return internal_error(&err, "part density lookup failed"),
             }
-            Err(err) => internal_error(&err, "part lock lookup failed"),
-        },
+            Json(detail).into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -173,7 +163,7 @@ pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> 
 /// A value with no provenance is dropped rather than guessed at, for the reason
 /// `detail_provenance` refuses an unknown word: there is no safe default, because one
 /// default hedges and the other lies.
-fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
+fn to_detail(row: PartDetailRow) -> PartDetail {
     PartDetail {
         id: row.id,
         library: row.library,
@@ -211,7 +201,6 @@ fn to_detail(row: PartDetailRow, lock: Option<PartLock>) -> PartDetail {
         storage_path: row.storage_path,
         created_at: row.created_at,
         updated_at: row.updated_at,
-        lock,
     }
 }
 

@@ -921,8 +921,8 @@ const FLOWS = [
         Buffer.from(`Lapidary e2e ${ctx.stamp}`.slice(0, 79).padEnd(80, '\0'), 'binary').copy(bytes, 0)
         writeFileSync(join(inner, name), bytes)
       }
-      const before = await ctx.countParts(ctx.governed.id)
-      await page.go(grid(ctx.governed.id), 'document.querySelector("#parts") !== null')
+      const before = await ctx.countParts(ctx.uploaded.id)
+      await page.go(grid(ctx.uploaded.id), 'document.querySelector("#parts") !== null')
       expect(await exists(page, S.fileInput), `no model file input matched ${S.fileInput}`)
       const before2 = before
       // Pressed for real, because Chrome opens no file chooser without user activation.
@@ -969,7 +969,7 @@ const FLOWS = [
       )
       expect(done.includes(T.uploadComplete), `the upload never said "${T.uploadComplete}"`)
       const after = await page.settle(
-        () => ctx.countParts(ctx.governed.id),
+        () => ctx.countParts(ctx.uploaded.id),
         (n) => n > before,
         { timeout: 60_000, every: 1000 },
       )
@@ -977,13 +977,13 @@ const FLOWS = [
       expect(after === before + 2, `a 2-file folder should add 2 parts; it added ${after - before}`)
       // The folder structure survived, which a flat drop of loose files could not have shown: both parts
       // are filed under the directory they came from.
-      const filed = await ctx.get(`/api/libraries/${ctx.governed.id}/parts?limit=500`)
+      const filed = await ctx.get(`/api/libraries/${ctx.uploaded.id}/parts?limit=500`)
       const landed = filed.parts.filter((p) => (p.sourcePath ?? '').includes(UPLOAD_CATEGORY))
       expect(
         landed.length >= 2,
         `the uploaded parts are not filed under ${UPLOAD_CATEGORY}: ${JSON.stringify(filed.parts.map((p) => p.sourcePath).slice(-4))}`,
       )
-      return `${before2} -> ${after} parts in Governed through the real control (chooser ${chooser.mode}), filed under ${UPLOAD_CATEGORY}; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch'}`
+      return `${before2} -> ${after} parts in Uploaded through the real control (chooser ${chooser.mode}), filed under ${UPLOAD_CATEGORY}; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch'}`
     },
   },
   {
@@ -1106,7 +1106,7 @@ const ctx = {
   stamp: String(Date.now()),
   sweep: seed.sweep,
   default: seed.default,
-  governed: seed.governed,
+  uploaded: seed.uploaded,
   empty: seed.empty,
   async request(method, path, body) {
     const response = await fetch(args.api + path, {

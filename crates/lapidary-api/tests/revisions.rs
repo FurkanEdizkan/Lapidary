@@ -99,7 +99,6 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
                 part,
                 parent: first,
                 origin: RevisionOrigin::Agent,
-                lock: None,
                 blob: &blob_row(0x42),
                 measurements: &flange(236_258.0, 165.0),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
@@ -176,98 +175,6 @@ async fn a_deleted_part_and_one_that_never_existed_have_no_history(pool: sqlx::P
             .is_some_and(|message| message.contains("deleted")),
         "the page's own answer: {json}"
     );
-}
-
-/// One-way and idempotent: switched once, switched again, and the library list says so.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_switched_to_controlled_stays_controlled(pool: sqlx::PgPool) {
-    let uri = format!("/api/libraries/{}/controlled", library());
-    let (first, _) = send(pool.clone(), request("POST", &uri)).await;
-    assert_eq!(first, StatusCode::NO_CONTENT);
-    let (again, _) = send(pool.clone(), request("POST", &uri)).await;
-    assert_eq!(
-        again,
-        StatusCode::NO_CONTENT,
-        "switching again changes nothing"
-    );
-
-    let (_, libraries) = send(pool, request("GET", "/api/libraries")).await;
-    assert_eq!(libraries[0]["mode"], "controlled");
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn switching_a_library_that_does_not_exist_is_a_404(pool: sqlx::PgPool) {
-    let (status, json) = send(
-        pool,
-        request(
-            "POST",
-            &format!("/api/libraries/{}/controlled", LibraryId::new()),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
-}
-
-/// Each revision says what changed from its parent, and the change keeps the mesh mark.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn each_revision_says_what_changed_from_its_parent(pool: sqlx::PgPool) {
-    let part = two_revisions(&pool).await;
-    let (status, json) = send(
-        pool,
-        request("GET", &format!("/api/parts/{part}/revisions")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{json}");
-
-    let delta = &json[0]["deltaFromParent"];
-    assert_eq!(delta["volumeMm3"]["change"], 21_478.0);
-    assert_eq!(delta["volumeMm3"]["approximate"], true);
-    let percent = delta["volumeMm3"]["percent"]
-        .as_f64()
-        .expect("a percentage of a non-zero base");
-    assert!((percent - 10.0).abs() < 0.01, "about a tenth: {percent}");
-    assert_eq!(delta["bboxMm"][0]["change"], 15.0);
-    assert!(
-        json[1]["deltaFromParent"].is_null(),
-        "a first revision has nothing to change from"
-    );
-}
-
-/// Any two revisions of one part compare, either way round. A revision that is not this part's
-/// is refused rather than compared, and a request missing one says what to send.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn any_two_revisions_of_a_part_compare_and_no_others_do(pool: sqlx::PgPool) {
-    let part = two_revisions(&pool).await;
-    let (_, history) = send(
-        pool.clone(),
-        request("GET", &format!("/api/parts/{part}/revisions")),
-    )
-    .await;
-    let newer = history[0]["id"].as_str().expect("an id").to_owned();
-    let older = history[1]["id"].as_str().expect("an id").to_owned();
-    let compare = |from: &str, to: &str| {
-        request(
-            "GET",
-            &format!("/api/parts/{part}/diff?from={from}&to={to}"),
-        )
-    };
-
-    let (status, forward) = send(pool.clone(), compare(&older, &newer)).await;
-    assert_eq!(status, StatusCode::OK, "{forward}");
-    assert_eq!(forward["volumeMm3"]["change"], 21_478.0);
-    let (_, backward) = send(pool.clone(), compare(&newer, &older)).await;
-    assert_eq!(backward["volumeMm3"]["change"], -21_478.0);
-
-    let stranger = lapidary_core::RevisionId::new().to_string();
-    let (status, json) = send(pool.clone(), compare(&older, &stranger)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
-
-    let (status, json) = send(
-        pool,
-        request("GET", &format!("/api/parts/{part}/diff?from={older}")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
 }
 
 fn put(uri: String, body: serde_json::Value) -> Request<Body> {
@@ -370,18 +277,19 @@ async fn mass_is_volume_times_the_density_of_the_parts_one_material(pool: sqlx::
         request("GET", &format!("/api/parts/{widened}/revisions")),
     )
     .await;
-    let change = &history[0]["deltaFromParent"]["massG"];
+    let (newer, older) = (&history[0]["massG"], &history[1]["massG"]);
+    let more = newer["value"].as_f64().expect("a mass") - older["value"].as_f64().expect("a mass");
     assert!(
-        (change["change"].as_f64().expect("a mass change") - 168.602_3).abs() < 0.001,
-        "21,478 mm³ more of the same steel: {change}"
+        (more - 168.602_3).abs() < 0.001,
+        "21,478 mm³ more of the same steel: {newer} against {older}"
     );
-    assert_eq!(change["approximate"], true);
+    assert_eq!(newer["approximate"], true);
 }
 
-/// A revision's centre of mass comes back with where it came from, and how far it moved per axis from
-/// its parent. A revision recorded before centres were has none, and so no change is read against it.
+/// A revision's centre of mass comes back with where it came from, and a revision recorded before
+/// centres were has none.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_centre_of_mass_moves_per_axis_and_a_revision_without_one_has_no_change(
+async fn each_revision_keeps_its_own_centre_of_mass_and_an_older_one_may_have_none(
     pool: sqlx::PgPool,
 ) {
     let part = two_revisions(&pool).await;
@@ -417,10 +325,6 @@ async fn a_centre_of_mass_moves_per_axis_and_a_revision_without_one_has_no_chang
         json[1]["centreMm"].is_null(),
         "revision 1 was recorded before centres were"
     );
-    assert!(
-        json[0]["deltaFromParent"]["centreMm"].is_null(),
-        "no change is read against a revision with none"
-    );
 
     revisions
         .set_centre_of_mass(
@@ -431,8 +335,8 @@ async fn a_centre_of_mass_moves_per_axis_and_a_revision_without_one_has_no_chang
         .await
         .expect("writes");
     let json = history().await;
-    let moved = &json[0]["deltaFromParent"]["centreMm"];
-    assert_eq!(moved[0]["change"], 7.5, "{moved}");
-    assert_eq!(moved[1]["change"], 0.0);
-    assert_eq!(moved[0]["approximate"], true);
+    assert_eq!(
+        json[1]["centreMm"],
+        serde_json::to_value(Approximate::tessellated([75.0_f64, 75.0, 9.0])).expect("serialises")
+    );
 }

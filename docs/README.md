@@ -104,5 +104,6 @@ this one owns. Committing it would fork the skills, which is what moving them ou
   thought to list is settled too.
 - A card shows no picture for most parts, because nothing produces one. That is the product,
   not a missing feature: a picture is something a person adds.
-- The file watcher lives in the native `lapidary agent` binary, never in a container —
-  inotify does not propagate through Docker Desktop bind mounts on macOS or Windows.
+- There is no file watcher: the scan button walks the mounted folder. The desktop agent that watched a
+  folder went with S4 (inotify does not propagate through Docker Desktop bind mounts on macOS or
+  Windows, which is why it was never in a container).

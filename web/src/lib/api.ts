@@ -31,9 +31,7 @@ import type {
   PartSource,
   PartsPage,
   PurgeResult,
-  ReleaseLock,
   RetryAccepted,
-  RevisionDiff,
   RevisionId,
   ExportReady,
   SavedFilter,
@@ -371,14 +369,6 @@ export function downloadUrl(revision: RevisionId): string {
 /** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
 export function exportUrl(revision: RevisionId): string {
   return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`
-}
-
-/**
- * `lapidary://open?part=` — what `lapidary open` acts on (Phase 4 slice 2 spec §3). A part id is
- * all a link carries: the handler was registered with its own server and workspace.
- */
-export function openLink(part: PartId): string {
-  return `lapidary://open?part=${encodeURIComponent(part)}`
 }
 
 /**
@@ -1326,51 +1316,6 @@ export async function fetchRevisions(part: PartId): Promise<PartRevision[]> {
     throw new Error(`revision history returned ${response.status}`)
   }
   return (await response.json()) as PartRevision[]
-}
-
-/**
- * `GET /api/parts/{id}/diff?from=&to=` — any two revisions of one part, figure by figure. The
- * server keeps the ≈ rule: each change is approximate when either figure is.
- */
-export async function fetchDiff(
-  part: PartId,
-  from: RevisionId,
-  to: RevisionId,
-): Promise<RevisionDiff> {
-  const query = new URLSearchParams({ from, to })
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/diff?${query}`)
-  if (!response.ok) {
-    throw new Error(`revision diff returned ${response.status}`)
-  }
-  return (await response.json()) as RevisionDiff
-}
-
-/**
- * `POST /api/parts/{id}/lock/release` — free a part somebody else has checked out, recorded as
- * forced. A `409` means nothing was checked out any more, which is the state this asked for.
- */
-export async function releaseLock(part: PartId): Promise<void> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/lock/release`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ by: strings.detail.releasedBy } satisfies ReleaseLock),
-  })
-  if (!response.ok && response.status !== 409) {
-    throw new Error(`lock release returned ${response.status}`)
-  }
-}
-
-/**
- * `POST /api/libraries/{id}/controlled` — keep every change as a revision from now on.
- * One-way, and idempotent: nothing switches a library back.
- */
-export async function makeControlled(library: LibraryId): Promise<void> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/controlled`, {
-    method: 'POST',
-  })
-  if (!response.ok) {
-    throw new Error(`library switch returned ${response.status}`)
-  }
 }
 
 /**

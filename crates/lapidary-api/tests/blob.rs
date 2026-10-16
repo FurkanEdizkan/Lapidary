@@ -203,7 +203,6 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
                 part: current.part,
                 parent: current.revision,
                 origin: lapidary_core::RevisionOrigin::Agent,
-                lock: None,
                 blob: &StoredBlobRow {
                     hash: BlobHash::from_bytes([0xb2; 32]),
                     size_bytes: 214_016,

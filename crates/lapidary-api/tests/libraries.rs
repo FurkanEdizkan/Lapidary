@@ -66,8 +66,10 @@ async fn a_created_library_joins_the_seeded_one_rather_than_replacing_it(pool: s
     let (status, made) = send(pool.clone(), create("Tabletop terrain", None)).await;
     assert_eq!(status, StatusCode::CREATED, "{made}");
     assert_eq!(made["partCount"], 0, "brand new, so empty");
-    // `hobby` unless somebody says otherwise — `CLAUDE.md`: governance is opt-in.
-    assert_eq!(made["mode"], "hobby");
+    assert!(
+        made.get("mode").is_none(),
+        "libraries have no mode since S4: {made}"
+    );
 
     let (_, after) = send(pool, list()).await;
     assert_eq!(after.as_array().map(Vec::len), Some(2));
@@ -75,13 +77,13 @@ async fn a_created_library_joins_the_seeded_one_rather_than_replacing_it(pool: s
     assert_eq!(after[1]["name"], "Tabletop terrain");
 }
 
-/// `controlled` is a choice made at creation, because later means asking about a library
-/// somebody has already filled.
+/// A client from before S4 still sends `mode`. The library is made, and the word is ignored: every
+/// library keeps every revision now, so there is nothing for it to choose.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_library_can_be_created_controlled(pool: sqlx::PgPool) {
+async fn an_old_client_sending_a_mode_still_makes_a_library(pool: sqlx::PgPool) {
     let (status, made) = send(pool, create("Production parts", Some("controlled"))).await;
     assert_eq!(status, StatusCode::CREATED, "{made}");
-    assert_eq!(made["mode"], "controlled");
+    assert!(made.get("mode").is_none(), "{made}");
 }
 
 /// **Two libraries with one name is a switcher nobody can use** — no way to tell which is

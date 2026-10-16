@@ -49,8 +49,8 @@ pub struct Manifest {
 #[serde(rename_all = "camelCase")]
 pub struct ManifestLibrary {
     pub name: String,
-    /// `hobby` or `controlled`.
-    pub mode: String,
+    // A bundle written before S4 (2026-10-16) also says `mode`. It is read and ignored: every
+    // library keeps every revision now, so there is nothing for it to decide.
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -472,7 +472,6 @@ mod tests {
             version: VERSION,
             library: ManifestLibrary {
                 name: "Workshop".to_owned(),
-                mode: "controlled".to_owned(),
             },
             parts: parts
                 .iter()

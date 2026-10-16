@@ -2,14 +2,13 @@
 
 ## Distribution model
 
-**One codebase, three artifacts.** All of them are thin shells over `lapidary-api`,
+**One codebase, two artifacts.** All of them are thin shells over `lapidary-api`,
 which builds an axum `Router`. Never fork.
 
 | Artifact | What it is | Ships when |
 |---|---|---|
-| **Container stack** | `api`, `worker`, `web`, `db` via Compose Spec | Phase 1 (primary) |
-| **`lapidary` binary** | Single Rust executable: `agent`, `worker`, `up` | Phase 4 |
-| **Tauri desktop app** | Webview + agent, connects to a server | Phase 7 |
+| **Container stack** | `app` and `db` via Compose Spec | Phase 1 (primary) |
+| **Installer** | The app for one machine, without containers | later; its database is decided then |
 
 Podman is the **recommended** runtime and leads all documentation; Docker is supported.
 This is deliberate: Docker Desktop requires a paid subscription above 250 employees or
@@ -81,7 +80,6 @@ crates/
 ├── lapidary-cad/         L2  mesh parsers (stl, obj, 3mf), measurement, the two export writers
 ├── lapidary-jobs/        L2  Postgres queue, leases, heartbeats, SSE progress
 ├── lapidary-index/       L2  metadata extraction, tsvector + trigram search, facets
-├── lapidary-vcs/         L2  revisions, lineage DAG, locks, figure comparison
 ├── lapidary-build/       L2  build graph, runs, ready-set, guide linearization
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
 ├── lapidary-api/         L3          axum Router: the open path (grid, health) and the
@@ -100,8 +98,7 @@ crates/
 │                                     one so that a scan reports it rather than skipping it
 │                                     in silence. A LIBRARY.
 bin/
-├── lapidary-server/          container entrypoint: the API, the job worker and the browser app
-└── lapidary/                 desktop binary: agent | worker | up
+└── lapidary-server/          container entrypoint: the API, the job worker and the browser app
 web/                          React SPA
 deploy/                       Containerfile, compose, quadlet, install.sh, install.ps1
 ```
@@ -181,7 +178,6 @@ next worker start. The reason is in the function's own doc; read it before touch
 | Jobs | Postgres `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY` | no Redis, no broker |
 | Archives | `async-zip` | streaming bundles, STORE not DEFLATE |
 | Graphs | `petgraph` | cycle detection before write |
-| Watching | `notify` | agent binary only |
 | Config | `figment` | `LAPIDARY_*` env prefix |
 | Errors | `thiserror` / `anyhow` | |
 | Tracing | `tracing` | |

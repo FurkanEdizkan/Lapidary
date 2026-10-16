@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
-import { createLibrary, fetchLibraries, makeControlled } from '../lib/api'
+import { createLibrary, fetchLibraries } from '../lib/api'
 import { Dialog, closeMenu } from './Dialog'
 import { FieldsMenuItem } from './Fields'
 import { DensitiesMenuItem } from './Densities'
@@ -245,20 +245,7 @@ function LibrarySwitcher({
     },
   })
 
-  // The one-way switch a changed file in a hobby library points to. Offered only on a hobby
-  // library, behind a dialog, because it cannot be undone.
-  const [switching, setSwitching] = useState(false)
-  const keepChanges = useMutation({
-    mutationFn: () => makeControlled(library),
-    onSuccess: () => {
-      setSwitching(false)
-      void queryClient.invalidateQueries({ queryKey: ['libraries'] })
-    },
-  })
-
   const all = libraries.data ?? []
-  const current = all.find((one) => one.id === library)
-  const offerSwitch = current?.mode === 'hobby'
   return (
     <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-[var(--color-muted)]">
       {all.length < 2 ? null : (
@@ -287,46 +274,6 @@ function LibrarySwitcher({
       >
         {strings.libraries.create}
       </button>
-      {!offerSwitch ? null : (
-        <button
-          type="button"
-          onClick={(event) => {
-            closeMenu(event.currentTarget)
-            setSwitching(true)
-          }}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          {strings.libraries.makeControlled}
-        </button>
-      )}
-      {!switching || current === undefined ? null : (
-        <Dialog title={strings.libraries.makeControlledTitle} onClose={() => setSwitching(false)}>
-          <p className="mt-3 text-sm">{strings.libraries.makeControlledBody(current.name)}</p>
-          {keepChanges.isError ? (
-            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
-              {strings.libraries.makeControlledFailed}
-            </p>
-          ) : null}
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              autoFocus
-              onClick={() => setSwitching(false)}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-            >
-              {strings.folders.cancel}
-            </button>
-            <button
-              type="button"
-              disabled={keepChanges.isPending}
-              onClick={() => keepChanges.mutate()}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-            >
-              {strings.libraries.makeControlledConfirm}
-            </button>
-          </div>
-        </Dialog>
-      )}
       {libraries.isError ? <span role="alert">{strings.libraries.failed}</span> : null}
       {!creating ? null : (
         <NewLibraryDialog
@@ -343,13 +290,7 @@ function LibrarySwitcher({
   )
 }
 
-/**
- * A name and a governance mode, chosen once.
- *
- * The mode is at creation because later means asking about a library somebody has already
- * filled; a hobby library can still be switched afterwards, one way, from `LibrarySwitcher`.
- * `CLAUDE.md`: governance is opt-in per library, and `controlled` is what keeps revisions.
- */
+/** A new library's name. Every library keeps a part's file history; there is nothing else to choose. */
 function NewLibraryDialog({
   busy,
   note,
@@ -362,14 +303,13 @@ function NewLibraryDialog({
   onCancel: () => void
 }) {
   const [name, setName] = useState('')
-  const [mode, setMode] = useState<NewLibrary['mode']>('hobby')
   const trimmed = name.trim()
   return (
     <Dialog title={strings.libraries.createTitle} onClose={onCancel}>
       <form
         onSubmit={(event) => {
           event.preventDefault()
-          if (trimmed !== '' && !busy) onConfirm({ name: trimmed, mode })
+          if (trimmed !== '' && !busy) onConfirm({ name: trimmed })
         }}
       >
         <input
@@ -380,20 +320,6 @@ function NewLibraryDialog({
           autoFocus
           className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
         />
-        <label className="mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]">
-          {strings.libraries.modeLabel}
-          <select
-            value={mode}
-            onChange={(event) => setMode(event.target.value as NewLibrary['mode'])}
-            className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
-          >
-            {LIBRARY_MODES.map((option) => (
-              <option key={option} value={option}>
-                {MODE_LABEL[option]}
-              </option>
-            ))}
-          </select>
-        </label>
         {note === null ? null : (
           <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
             {note}
@@ -418,15 +344,6 @@ function NewLibraryDialog({
       </form>
     </Dialog>
   )
-}
-
-/** The two modes, and their labels — a lookup rather than a ternary in JSX, for the reason
- * `DENSITY_LABEL` above gives. */
-const LIBRARY_MODES = ['hobby', 'controlled'] as const
-
-const MODE_LABEL: Record<(typeof LIBRARY_MODES)[number], string> = {
-  hobby: strings.libraries.hobby,
-  controlled: strings.libraries.controlled,
 }
 
 /**

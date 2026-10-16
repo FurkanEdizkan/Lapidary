@@ -1958,23 +1958,6 @@ impl PgParts {
         Ok(name.map(|name| lapidary_core::slug::slugify(&name).to_lowercase()))
     }
 
-    /// Switch a library to `controlled`: from here on, a changed file becomes a revision
-    /// (Phase 4 slice 1 spec §1). One-way — nothing in this crate writes `hobby` back, since a
-    /// controlled library switched back would hold revisions no screen shows. Idempotent.
-    ///
-    /// Returns whether a row matched, because a caller cannot tell the two outcomes apart
-    /// from an `Ok(())`: `UPDATE … WHERE id = $1` against an id no library has is a
-    /// perfectly successful statement that changes nothing, and a route reporting 204 for
-    /// it would tell a person their change landed when no such library exists.
-    pub async fn make_controlled(&self, library: LibraryId) -> Result<bool, DbError> {
-        let result = sqlx::query("UPDATE library SET mode = $2 WHERE id = $1")
-            .bind(library.as_uuid())
-            .bind(lapidary_core::LibraryMode::Controlled.as_str())
-            .execute(&self.0)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
     /// Step one of the three: hide the part, touch no bytes.
     ///
     /// One `UPDATE`, and that it is only one is a property of what came before rather
@@ -2212,9 +2195,6 @@ impl PgParts {
             // an id nothing else in the database knows, which is the shape of orphan the
             // no-`ON DELETE CASCADE` rule exists to make impossible.
             "DELETE FROM part_move WHERE part_id = $1",
-            // Check-outs (Phase 4 slice 1), active or long released. A lock is about a part,
-            // and a purged part is nothing anybody can check out or save back to.
-            "DELETE FROM part_lock WHERE part_id = $1",
             "DELETE FROM part WHERE id = $1",
         ] {
             sqlx::query(statement)
@@ -3910,9 +3890,6 @@ fn like_pattern(query: &str) -> String {
 pub struct LibraryRow {
     pub id: LibraryId,
     pub name: String,
-    /// `hobby` or `controlled`. Text on the wire and in the column, matching every other
-    /// discriminator here: a new mode must not need a migration.
-    pub mode: String,
     pub part_count: i64,
 }
 
@@ -3924,8 +3901,8 @@ impl PgParts {
     /// somebody renames one — and so the seeded library, which is the one an existing
     /// deployment has been using, stays first.
     pub async fn libraries(&self) -> Result<Vec<LibraryRow>, DbError> {
-        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
-            "SELECT l.id, l.name, l.mode, \
+        let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "SELECT l.id, l.name, \
                     (SELECT count(*) FROM part p \
                       WHERE p.library_id = l.id AND p.deleted_at IS NULL) \
                FROM library l ORDER BY l.created_at, l.id",
@@ -3934,10 +3911,9 @@ impl PgParts {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, mode, part_count)| LibraryRow {
+            .map(|(id, name, part_count)| LibraryRow {
                 id: LibraryId::from_uuid(id),
                 name,
-                mode,
                 part_count,
             })
             .collect())
@@ -3949,23 +3925,16 @@ impl PgParts {
     /// reports. Not a technical requirement — nothing joins on it — but a switcher listing
     /// two entries called `Terrain` is a switcher nobody can use, and the cost of finding
     /// that out later is a rename plus an explanation.
-    ///
-    /// `mode` is `hobby` or `controlled` and is checked by the database, so a value this
-    /// code does not know is a failed insert rather than a row every reader has to cope
-    /// with. Nothing reads it yet — governance is Phase 8 — but choosing it is a decision
-    /// made once, at creation, and asking later would mean asking about a library somebody
-    /// has already filled.
-    pub async fn create_library(&self, name: &str, mode: &str) -> Result<LibraryId, DbError> {
+    pub async fn create_library(&self, name: &str) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
         // Derived here and never sent by a client, exactly as a category's is: `slugify` is
         // the one place that decides what a filesystem may hold, and a caller who could name
         // the directory could name one outside the store. Lowercased because that is what
         // `library_slug` has always returned and what every existing directory is called.
         let slug = lapidary_core::slug::slugify(name).to_lowercase();
-        sqlx::query("INSERT INTO library (id, name, mode, slug) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, $2, $3)")
             .bind(id.as_uuid())
             .bind(name)
-            .bind(mode)
             .bind(&slug)
             .execute(&self.0)
             .await
