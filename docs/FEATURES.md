@@ -52,7 +52,8 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Mesh formats: STL, 3MF, OBJ | 1 |
 | Folder tree per library, mirrored on disk — one directory per part | 1 |
 | Move a part between folders; renames its directory, `source_path` unchanged | 1 |
-| Select many parts on the grid and move or remove them together, each part it could not change named with why | 2 |
+| Select many parts on the grid and move or delete them together, each part it could not change named with why | 2 |
+| Delete is final: one Delete behind a confirmation, the part leaves the library at once and its file stays on disk; no removed list, restore or purge (owner, 2026-10-17) | M3, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
