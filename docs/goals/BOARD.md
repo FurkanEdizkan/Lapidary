@@ -91,6 +91,23 @@ through `repo.rs` and `lib.rs`'s route list.
 
 **Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1 · 0059 F3.
 
+## The MVP: a hobbyist library, dashboard and search first (planned 2026-10-17)
+
+The owner's first look at the running install. The aim is an MVP whose main goal is **the dashboard and
+efficient search** for a hobbyist models library. Decisions: files are read **in place** with an inbox for
+uploads and imports; **delete removes from the library and never touches the file**, with no restore;
+**PostgreSQL stays** for the MVP; a model's pictures are a **set**.
+
+| Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
+|---|---|---|---|---|---|---|---|---|
+| [M1](M1.md) | What the owner saw first: stale card picture, overlapping part page, home link | 8 | web | — | `PartDetail.tsx` picture mutations and layout, `AppFrame.tsx` mark | — | open | `fix/first-look` |
+| [M2](M2.md) | A user menu (Profile, Settings) and an MVP header | 8 | web + API | M1 | `AppFrame.tsx` places and menu, a profile route | 0060 | open | `feat/user-menu` |
+| [M3](M3.md) | Delete is delete: no restore, purge or quarantine | 8 | Rust + web | M1 | `lifecycle.rs`, `removed.tsx`, `repo.rs` delete, the reaper's quarantine | 0061 | open | `chore/delete-is-final` |
+| [M4](M4.md) | Your folders, read where they are, and an inbox | 9 | Rust + deploy | M3 | `lapidary-ingest` scan/handler, `lapidary-storage` source half, `download.rs`, `moves.rs`, compose mounts | 0062 | open | `feat/index-in-place` |
+| [M5](M5.md) | A model's pictures, as a set | 9 | Rust + web | M1 | `link.rs` pictures, `Card.tsx` | — | open | `feat/picture-sets` |
+
+**Migration numbers:** 0060 M2 · 0061 M3 · 0062 M4.
+
 ## Backlog — recorded, not scheduled
 
 Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a `ponytail:` comment.
