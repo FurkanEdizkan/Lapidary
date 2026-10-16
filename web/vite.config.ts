@@ -5,7 +5,7 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite'
 
 export default defineConfig(({ mode }) => {
   // LAPIDARY_API points the page at another api, so two stacks on one machine each get their own
-  // page — which is how sharing is checked end to end. `loadEnv` reads it from the environment
+  // page. `loadEnv` reads it from the environment
   // without this config needing Node's types, and `vite preview` takes the same proxy.
   const { LAPIDARY_API } = loadEnv(mode, '.', 'LAPIDARY_')
   return {

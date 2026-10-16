@@ -23,7 +23,7 @@ function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'removed' | 'sharing'
+export type Place = 'parts' | 'dashboard' | 'removed'
 
 const PLACE =
   'ease-mechanical flex min-h-7 items-center rounded-[5px] px-3 text-xs duration-[var(--duration-fast)]'
@@ -45,7 +45,6 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
   const inParts = current === 'parts'
   const inDashboard = current === 'dashboard'
   const inRemoved = current === 'removed'
-  const inSharing = current === 'sharing'
   return (
     <nav
       aria-label={strings.frame.places}
@@ -85,16 +84,6 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
       ) : (
         <Link to="/removed" search={search} className={THERE}>
           {strings.removal.removedTitle}
-        </Link>
-      )}
-      {/* The whole installation's, not one library's, so it carries no library. */}
-      {inSharing ? (
-        <span aria-current="page" className={HERE}>
-          {strings.sharing.title}
-        </span>
-      ) : (
-        <Link to="/sharing" className={THERE}>
-          {strings.sharing.title}
         </Link>
       )}
     </nav>

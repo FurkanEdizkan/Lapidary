@@ -282,8 +282,6 @@ function stubFetch(routes: {
     if (url.endsWith("/scan")) return (routes.scan ?? pending)();
     // Before the bare-library rule, which every library route is a prefix of.
     if (url.endsWith("/folders")) return (routes.folders ?? pending)();
-    // The categories this library shares, which mark the tree. Unstubbed it is none.
-    if (url.endsWith("/shares")) return empty();
     // Before the bare-library rule below, which every library route is a prefix of.
     if (url.endsWith("/storage")) return (routes.storage ?? pending)();
     // Same, and it carries a `since` parameter, so `includes` rather than `endsWith`.
@@ -2912,7 +2910,6 @@ function detailFor(card: typeof MOTOR_MOUNT) {
     volumeMm3: { value: 21478.5, approximate: true },
     surfaceAreaMm2: { value: 9804.25, approximate: true },
     lock: null,
-    sharedBy: null,
     sourceHash: card.sourceHash,
     sourceFormat: "stl",
     sourceBytes: card.sourceBytes,
@@ -2968,7 +2965,6 @@ const MOTOR_MOUNT_DETAIL = {
   volumeMm3: { value: 21478.5, approximate: true },
   surfaceAreaMm2: { value: 9804.25, approximate: true },
   lock: null,
-  sharedBy: null,
   sourceHash: MOTOR_MOUNT.sourceHash,
   sourceFormat: "stl",
   sourceBytes: MOTOR_MOUNT.sourceBytes,

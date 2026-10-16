@@ -9,13 +9,9 @@ mod folders;
 mod jobs;
 mod locks;
 mod migrate;
-mod mirror;
-mod pulls;
 mod repo;
 mod revisions;
 mod saved_filters;
-mod shares;
-mod sharing;
 mod tags;
 mod touches;
 
@@ -29,11 +25,6 @@ pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use locks::{Checkout, LockRow, PgLocks};
 pub use migrate::{HashClaim, PendingSource, PgStorageMigration};
-pub use mirror::{
-    Holder, IntroductionRow, MirroredPartIn, MirroredPartRow, MirroredShareRow, OfferedRemote,
-    PgMirror, RelayedShare, RemoteMember, Serving, StaleShare,
-};
-pub use pulls::{PgPulls, PullRow};
 pub use repo::{
     BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS, FacetValue,
     Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage, LibraryRow, MoveRow,
@@ -43,11 +34,6 @@ pub use repo::{
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
-pub use shares::{
-    BlobLocation, CatalogueRow, Grant, GrantRow, LicenceCounts, MemberRow, OfferedShare, PgShares,
-    RosterRow, ShareRow,
-};
-pub use sharing::{IdentityRow, ONLINE_WITHIN_SECS, PeerRow, PgSharing, SHARING_CHANNEL};
 pub use sqlx::PgPool;
 pub use tags::PgTags;
 pub use touches::Touches;
@@ -279,13 +265,6 @@ pub enum DbError {
         "This change carried a check-out this part never had, so it was not kept. Check the part out, then save again."
     )]
     UnknownLock,
-
-    /// A stored device id that is not a 32-byte digest, which the table's own check should make
-    /// impossible.
-    #[error(
-        "`{column}` holds {length} bytes where a device id's 32-byte digest belongs. Check what else has write access to this database, then remove that person and pair with them again."
-    )]
-    CorruptDeviceId { column: &'static str, length: usize },
 }
 
 impl DbError {
@@ -371,7 +350,6 @@ impl DbError {
             | DbError::PartCheckedOut { .. }
             | DbError::LockReleased { .. }
             | DbError::UnknownLock
-            | DbError::CorruptDeviceId { .. }
             // Never reaches a client: the reaper runs on a timer in the worker, with no
             // request behind it. It is here so the operator log gets the full text.
             | DbError::ReapRemove { .. } => self.to_string(),
@@ -499,18 +477,13 @@ pub struct Ceiling {
     pub lock: std::time::Duration,
 }
 
-/// The ceiling for a pool somebody is waiting on: the api and the peer role.
+/// The ceiling for a pool somebody is waiting on: the api.
 ///
 /// 5 s for a statement is twenty times the slowest read ever measured here, so nothing legitimate
 /// reaches it; what it bounds is how long a caller that has already given up can keep its
 /// connection. 2 s for a lock is the dashboard's own per-widget budget
 /// (`lapidary-api/src/dashboard.rs`), which is what makes a locked table the thing a widget
 /// *reports* rather than the thing it waits through.
-///
-/// The peer role takes this one rather than [`BACKGROUND`]: a remote installation is waiting at the
-/// other end of every statement it runs, its heaviest is one page of a catalogue
-/// (`lapidary-peer`'s `CATALOGUE_MAX`, 500 rows), and nothing caps how many sharers it works at
-/// once — so a statement that hung would pin one of the six connections its two listeners leave it.
 pub const INTERACTIVE: Ceiling = Ceiling {
     statement: std::time::Duration::from_secs(5),
     lock: std::time::Duration::from_secs(2),

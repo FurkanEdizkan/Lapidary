@@ -82,7 +82,6 @@ docker_touched() {
 echo "== syntax"
 if bash -n "$HERE/stack.sh"; then ok "bash -n stack.sh"; else no "bash -n stack.sh"; fi
 if bash -n "$HERE/check.sh"; then ok "bash -n check.sh"; else no "bash -n check.sh"; fi
-if bash -n "$HERE/group.sh"; then ok "bash -n group.sh"; else no "bash -n group.sh"; fi
 for mjs in "$HERE"/*.mjs; do
   if node --check "$mjs" 2>/dev/null; then ok "node --check $(basename "$mjs")"; else
     no "node --check $(basename "$mjs")"; node --check "$mjs"
@@ -123,7 +122,7 @@ for fn in die refuse note ask_owner lane_var assert_project compose or_none free
   sql seed_check holds counter wait_for until_true settle chown_store remove_store write_env verify_ports \
   build_ingest_tree check_worker_sees_ingest library_named upload_file seed_picture \
   tag_borrowed_images untag_borrowed_images \
-  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status cmd_peer; do
+  cmd_build cmd_up cmd_seed cmd_drive cmd_down cmd_status; do
   if grep -qE "^$fn\(\) \{" "$HERE/stack.sh"; then
     pass=$((pass + 1))
   else
@@ -133,8 +132,8 @@ done
 # And the list is the whole list: a function defined and not named here would be one this check cannot
 # protect, which is how the four helpers it was written for came to be deleted in the first place.
 defined=$(grep -cE '^[a-z_]+\(\) \{' "$HERE/stack.sh")
-if [ "$defined" = 37 ]; then ok "all 37 of stack.sh's functions are defined, and 37 is all there are"
-else no "stack.sh defines $defined functions and this check names 37 — add the new one to the list above"; fi
+if [ "$defined" = 36 ]; then ok "all 36 of stack.sh's functions are defined, and 36 is all there are"
+else no "stack.sh defines $defined functions and this check names 36 — add the new one to the list above"; fi
 
 # `skew-stl.py` is gone, and with it the block that stood here.
 #
@@ -176,7 +175,6 @@ Remove from library
 Restore
 Scan the ingest folder
 Storage
-This installation
 Upload complete —
 View in 3D
 Picture of
@@ -195,7 +193,7 @@ LITERALS
   if [ -n "$gone" ]; then
     printf '    these are matched by a flow and are no longer in strings.ts:%s\n' "$gone"
     no "a string a flow depends on has been renamed"
-  else ok "all 25 strings the flows match are still in strings.ts"; fi
+  else ok "all 24 strings the flows match are still in strings.ts"; fi
 fi
 
 echo "== the override says nothing check-deploy cannot see"
@@ -204,7 +202,7 @@ echo "== the override says nothing check-deploy cannot see"
 if grep -nE 'target:|SERVER_FEATURES|LAPIDARY_ROLE|build:|image:' "$HERE/e2e.override.yaml"; then
   no "e2e.override.yaml names a build stage, feature set, role or image"
 else ok "e2e.override.yaml carries ports and extra_hosts only"; fi
-for svc in app peer; do
+for svc in app; do
   if grep -A2 "^  $svc:" "$HERE/e2e.override.yaml" | grep -q 'ports: !override'; then
     ok "$svc publishes with !override (so deploy/'s literal is replaced, not appended)"
   else no "$svc does not carry \`ports: !override\`"; fi
@@ -268,7 +266,7 @@ for pair in 'a 34000 34080 34081 34082' 'b 34100 34180 34181 34182' 'c 34200 342
   code=$(run_stack LAPIDARY_LANE=4 "AS=$1" LAPIDARY_PORT_WEB=34000 LAPIDARY_PORT_API=34080 \
     LAPIDARY_PORT_WORKER=34081 LAPIDARY_PORT_PEER=34082 -- status)
   if [ "$code" != 3 ] && grep -q "lapidary-e2e-4$1" "$WORK/out.txt" &&
-    grep -q "app $2, peer $5" "$WORK/out.txt"; then
+    grep -q "app $2" "$WORK/out.txt"; then
     ok "AS=$1 is project lapidary-e2e-4$1 on $2/$5"
   else
     no "AS=$1: exit $code, and status said $(grep -m1 '^ports' "$WORK/out.txt" || echo nothing)"

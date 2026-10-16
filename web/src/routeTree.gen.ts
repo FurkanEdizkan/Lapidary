@@ -12,11 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as RemovedRouteImport } from './routes/removed'
-import { Route as SharingRouteImport } from './routes/sharing'
 import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 import { Route as TagsTagRouteImport } from './routes/tags_.$tag'
-import { Route as SharingSharesShareIdRouteImport } from './routes/sharing_.shares.$shareId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -31,11 +29,6 @@ const DashboardRoute = DashboardRouteImport.update({
 const RemovedRoute = RemovedRouteImport.update({
   id: '/removed',
   path: '/removed',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SharingRoute = SharingRouteImport.update({
-  id: '/sharing',
-  path: '/sharing',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TagsRoute = TagsRouteImport.update({
@@ -53,85 +46,56 @@ const TagsTagRoute = TagsTagRouteImport.update({
   path: '/tags/$tag',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SharingSharesShareIdRoute = SharingSharesShareIdRouteImport.update({
-  id: '/sharing_/shares/$shareId',
-  path: '/sharing/shares/$shareId',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
-  '/sharing': typeof SharingRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
-  '/sharing/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
-  '/sharing': typeof SharingRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
-  '/sharing/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/removed': typeof RemovedRoute
-  '/sharing': typeof SharingRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags_/$tag': typeof TagsTagRoute
-  '/sharing_/shares/$shareId': typeof SharingSharesShareIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
-    | '/dashboard'
-    | '/removed'
-    | '/sharing'
-    | '/tags'
-    | '/parts/$partId'
-    | '/tags/$tag'
-    | '/sharing/shares/$shareId'
+    '/' | '/dashboard' | '/removed' | '/tags' | '/parts/$partId' | '/tags/$tag'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
-    | '/dashboard'
-    | '/removed'
-    | '/sharing'
-    | '/tags'
-    | '/parts/$partId'
-    | '/tags/$tag'
-    | '/sharing/shares/$shareId'
+    '/' | '/dashboard' | '/removed' | '/tags' | '/parts/$partId' | '/tags/$tag'
   id:
     | '__root__'
     | '/'
     | '/dashboard'
     | '/removed'
-    | '/sharing'
     | '/tags'
     | '/parts/$partId'
     | '/tags_/$tag'
-    | '/sharing_/shares/$shareId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
   RemovedRoute: typeof RemovedRoute
-  SharingRoute: typeof SharingRoute
   TagsRoute: typeof TagsRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
   TagsTagRoute: typeof TagsTagRoute
-  SharingSharesShareIdRoute: typeof SharingSharesShareIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -157,13 +121,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RemovedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/sharing': {
-      id: '/sharing'
-      path: '/sharing'
-      fullPath: '/sharing'
-      preLoaderRoute: typeof SharingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/tags': {
       id: '/tags'
       path: '/tags'
@@ -185,13 +142,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TagsTagRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/sharing_/shares/$shareId': {
-      id: '/sharing_/shares/$shareId'
-      path: '/sharing/shares/$shareId'
-      fullPath: '/sharing/shares/$shareId'
-      preLoaderRoute: typeof SharingSharesShareIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -199,11 +149,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
   RemovedRoute: RemovedRoute,
-  SharingRoute: SharingRoute,
   TagsRoute: TagsRoute,
   PartsPartIdRoute: PartsPartIdRoute,
   TagsTagRoute: TagsTagRoute,
-  SharingSharesShareIdRoute: SharingSharesShareIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

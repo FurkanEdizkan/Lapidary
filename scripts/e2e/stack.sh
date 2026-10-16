@@ -2,17 +2,17 @@
 # The whole application, up and driven: one compose stack on this lane's port block, a library worth
 # testing seeded into it, and a real browser over the real api.
 #
-#   scripts/e2e/stack.sh build            # deploy/'s two images, one service at a time, disk-guarded
+#   scripts/e2e/stack.sh build            # deploy/'s one image, one service at a time, disk-guarded
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
 #   scripts/e2e/stack.sh down [--keep|--purge]   # reverse the chown, remove the project and the store
 #   scripts/e2e/stack.sh status
 #
-# Sharing needs more than one installation, and the introductions need three. `AS=a|b|c` is which of the
-# three this call is: it suffixes the compose project, the work directory and the images, and shifts this
-# lane's four ports by 100 per letter, so the three sit inside one lane's block and cannot reach another
-# lane's. `scripts/e2e/group.sh` is the three of them together.
+# `AS=a|b|c` brings up a second or third installation beside the first, which sharing between
+# installations needed until S3 removed it (2026-10-16). It suffixes the compose project, the work
+# directory and the images, and shifts this lane's ports by 100 per letter, so the three sit inside one
+# lane's block and cannot reach another lane's.
 #
 #   AS=b scripts/e2e/stack.sh up            # the second installation, on this lane's block + 100
 #
@@ -81,8 +81,8 @@ done
 # ---------------------------------------------------------------------------------------------------
 # ONE LANE, THREE INSTALLATIONS.
 #
-# A lane owns one port block and this rig brought up one stack in it. Sharing takes two installations and
-# the introductions take three, so `AS` names which one this call is. It suffixes the compose project (and
+# A lane owns one port block and this rig brought up one stack in it. Sharing took two installations and
+# the introductions three, so `AS` names which one this call is. It suffixes the compose project (and
 # so the volumes, the containers and the images), it suffixes the work directory (and so the store, the
 # ingest tree and the env file), and it shifts the four ports by 100 per letter. Everything else — both
 # refusals, the port verification, the reverse chown, the teardown assertions — applies unchanged, which
@@ -210,7 +210,6 @@ compose() {
   [ -f "$ENVFILE" ] || die "$ENVFILE does not exist yet. Run \`stack.sh up\` (it writes it) first."
   env "${COMPOSE_UNSET[@]}" docker compose -p "$PROJECT" \
     -f "$ROOT/deploy/compose.yaml" \
-    -f "$ROOT/deploy/compose.sharing.yaml" \
     -f "$ROOT/scripts/e2e/e2e.override.yaml" \
     --env-file "$ENVFILE" "$@"
 }
@@ -295,7 +294,7 @@ settle() { # library, batch, seconds
 # comes up owned by whoever made it, so it has to be handed over before `up` — and handed back before
 # `down` removes it, or the host user cannot delete it and `scripts/release-goal.sh` cannot remove the
 # worktree. `target/docker-check/group/a/store` is still root-owned proof of forgetting.
-# The two images belong to the lane, built once by `build` from the lane's own checkout. A suffixed
+# The one image belong to the lane, built once by `build` from the lane's own checkout. A suffixed
 # installation borrows them under its own project's names, because compose looks for `<project>-<service>`
 # when it is told not to build: `docker tag` names the same layers a second time, so three installations
 # cost one build and not a byte of disk. Never the other way round — `build` refuses a suffix.
@@ -304,22 +303,22 @@ IMAGE_PROJECT=lapidary-e2e-$LANE
 tag_borrowed_images() {
   [ -n "$AS" ] || return 0
   local svc
-  for svc in app peer; do
+  for svc in app; do
     docker image inspect "$IMAGE_PROJECT-$svc" > /dev/null 2>&1 || die "there is no \`$IMAGE_PROJECT-$svc\`
-  image for $PROJECT to borrow. Build this lane's two images first, with no AS set:
+  image for $PROJECT to borrow. Build this lane's one image first, with no AS set:
   \`cargo xtask heavy -- scripts/e2e/stack.sh build\`."
     docker tag "$IMAGE_PROJECT-$svc" "$PROJECT-$svc" ||
       die "could not tag $IMAGE_PROJECT-$svc as $PROJECT-$svc."
   done
-  echo "  $PROJECT's two images are tags of $IMAGE_PROJECT-*: same layers, nothing built"
+  echo "  $PROJECT's one image are tags of $IMAGE_PROJECT-*: same layers, nothing built"
 }
 
-# Only ever the tags this project put on, and only when there is a suffix — the lane's own two images are
+# Only ever the tags this project put on, and only when there is a suffix — the lane's own one image are
 # what every installation is made of, and a `down` that removed them would cost the next one a rebuild.
 untag_borrowed_images() {
   [ -n "$AS" ] || return 0
   local svc removed=0
-  for svc in app peer; do
+  for svc in app; do
     if docker image inspect "$PROJECT-$svc" > /dev/null 2>&1; then
       docker rmi "$PROJECT-$svc" > /dev/null 2>&1 && removed=$((removed + 1))
     fi
@@ -407,7 +406,7 @@ verify_ports() {
 import json, os, sys
 
 resolved = json.load(sys.stdin)
-want = {os.environ["LAPIDARY_PORT_" + k] for k in ("WEB", "PEER")}
+want = {os.environ["LAPIDARY_PORT_WEB"]}
 published = set()
 mounts = {}
 for name, service in resolved.get("services", {}).items():
@@ -439,15 +438,11 @@ sys.exit(1 if problems else 0)
 cmd_build() {
   [ -z "$AS" ] || die "an installation with AS=$AS borrows the lane's images; it never builds its own.
   Build once with no AS set (\`cargo xtask heavy -- scripts/e2e/stack.sh build\`), then bring each
-  installation up — \`up\` tags the lane's two images under this project's names."
+  installation up — \`up\` tags the lane's one image under this project's names."
   # **The 8 GB floor below is the protocol's and this rig does not let anybody past it.**
   #
-  # R6 (2026-10-04) measured what a build of all five actually costs on this machine and it is 7.5 GB:
-  # `worker` alone took `/` from 10 GB to 6 GB building the shared release stage, `api` then cost
-  # 0.1 GB, `web` 2 GB (its npm build), and `peer` — which is `target: api` in
-  # `deploy/compose.sharing.yaml` — cost **nothing at all**, because once `api` exists that build is a
-  # cache hit that writes a tag and no layers. So the floor is right for a cold build and much too high
-  # for the services after it.
+  # R6 (2026-10-04) measured what a build of all five images then cost on this machine and it was 7.5 GB,
+  # 4 GB of it the shared release stage. Since S1 there is one image, built cold in 130 s.
   #
   # **The owner settled this on 2026-10-04: `--min-free <gb>` exists, and using it is recorded.** R6
   # wrote the override, used it at 4 GB and then 2 GB to finish, took it back out, and said so at the top
@@ -471,7 +466,7 @@ cmd_build() {
   done
   [ "$min_free" = 8 ] ||
     note "--min-free $min_free: built under the 8 GB default on purpose. Say why in the goal file."
-  local services=${SERVICES:-app peer}
+  local services=${SERVICES:-app}
   write_env
   verify_ports
   local summary=$WORK/build-summary.txt
@@ -546,10 +541,10 @@ cmd_up() {
   that is the argument to put to the owner rather than a floor to lower."
   [ "$min_ram" = 5 ] ||
     note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
-  # The declared ceilings in deploy/ total 3.5 GB. A stack brought up beside a cargo build is how a
+  # The declared ceilings in deploy/ total 3 GB. A stack brought up beside a cargo build is how a
   # session gets its processes killed; 5 GiB available is the floor that leaves the stack room.
   [ "$(ram_gib)" -ge "$min_ram" ] || ask_owner "$(ram_gib) GiB of RAM is available, under the $min_ram GiB
-  floor. This stack's declared ceilings total 3.5 GB (db 1g, app 2g, peer 512m).
+  floor. This stack's declared ceilings total 3 GB (db 1g, app 2g).
   Wait until the other lanes have stopped compiling, then run this again — or, for installations that are
   never seeded, say \`--min-ram <gib>\` and record the number you chose."
 
@@ -566,31 +561,23 @@ cmd_up() {
   wait_for "$API/api/healthz" "the app" || die "the app never became healthy. \`stack.sh status\` and
   \`docker compose -p $PROJECT logs app\` say why."
   wait_for "$WEB/" "the browser app" || die "the browser app never answered on $LAPIDARY_PORT_WEB."
-  # The peer role claims this installation's identity on first start. Its absence is how goal 9's run
-  # found a peer that had come up without its key volume.
-  until_true "$API/api/sharing/identity" 'value["deviceId"] is not None' \
-    "the peer role claimed a device id" 240 || die "no device id: the peer role never came up."
 
   local secs=$((SECONDS - began))
-  local extensions migration device
+  local extensions migration
   extensions=$(sql "SELECT string_agg(extname || ' ' || extversion, ', ' ORDER BY extname) FROM pg_extension")
   migration=$(sql "SELECT max(version) || ' of ' || count(*) FROM _sqlx_migrations")
-  device=$(curl -sf "$API/api/sharing/identity" | field 'value["deviceId"]')
   note "healthy after ${secs} s"
   echo "  services: $(compose ps --format '{{.Service}} {{.Status}}' | paste -sd'; ' -)"
   echo "  extensions: $extensions"
   echo "  newest migration: $migration"
-  echo "  device id: $device"
-  echo "  ports: app $LAPIDARY_PORT_WEB, peer $LAPIDARY_PORT_PEER"
+  echo "  port: app $LAPIDARY_PORT_WEB"
 
   python3 - "$WORK/stack.json" <<EOF
 import json, sys
 json.dump({
     "project": "$PROJECT", "lane": $LANE, "upSeconds": $secs,
-    "ports": {"web": $LAPIDARY_PORT_WEB, "api": $LAPIDARY_PORT_WEB,
-              "worker": $LAPIDARY_PORT_WEB, "peer": $LAPIDARY_PORT_PEER},
+    "ports": {"web": $LAPIDARY_PORT_WEB, "api": $LAPIDARY_PORT_WEB, "worker": $LAPIDARY_PORT_WEB},
     "extensions": """$extensions""", "migration": """$migration""",
-    "deviceId": "$device",
     # Which tree these images were built from, and which tree drove them. A comparison is only meaningful
     # (see drive --compare)
     # between reports that say so: a flow status that changed between two shas is a regression, and the
@@ -1316,22 +1303,9 @@ $rooted"
 # ---------------------------------------------------------------------------------------------------
 # status
 
-# One service stopped and started again, and only the peer.
-#
-# An installation whose peer role is down is the whole of the relay case: a folder read from one of its
-# other people while its owner is away can only be tested by taking the owner away, and stopping the
-# process is the only honest way to do that. Through `compose`, so it is this project's peer and not a
-# container named by hand.
-cmd_peer() {
-  case "${1:-}" in
-    stop | start) note "peer $1 for $PROJECT"; compose "$1" peer ;;
-    *) die "\`peer\` takes stop or start; got \`${1:-}\`." ;;
-  esac
-}
-
 cmd_status() {
   echo "project  $PROJECT (lane $LANE${AS:+, installation $AS})"
-  echo "ports    app $LAPIDARY_PORT_WEB, peer $LAPIDARY_PORT_PEER"
+  echo "port     app $LAPIDARY_PORT_WEB"
   echo "work     $WORK"
   echo "disk     / $(free_gb /) GB, $ROOT $(free_gb "$ROOT") GB; RAM available $(ram_gib) GiB"
   echo "images   $(or_none bash -c "docker images --format '{{.Repository}} {{.Size}}' | grep '^$PROJECT-'")"
@@ -1355,14 +1329,13 @@ case "${1:-}" in
   up) shift; cmd_up "$@" ;;
   seed) shift; cmd_seed "$@" ;;
   drive) shift; cmd_drive "$@" ;;
-  peer) shift; cmd_peer "$@" ;;
   down) shift; cmd_down "$@" ;;
   status) shift; cmd_status "$@" ;;
   *)
     echo "usage: scripts/e2e/stack.sh <build | up | seed | drive | down | status>" >&2
     echo "  drive [--compare <report.json>] [--only <flow,flow>]    down [--keep | --purge]" >&2
-    echo "  up [--min-ram <gib>]   peer <stop|start>" >&2
-    echo "  AS=a|b|c for one of three installations on this lane's block; scripts/e2e/group.sh runs three" >&2
+    echo "  up [--min-ram <gib>]" >&2
+    echo "  AS=a|b|c for one of three installations on this lane's block" >&2
     exit 2
     ;;
 esac

@@ -126,7 +126,6 @@ export const strings = {
      */
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
     removed: 'Removed parts — Lapidary',
-    sharing: 'Shared libraries — Lapidary',
     dashboard: 'Dashboard — Lapidary',
   },
   /**
@@ -139,7 +138,7 @@ export const strings = {
   frame: {
     /** The accessible name of the header's nav — "navigation" alone says nothing. */
     places: 'Places',
-    /** The grid of a library's parts, as a place beside Removed and Sharing. */
+    /** The grid of a library's parts, as a place beside Dashboard and Removed. */
     parts: 'Parts',
     /** The narrow-screen button that slides the places, and a grid's categories and filters, in over the page. */
     openDrawer: 'Menu',
@@ -351,12 +350,6 @@ export const strings = {
   parts: {
     loading: 'Loading parts…',
     failed: 'Could not load the parts in this library. Check that the api service is running, then reload.',
-    /**
-     * A render a sharer's installation made, on the shared-library page. The only place a
-     * rendered preview is still named: nothing in this installation makes one (R3), and the
-     * sharing protocol offers whatever the sharer's own table holds.
-     */
-    thumbnailAlt: (name: string) => `Rendered preview of ${name}`,
     /** The part's own picture, which is what a card shows since R1. */
     pictureAlt: (name: string) => `Picture of ${name}`,
     /**
@@ -633,8 +626,6 @@ export const strings = {
     compareFailed: 'Could not compare these revisions. Reload the page to try again.',
     /** Who has the part checked out, and since when (Phase 4 slice 1). */
     checkedOut: 'Checked out',
-    /** A part pulled from somebody's shared library (sharing S3): who it came from. */
-    sharedBy: 'From',
     checkedOutBy: (holder: string, since: string) =>
       `${holder}, since ${new Date(since).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`,
     releaseLock: 'Release…',
@@ -1085,11 +1076,6 @@ export const strings = {
      * is a tree that lies about what it contains.
      */
     root: 'All models',
-    /** The category row's share action, beside Rename and Delete. */
-    shareAction: 'Share',
-    shareFor: (name: string) => `Share ${name} with the people you are paired with`,
-    /** Beside a category this installation shares. */
-    shared: 'Shared',
     /** A branch's disclosure, named for its category, since every row's control looks alike. */
     showSubcategories: (name: string) => `Show the categories inside ${name}`,
     hideSubcategories: (name: string) => `Hide the categories inside ${name}`,
@@ -1699,205 +1685,6 @@ export const strings = {
      */
     categoryBody: (name: string | null) =>
       `No models are in ${name ?? 'this category'} yet. Drag a card onto it in the sidebar, or use a card's "Move to…" button — the rest of the library is still under All models.`,
-  },
-  /**
-   * Sharing with people you know (S1b): this installation's device id and name, and the people it is paired
-   * with. "Shared libraries" is the owner's word for the area; the code says `peer`.
-   */
-  sharing: {
-    title: 'Shared libraries',
-    lead: 'Share with people you know. Each of you pastes the other’s device id and address here, and your machines talk to each other directly — nothing passes through anybody else’s server.',
-    loading: 'Loading…',
-    loadFailed: 'Could not load sharing on this installation. Reload to try again.',
-    thisInstallation: 'This installation',
-    /** No device id yet: the peer role has never run here. */
-    off: 'Sharing is switched off here. Start the sharing service with deploy/compose.sharing.yaml, and this installation’s device id appears here for you to give to people.',
-    deviceId: 'Device id',
-    copy: 'Copy',
-    copied: 'Copied',
-    nameField: 'The name people you share with see',
-    namePlaceholder: 'Furkan’s workbench',
-    saveName: 'Save name',
-    savingName: 'Saving…',
-    people: 'People you share with',
-    /** Removal is soft, and this is where a person learns that before they click. */
-    removeNote: 'Removing somebody stops sharing with them straight away. Their entry is kept, and pairing with them again brings it back.',
-    none: 'Nobody yet. Pair with somebody by pasting their device id and address.',
-    pairDeviceId: 'Their device id',
-    pairAddress: 'Where to reach them',
-    addressPlaceholder: '192.168.1.24:8082',
-    pair: 'Pair',
-    pairing: 'Pairing…',
-    refusedWithoutReason: 'Could not save that. Reload and try again.',
-    online: 'Online',
-    /** Paired, and no hello has been answered yet. */
-    notReached: 'Not reached yet',
-    lastSeen: (at: string) =>
-      `Offline — last seen ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    /** Shown in place of a name until their hello has given one. */
-    unnamed: 'No name given yet',
-    removeButton: 'Remove',
-    removeLabel: (who: string) => `Stop sharing with ${who}`,
-    removing: 'Removing…',
-    /** Sharing a category (S2a): the dialog that shows what would be offered before anything is. */
-    shareTitle: (name: string) => `Share ${name}`,
-    shareBody: (parts: number) =>
-      parts === 1
-        ? '1 part in this category and everything under it will be offered, and so will parts you file here later.'
-        : `${parts} parts in this category and everything under it will be offered, and so will parts you file here later.`,
-    shareUnrecorded: (count: number) =>
-      count === 1 ? '1 part has no licence recorded.' : `${count} parts have no licence recorded.`,
-    shareNonCommercial: (count: number) =>
-      `${count === 1 ? '1 part is' : `${count} parts are`} licensed for non-commercial use only. The people you share with see each part's licence.`,
-    shareLicencesClear: 'Every part has a licence recorded, and none is licensed for non-commercial use only.',
-    shareCounting: 'Counting what this would offer…',
-    shareCountFailed: 'Could not count what this category holds. Close this and try again.',
-    shareConfirm: 'Share',
-    sharingNow: 'Sharing…',
-    shareCancel: 'Cancel',
-    shareFailed: 'Could not share this category. Close this and try again.',
-    /** The sharing page's list of what this installation offers. */
-    ownShares: 'What this installation shares',
-    ownSharesNone: 'Nothing yet. Share a category from the tree beside a library, and it appears here.',
-    ownShareParts: (count: number) => (count === 1 ? '1 part offered' : `${count} parts offered`),
-    stopNote: 'Stopping takes a category away from everyone it goes to, at once. Nothing in it is deleted.',
-    stopSharing: 'Stop sharing',
-    stopSharingLabel: (name: string) => `Stop sharing ${name}`,
-    stopping: 'Stopping…',
-    /** Under each person on the sharing page: what they share, each a link to it. */
-    theirShares: 'What they share',
-    theirSharesNone: 'Nothing shared with you yet.',
-    theirShareParts: (name: string, count: number) =>
-      count === 1 ? `${name}, 1 part offered` : `${name}, ${count} parts offered`,
-    /** A shared library: somebody else's category, read from the mirror, so it browses while they are away. */
-    libraryTitle: (name: string) => `${name} — Shared libraries — Lapidary`,
-    backToSharing: 'Back to shared libraries',
-    librarySharedBy: (sharer: string, count: number) =>
-      count === 1 ? `Shared by ${sharer}, 1 part offered` : `Shared by ${sharer}, ${count} parts offered`,
-    unnamedSharer: 'somebody who has not given a name',
-    librarySynced: (at: string) =>
-      `Last read ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    /** A folder read from one of its other people while its owner was away (S7). */
-    libraryRelayed: (relay: string, at: string) =>
-      `As ${relay} read it, ${new Date(at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`,
-    /** Passing a held folder's files on to its other people (S8). */
-    seedingLabel: 'Serve this folder’s files to the people in it',
-    seedingHeld: (held: number, listed: number) =>
-      `${held.toLocaleString('en-US')} of ${listed.toLocaleString('en-US')} files here can be served from this installation`,
-    seedingOffNote:
-      'Off: the folder stays, and what you pulled stays. Its people fetch its files from its owner, or from somebody else who holds them.',
-    seedingFailed: 'Could not change that. Reload the page and try again.',
-    libraryNotReadYet:
-      'Not read yet. It is read the next time their machine answers, and appears here once it has been.',
-    /** Parts leave this list when the sharer stops offering them; nothing of this installation's goes with them. */
-    libraryLead:
-      'This is what they offer. A part they stop offering leaves this list; nothing of yours goes with it.',
-    libraryAsksFirst:
-      'Its owner asks first: a pull waits until they let you have its files, and says so while it waits.',
-    libraryGone:
-      'This shared library is not here any more: its sharer stopped offering it, or you removed them.',
-    libraryLoadFailed: 'Could not load this shared library. Reload to try again.',
-    libraryEmpty: 'Nothing in it at the moment.',
-    noLicence: 'No licence recorded',
-    licences: (list: string) => `Licence: ${list}`,
-    partKind: (format: string | null, size: number | null) =>
-      [format?.toUpperCase(), size === null ? null : bytes(size)].filter((piece) => piece).join(' · '),
-    showMore: 'Show more',
-    showingMore: 'Loading…',
-    /** Pulling a shared library (S3) into one of this installation's. */
-    pullInto: 'Pull into',
-    pullAll: 'Pull all',
-    pullStarting: 'Starting…',
-    pullFailed: 'Could not start the pull. Reload and try again.',
-    pullNote:
-      'Pulled parts land under Shared, in a category named for who shares them, with their licences. Parts you already pulled are not fetched again.',
-    pullQueued: 'Waiting for the sharing service to start fetching…',
-    /** One pull of a sharer's folders runs at a time, so a part opened while another of theirs is fetching waits its turn (S9). */
-    pullQueuedBehind: (ahead: number) =>
-      ahead === 1
-        ? 'Waiting for one pull ahead of this one to finish…'
-        : `Waiting for ${ahead.toLocaleString('en-US')} pulls ahead of this one to finish…`,
-    partDownload: 'Pull',
-    partDownloadLabel: (name: string) => `Pull ${name} into your library`,
-    partHeld: 'In your library',
-    pullFetching: (done: number, total: number, bytesDone: number, bytesTotal: number) =>
-      `Fetching ${done} of ${total} files — ${bytes(bytesDone)} of ${bytes(bytesTotal)}`,
-    pullImporting: (settled: number, total: number) =>
-      total === 0 ? 'Importing what was fetched…' : `Importing — ${settled} of ${total} jobs finished`,
-    pullDone: (files: number) =>
-      files === 0
-        ? 'Pulled. This library already held every file, so nothing was fetched.'
-        : files === 1
-          ? 'Pulled 1 file.'
-          : `Pulled ${files} files.`,
-    pullStopped: (why: string) => `The pull stopped: ${why}`,
-    /** Unfinished, with the reason the last attempt stopped: it is tried again on its own. */
-    pullRetrying: (why: string) => `Trying again shortly. The last attempt stopped: ${why}`,
-    /** Asking first (S4). */
-    pullWaiting: 'Waiting for the sharer to let you pull this. Asked again every few seconds.',
-    pullPaused: 'Paused. What was fetched so far is kept, and resuming carries on from it.',
-    pause: 'Pause',
-    resume: 'Resume',
-    pullControlFailed: 'Could not change the pull. Reload and try again.',
-    /** Who a folder goes to. A folder shared before member lists existed reaches everyone paired until this is used. */
-    membersLabel: 'Who this goes to',
-    /** The same dialog opened from a row, where the page lists several folders and the title must say which. */
-    membersTitle: (folder: string) => `Who ${folder} goes to`,
-    membersEveryone: 'Everyone you are paired with',
-    membersNobodyPaired: 'Nobody is paired with this installation yet. Pair with somebody first, on this page.',
-    membersNone: 'Nobody — this folder reaches no one until you pick somebody.',
-    membersKept: 'Who this already goes to stays as it is. Change that on the sharing page.',
-    /** Introductions (S6): the people a shared folder goes to, as its owner published them. */
-    introductionsTitle: 'People you have been introduced to',
-    introductionsNote:
-      'The owner of a folder you have says who else has it. Accepting pairs with them, so you can fetch that folder’s files from whoever is awake — and so they can fetch yours from you.',
-    introducedBy: (person: string, folder: string, introducer: string) =>
-      `${person} has ${folder}, introduced by ${introducer}.`,
-    introductionReaches: (folder: string) =>
-      `Accepting lets them reach what you share with them, and nothing else — ${folder} is how you met, not what they get.`,
-    introductionAccept: 'Accept',
-    introductionDecline: 'Not now',
-    introductionAnswering: 'Answering…',
-    introductionFailed: 'Could not answer that introduction. Reload the page and try again.',
-    /** Taking it back (S10): somebody who is paired and is in none of the folders either of you shares. */
-    introducedBySomebody: (introducer: string) => `Introduced by ${introducer}`,
-    noFoldersInCommon:
-      'No folder in common any more. They stay on this list until you remove them, and removing them keeps everything you pulled.',
-    membersChange: 'Change who it goes to',
-    membersSave: 'Save',
-    membersSaving: 'Saving…',
-    membersFailed: 'Could not say who that folder goes to. Check that the api service is running, then try again.',
-    askFirstLabel: 'Ask me before anyone pulls its files',
-    askFirstNote:
-      'Everyone it goes to still sees what it holds. Its files go only to the people you let pull them.',
-    /**
-     * The same switch on the sharing page, where several folders have one each and each must say which.
-     * It opens with the visible label, word for word, because an accessible name that does not contain the
-     * label a person can see is a name they cannot say out loud to a speech-input tool (WCAG 2.5.3).
-     */
-    askFirstRowLabel: (folder: string) => `Ask me before anyone pulls its files — ${folder}`,
-    /** Switched off, the asks about that folder go: everybody it reaches may pull it, so there is nothing to decide. */
-    askFirstOffNote:
-      'Anyone you share it with can pull its files without asking. Switching this on again brings back who asked, and what you answered.',
-    askFirstFailed:
-      'Could not change how that folder is shared. Check that the api service is running, then try again.',
-    askFirstSaving: 'Saving…',
-    requests: 'Asking to pull',
-    requestsNote: 'People asking to pull a share that asks first. You can change an answer later.',
-    requestsNone: 'Nobody has asked to pull from a share that asks first.',
-    requestLine: (who: string, share: string) => `${who} asks to pull ${share}`,
-    requestAsked: 'Waiting for your answer',
-    requestGranted: 'You let them pull it',
-    requestDenied: 'You declined',
-    grant: 'Let them pull',
-    deny: 'Decline',
-    grantLabel: (who: string, share: string) => `Let ${who} pull ${share}`,
-    denyLabel: (who: string, share: string) => `Decline ${who}’s request to pull ${share}`,
-    requestFailed: 'Could not save your answer. Reload and try again.',
-    pulls: 'Your pulls',
-    pullLine: (share: string, sharer: string) => `${share}, from ${sharer}`,
-    pullFrom: (share: string) => `${share}, from somebody you removed or who gave no name`,
-    pullImportingPlain: 'Importing what was fetched…',
   },
   /**
    * The tag index: `/tags`, and one tag's own page (P3 — "tags as places").

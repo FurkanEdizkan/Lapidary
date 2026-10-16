@@ -42,7 +42,6 @@ const PART: PartDetail = {
   surfaceAreaMm2: { value: 9804.25, approximate: true },
   massG: null,
   lock: null,
-  sharedBy: null,
   sourceHash: '2222222222222222222222222222222222222222222222222222222222222222',
   sourceFormat: 'stl',
   sourceBytes: 204800,

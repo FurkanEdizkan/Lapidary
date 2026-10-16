@@ -5,7 +5,6 @@ import type { LibraryId } from "./LibraryId";
 import type { PartId } from "./PartId";
 import type { PartLock } from "./PartLock";
 import type { RevisionId } from "./RevisionId";
-import type { SharedBy } from "./SharedBy";
 
 /**
  * Everything one part's page shows.
@@ -101,8 +100,4 @@ storagePath: string | null, createdAt: string, updatedAt: string,
 /**
  * The part's active check-out, when somebody holds one (Phase 4 slice 1).
  */
-lock: PartLock | null, 
-/**
- * Who this part was pulled from, when it came from somebody's shared library (sharing S3).
- */
-sharedBy: SharedBy | null, };
+lock: PartLock | null, };

@@ -3,7 +3,6 @@
 //! Until S1 (2026-10-16) the API and the worker were two containers built from this binary with
 //! and without a `worker` feature, so the API image never linked the OCCT kernel. The kernel is
 //! gone, ingest takes about 200 ms a file, and a hobby library does not need four containers. The
-//! one other mode left is `LAPIDARY_ROLE=peer`, until sharing comes out (S3).
 
 mod web;
 
@@ -19,25 +18,15 @@ struct Config {
     database_url: String,
     #[serde(default = "default_bind")]
     bind: String,
-    /// Unset for the app. `peer` for the sharing listener (`deploy/compose.sharing.yaml`). The old
-    /// `api` and `worker` values are refused by name, so a compose file from before S1 says what
-    /// changed instead of starting half an application.
+    /// Gone. Read only so that a compose file from before S1 or S3, which still sets it, is refused
+    /// with a sentence saying what changed rather than starting as something it no longer is.
     role: Option<String>,
     // `Option` and checked by hand when the app starts, so each missing one gets its own sentence
-    // rather than figment's generic one, and so the peer role, which reads none of them, starts
-    // without them.
+    // rather than figment's generic one.
     ingest_dir: Option<PathBuf>,
     blob_root: Option<PathBuf>,
     // Where a partial upload is assembled before its bytes are verified and enter the store.
     upload_dir: Option<PathBuf>,
-    /// Where the peer role keeps this installation's identity key. Checked in the peer arm below.
-    ///
-    /// The key's digest is this installation's device id — what everyone sharing with it added by
-    /// hand — so this directory is the one whose loss changes who this machine says it is.
-    peer_dir: Option<PathBuf>,
-    /// Where the peer role stages the files it pulls until they are bundled into the store.
-    /// Checked in the peer arm, for `peer_dir`'s reason.
-    peer_staging: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
     /// Nothing in this process reads a file through it, and nothing should: it exists to be
@@ -343,7 +332,7 @@ async fn main() -> Result<()> {
         .extract()
         .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
-    let mode = Mode::from_env(config.role.as_deref())?;
+    refuse_old_role(config.role.as_deref())?;
 
     // `lapidary_db::connect()` classifies *why* the connection failed (unreachable, wrong
     // credentials, missing database) and that message is actionable on its own — this outer
@@ -367,193 +356,112 @@ async fn main() -> Result<()> {
         })?;
 
     tracing::info!(bind = %config.bind, "lapidary-server listening");
-    tracing::info!(mode = ?mode, "mode");
     let shutdown = tokio_util::sync::CancellationToken::new();
-    // Set by the peer arm alone, and read at the one `serve` below.
-    let mut peer_tls = None;
-    let (app_router, worker, flusher) = match mode {
-        Mode::App => {
-            tracing::info!(parsers = %parsers_description(), "parsers");
-            let blob_root = config
+    let (app_router, worker, flusher) = {
+        tracing::info!(parsers = %parsers_description(), "parsers");
+        let blob_root = config
                 .blob_root
                 .clone()
                 .context("Could not start: LAPIDARY_BLOB_ROOT is not set. It names the store every model is kept in.")?;
-            let ingest_dir = config
+        let ingest_dir = config
                 .ingest_dir
                 .clone()
                 .context("Could not start: LAPIDARY_INGEST_DIR is not set. It names the folder the scan button reads.")?;
-            // Required rather than defaulted: a default would put half-transferred files somewhere
-            // nobody chose, and the one wrong answer here — the blob root itself — would put
-            // incomplete bytes inside a store whose whole contract is that everything in it is
-            // complete.
-            let upload_dir = config
+        // Required rather than defaulted: a default would put half-transferred files somewhere
+        // nobody chose, and the one wrong answer here — the blob root itself — would put
+        // incomplete bytes inside a store whose whole contract is that everything in it is
+        // complete.
+        let upload_dir = config
                 .upload_dir
                 .clone()
                 .context("Could not start: LAPIDARY_UPLOAD_DIR is not set. It names where an upload waits until its bytes are checked.")?;
 
-            // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
-            // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
-            // never hold a connection a browser is waiting for.
-            let jobs_db = lapidary_db::connect(&config.database_url, lapidary_db::BACKGROUND)
-                .await
-                .context("Could not start: connecting the job worker to the database failed.")?;
-            // Before the loop starts, so a first run has a populated grid by the time anyone
-            // opens it; and the migration check after the seed, so the two do not race for the
-            // same library on a first run.
-            if let Some(examples) = &config.example_dir {
-                lapidary_ingest::seed_examples(jobs_db.clone(), &blob_root, examples).await;
-            }
-            enqueue_pending_migrations(&jobs_db).await;
-            let worker = spawn_worker(
-                jobs_db,
-                &config,
-                ingest_dir,
-                blob_root.clone(),
-                shutdown.clone(),
-            );
+        // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
+        // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
+        // never hold a connection a browser is waiting for.
+        let jobs_db = lapidary_db::connect(&config.database_url, lapidary_db::BACKGROUND)
+            .await
+            .context("Could not start: connecting the job worker to the database failed.")?;
+        // Before the loop starts, so a first run has a populated grid by the time anyone
+        // opens it; and the migration check after the seed, so the two do not race for the
+        // same library on a first run.
+        if let Some(examples) = &config.example_dir {
+            lapidary_ingest::seed_examples(jobs_db.clone(), &blob_root, examples).await;
+        }
+        enqueue_pending_migrations(&jobs_db).await;
+        let worker = spawn_worker(
+            jobs_db,
+            &config,
+            ingest_dir,
+            blob_root.clone(),
+            shutdown.clone(),
+        );
 
-            // Which blobs were read, written every five minutes and once more when the server
-            // stops (`docs/DATA.md` §1.4), rather than one UPDATE per read.
-            let touches = lapidary_db::Touches::default();
-            let flusher = {
-                let (touches, db, shutdown) = (touches.clone(), db.clone(), shutdown.clone());
-                tokio::spawn(async move {
-                    let mut every = tokio::time::interval(std::time::Duration::from_secs(300));
-                    every.tick().await;
-                    loop {
-                        tokio::select! {
-                            _ = every.tick() => {}
-                            () = shutdown.cancelled() => break,
-                        }
-                        if let Err(err) = touches.flush(&db).await {
-                            tracing::warn!(error = %err, "could not record which blobs were read; they keep their older access times");
-                        }
+        // Which blobs were read, written every five minutes and once more when the server
+        // stops (`docs/DATA.md` §1.4), rather than one UPDATE per read.
+        let touches = lapidary_db::Touches::default();
+        let flusher = {
+            let (touches, db, shutdown) = (touches.clone(), db.clone(), shutdown.clone());
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(std::time::Duration::from_secs(300));
+                every.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = every.tick() => {}
+                        () = shutdown.cancelled() => break,
                     }
-                })
-            };
-            // The last flush is `main`'s, once `serve` has drained every request that could still
-            // record a read.
-            let last = (touches.clone(), db.clone());
-            // One Postgres listener for this whole process, fanned out to every open tab
-            // (`crates/lapidary-api/src/events.rs`). It holds one pooled connection for as long as
-            // the process runs, and `shutdown` ends it, which is what ends every open stream.
-            let hub = lapidary_api::events::Hub::spawn(db.clone(), shutdown.clone()).await;
-            let api = router(
-                AppState {
-                    db,
-                    blob_root,
-                    upload_dir,
-                    touches,
-                    // Absolute or nothing — see the field's doc. A relative path here is
-                    // compose's unset default rather than an operator's choice, and showing it as
-                    // though it were one is the mistake this guards.
-                    host_storage_root: config
-                        .host_storage_root
-                        .as_ref()
-                        .filter(|path| path.is_absolute())
-                        .map(|path| path.display().to_string()),
-                },
-                Role::Api,
-            )
-            .merge(lapidary_api::events::router(hub));
-            let app = match &config.web_dir {
-                Some(dist) => {
-                    if !dist.join("index.html").is_file() {
-                        bail!(
-                            "Could not start: LAPIDARY_WEB_DIR is {} and there is no index.html in \
+                    if let Err(err) = touches.flush(&db).await {
+                        tracing::warn!(error = %err, "could not record which blobs were read; they keep their older access times");
+                    }
+                }
+            })
+        };
+        // The last flush is `main`'s, once `serve` has drained every request that could still
+        // record a read.
+        let last = (touches.clone(), db.clone());
+        // One Postgres listener for this whole process, fanned out to every open tab
+        // (`crates/lapidary-api/src/events.rs`). It holds one pooled connection for as long as
+        // the process runs, and `shutdown` ends it, which is what ends every open stream.
+        let hub = lapidary_api::events::Hub::spawn(db.clone(), shutdown.clone()).await;
+        let api = router(
+            AppState {
+                db,
+                blob_root,
+                upload_dir,
+                touches,
+                // Absolute or nothing — see the field's doc. A relative path here is
+                // compose's unset default rather than an operator's choice, and showing it as
+                // though it were one is the mistake this guards.
+                host_storage_root: config
+                    .host_storage_root
+                    .as_ref()
+                    .filter(|path| path.is_absolute())
+                    .map(|path| path.display().to_string()),
+            },
+            Role::Api,
+        )
+        .merge(lapidary_api::events::router(hub));
+        let app = match &config.web_dir {
+            Some(dist) => {
+                if !dist.join("index.html").is_file() {
+                    bail!(
+                        "Could not start: LAPIDARY_WEB_DIR is {} and there is no index.html in \
                              it. Point it at the folder `npm --prefix web run build` writes \
                              (web/dist), or unset it to serve the API alone.",
-                            dist.display()
-                        );
-                    }
-                    tracing::info!(web_dir = %dist.display(), "serving the browser app");
-                    web::with_web(api, dist)
+                        dist.display()
+                    );
                 }
-                None => api,
-            };
-            (app, Some(worker), Some((flusher, last)))
-        }
-        Mode::Peer => {
-            // Required rather than defaulted, for `upload_dir`'s reason and one of its own: the
-            // identity key's digest is what everyone sharing with this installation wrote down, so
-            // a default path would put it somewhere a rebuild forgets, and this machine would come
-            // back as a stranger to all of them.
-            let peer_dir = config.peer_dir.clone().context(
-                "Could not start as peer: LAPIDARY_PEER_DIR is not set. It names the directory \
-                 holding this installation's identity key, whose digest is the device id everyone \
-                 sharing with it added by hand.",
-            )?;
-            let identity =
-                std::sync::Arc::new(lapidary_peer::PeerIdentity::load_or_generate(&peer_dir)?);
-            let device = identity.device_id()?;
-            // Before the listener opens, so the api can show this id as soon as anything can reach
-            // this installation. The key stays on disk; only its digest goes to the database.
-            lapidary_db::PgSharing(db.clone())
-                .claim_identity(device)
-                .await
-                .context(
-                    "Could not start as peer: this installation's device id could not be recorded, \
-                     so the sharing page would have no id to show.",
-                )?;
-            tracing::info!(device_id = %device, "this installation's device id");
-            // One roster for the three readers: the handshake checks who is paired against it, the
-            // hello answers with the name in it, and each hello round refreshes it from what people
-            // added and removed through the api.
-            let roster = lapidary_peer::Roster::default();
-            peer_tls = Some(lapidary_peer::server_config(&identity, &roster)?);
-            // Not awaited by `main`, for the quarantine sweep's reason: it holds no lease, and a round
-            // cut off part-way leaves rows the next start's first round writes again.
-            tokio::spawn(lapidary_peer::sync::run(
-                db.clone(),
-                identity.clone(),
-                roster.clone(),
-                shutdown.clone(),
-            ));
-            // The hello and the share routes, one router: each share route asks the connection which
-            // installation it is before it reads anything.
-            let blob_root = config.blob_root.clone().context(
-                "Could not start as peer: LAPIDARY_BLOB_ROOT is not set. It names the store the files \
-                 you share are read from.",
-            )?;
-            let staging = config.peer_staging.clone().context(
-                "Could not start as peer: LAPIDARY_PEER_STAGING is not set. It names the directory the \
-                 files you pull wait in until they are imported.",
-            )?;
-            // Not awaited by `main`, for the hello round's reason: a pull stopped part-way is a row the
-            // next start picks up, and its staged files are where the fetch resumes.
-            tokio::spawn(lapidary_peer::pull::run(
-                db.clone(),
-                identity.clone(),
-                staging,
-                blob_root.clone(),
-                shutdown.clone(),
-            ));
-            let peer = lapidary_peer::router(device, roster)
-                .merge(lapidary_peer::shares::shares_router(db.clone()))
-                .merge(lapidary_peer::blob::blob_router(db.clone(), blob_root));
-            (peer, None, None)
-        }
+                tracing::info!(web_dir = %dist.display(), "serving the browser app");
+                web::with_web(api, dist)
+            }
+            None => api,
+        };
+        (app, Some(worker), Some((flusher, last)))
     };
 
-    // One `serve` for both modes, and one shutdown token: the peer differs only in what it
-    // accepts a connection over. Its listener refuses anyone whose key nobody wrote down, during
-    // the handshake, so nothing above this line ever sees such a connection.
-    let served = match peer_tls {
-        Some(tls) => {
-            lapidary_peer::serve_with_shutdown(
-                listener,
-                tls,
-                app_router,
-                shutdown_signal(shutdown.clone()),
-            )
-            .await
-        }
-        None => {
-            axum::serve(listener, app_router)
-                .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
-                .await
-        }
-    };
+    let served = axum::serve(listener, app_router)
+        .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
+        .await;
 
     // The listener is closed; the worker may still be finishing a file. Cancelling here
     // as well as in `shutdown_signal` covers the case where `serve` returned for some
@@ -582,50 +490,31 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// What this process runs. The app unless `LAPIDARY_ROLE` says `peer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// The API, the job worker and the browser app.
-    App,
-    /// The sharing listener (`deploy/compose.sharing.yaml`).
-    Peer,
-}
-
-impl Mode {
-    fn from_env(role: Option<&str>) -> Result<Mode> {
-        match role.map(str::trim) {
-            None | Some("") => Ok(Mode::App),
-            Some("peer") => Ok(Mode::Peer),
-            Some(old @ ("api" | "worker")) => bail!(
-                "Could not start: LAPIDARY_ROLE={old} is gone. One process now serves the API, \
-                 runs ingest and serves the app; remove LAPIDARY_ROLE from this service and \
-                 delete the separate api/worker/web services from your compose file (see \
-                 deploy/compose.yaml)."
-            ),
-            Some(other) => bail!(
-                "Could not start: LAPIDARY_ROLE={other} is not a mode this server has. Leave it \
-                 unset for the app, or set it to `peer` for the sharing listener."
-            ),
-        }
+/// `LAPIDARY_ROLE` chose between the processes this server used to be split into. One process does
+/// everything now, so any value is a compose file from before.
+fn refuse_old_role(role: Option<&str>) -> Result<()> {
+    match role.map(str::trim) {
+        None | Some("") => Ok(()),
+        Some(old) => bail!(
+            "Could not start: LAPIDARY_ROLE={old} is gone. One process now serves the API, runs \
+             ingest and serves the app, and sharing between installations has been removed; \
+             remove LAPIDARY_ROLE from this service and delete any separate api, worker, web or \
+             peer services from your compose file (see deploy/compose.yaml)."
+        ),
     }
 }
 
 #[cfg(test)]
-mod mode_tests {
-    use super::Mode;
+mod role_tests {
+    use super::refuse_old_role;
 
     #[test]
-    fn unset_is_the_app_and_peer_is_the_peer() {
-        assert_eq!(Mode::from_env(None).expect("unset"), Mode::App);
-        assert_eq!(Mode::from_env(Some("")).expect("empty"), Mode::App);
-        assert_eq!(Mode::from_env(Some("peer")).expect("peer"), Mode::Peer);
-    }
-
-    #[test]
-    fn the_two_old_roles_are_refused_by_name_with_what_to_do() {
-        for old in ["api", "worker"] {
-            let message = Mode::from_env(Some(old))
-                .expect_err("an old role must not start half an application")
+    fn unset_starts_and_every_old_role_is_refused_by_name_with_what_to_do() {
+        refuse_old_role(None).expect("unset");
+        refuse_old_role(Some("")).expect("empty");
+        for old in ["api", "worker", "peer"] {
+            let message = refuse_old_role(Some(old))
+                .expect_err("an old role must not start as something it no longer is")
                 .to_string();
             assert!(
                 message.contains(&format!("LAPIDARY_ROLE={old} is gone")),
@@ -633,10 +522,6 @@ mod mode_tests {
             );
             assert!(message.contains("remove LAPIDARY_ROLE"), "{message}");
         }
-        let message = Mode::from_env(Some("ingest"))
-            .expect_err("unknown")
-            .to_string();
-        assert!(message.contains("unset for the app"), "{message}");
     }
 }
 

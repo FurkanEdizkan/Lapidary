@@ -66,7 +66,7 @@ async fn stop(shutdown: &CancellationToken, pool: &sqlx::PgPool) {
 /// `datname` scopes it to this test: every lane's tests share one PostgreSQL, and `pg_stat_activity` is
 /// cluster-wide. `query LIKE 'LISTEN%lapidary_events%'` and not `%lapidary_events%`, which would match
 /// this very statement, and not `LISTEN%`, which in a real installation would also count the worker's
-/// job channel and the peer role's sharing channel.
+/// job channel.
 async fn listeners(pool: &sqlx::PgPool) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM pg_stat_activity \

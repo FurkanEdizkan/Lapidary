@@ -77,7 +77,7 @@ mod tests {
         }
     }
 
-    /// Captures every event's level and fields, the shape `lapidary-peer`'s refusal test uses.
+    /// Captures every event's level and fields.
     struct Logged(Arc<Mutex<Vec<(tracing::Level, String)>>>);
 
     impl tracing::Subscriber for Logged {

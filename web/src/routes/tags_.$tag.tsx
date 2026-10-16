@@ -17,7 +17,7 @@ import type { LibraryId } from '../lib/types'
  * the difference: `/tags/dragon?format=stl` and `/?tag=dragon&format=stl` show the same models.
  *
  * `tags_.` and not `tags.`: the underscore keeps this out of `/tags`'s layout, so the index of tags
- * is not drawn above every tag's page. `sharing_.shares.$shareId.tsx` is here for the same reason.
+ * is not drawn above every tag's page.
  */
 export const Route = createFileRoute('/tags_/$tag')({
   component: RouteComponent,

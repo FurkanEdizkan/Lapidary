@@ -30,7 +30,6 @@ test('the page you are on is marked, and the other places are links', async () =
   const marked = [...nav.querySelectorAll('[aria-current="page"]')].map((place) => place.textContent)
   expect(marked).toEqual([strings.removal.removedTitle])
   expect(screen.getByRole('link', { name: strings.frame.parts })).toBeDefined()
-  expect(screen.getByRole('link', { name: strings.sharing.title })).toBeDefined()
   expect(screen.queryByRole('link', { name: strings.removal.removedTitle })).toBeNull()
 })
 
