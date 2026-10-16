@@ -1576,10 +1576,16 @@ async fn a_file_changed_in_its_folder_is_refused_with_the_sentence(pool: sqlx::P
         file_uri(seeded.part),
         download_uri(seeded.revision, "?variant=original"),
     ] {
-        let (status, _, body) = get(app.clone(), &uri).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{uri}");
+        // The streaming read, so a pre-flight that let the file through is caught here, by the
+        // status, and not by the end-of-stream hash that would cut the body short behind it.
+        let (status, _, body) = get_streaming(app.clone(), &uri).await;
         assert_eq!(
-            message(&body),
+            status,
+            StatusCode::CONFLICT,
+            "refused before a byte is sent: {uri}"
+        );
+        assert_eq!(
+            message(&body.expect("a whole refusal")),
             "This file changed in your folder since Lapidary last read it — scan again."
         );
     }
