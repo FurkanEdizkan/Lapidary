@@ -53,7 +53,7 @@ use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::rejection::{FormRejection, JsonRejection, QueryRejection};
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, DownloadSource, PgParts};
@@ -96,6 +96,7 @@ pub async fn original(
     State(state): State<AppState>,
     Path(revision): Path<RevisionId>,
     query: Result<Query<DownloadQuery>, QueryRejection>,
+    headers: HeaderMap,
 ) -> Response {
     let AppState {
         db,
@@ -138,7 +139,58 @@ pub async fn original(
         },
         None => return missing_variant(),
     }
+    serve_original(&blob_root, &touches, source, &headers)
+}
 
+/// `GET /api/parts/{id}/file` — the part's **current** file, exactly as it arrived. One link per
+/// part that keeps working when a new revision is recorded: paste it into a slicer, a chat or a
+/// script and it always gives the newest file. The same bytes, headers and checks as
+/// `variant=original`, because it is that route with the revision looked up for you.
+///
+/// Access is what every route has today: whoever can reach the port. A deleted part, or one with
+/// no file, answers 404 as its page does.
+pub async fn current_file(
+    State(state): State<AppState>,
+    Path(part): Path<PartId>,
+    headers: HeaderMap,
+) -> Response {
+    let AppState {
+        db,
+        blob_root,
+        touches,
+        ..
+    } = state;
+    let parts = PgParts(db);
+    let revision = match parts.latest_revision(part).await {
+        Ok(Some(revision)) => revision,
+        Ok(None) => return no_such_part_file(),
+        Err(err) => return internal_error(&err),
+    };
+    match parts.source_for_download(revision).await {
+        Ok(Some(source)) => serve_original(&blob_root, &touches, source, &headers),
+        Ok(None) => no_such_part_file(),
+        Err(err) => internal_error(&err),
+    }
+}
+
+fn no_such_part_file() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "message": "No part with that id has a file here: it may have been deleted, or the link \
+                        may be mistyped. Open the part from the grid and copy its link again."
+        })),
+    )
+        .into_response()
+}
+
+/// The ingested bytes of `source`, whole or the one range asked for.
+fn serve_original(
+    blob_root: &std::path::Path,
+    touches: &lapidary_db::Touches,
+    source: DownloadSource,
+    headers: &HeaderMap,
+) -> Response {
     // Spec §2.5.1. Since migration `0013` the level is recorded on the `file` row, by the
     // same transaction that inserts it, from what `put_at` reported — so every row ingest
     // writes has one, including `link_existing`'s, which used to inherit the shared `blob`
@@ -153,7 +205,7 @@ pub async fn original(
     // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
     // `PathBuf` and a decode flag, so holding one in `AppState` would buy nothing and put
     // source-byte access in a struct every other route shares.
-    let store = SourceReader::open(&blob_root);
+    let store = SourceReader::open(blob_root);
 
     // `storage_path` is null while `migrate_storage` is still draining a library — a live
     // state for as long as that job takes, hours on a real corpus, and not an edge case to
@@ -176,7 +228,23 @@ pub async fn original(
         Ok(reader) => reader,
         Err(err) => return unreadable(&source.hash, source.storage_path.as_deref(), &err),
     };
-    let body = stream_verified(reader, source.hash);
+    let etag = format!("\"{}\"", source.hash.to_hex());
+    let size = u64::try_from(source.size_bytes).unwrap_or(0);
+    let range = match requested_range(headers, &etag, size) {
+        Ok(range) => range,
+        Err(()) => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{size}"))],
+                Json(serde_json::json!({
+                    "message": format!(
+                        "That range starts past the end of the file, which is {size} bytes. Ask for a range inside it, or for the whole file."
+                    )
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Recorded in memory and written by the next flush (`DATA.md` §1.4), as `blob.rs` records.
     // This is the *only* warm input a
@@ -185,6 +253,27 @@ pub async fn original(
     touches.record(&source.hash);
 
     let filename = download_filename(&source.part_name, &source.format);
+    if let Some((start, end)) = range {
+        // A range is a resumed or split download. Its bytes cannot be checked against the digest,
+        // which covers the whole file — so this is the one answer that skips the outgoing hash,
+        // and the strong `ETag` is how the client checks the file it has put back together.
+        let len = end - start + 1;
+        return (
+            StatusCode::PARTIAL_CONTENT,
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+                (header::CACHE_CONTROL, "no-cache".to_owned()),
+                (header::ETAG, etag),
+                (header::CONTENT_DISPOSITION, content_disposition(&filename)),
+                (header::ACCEPT_RANGES, "bytes".to_owned()),
+                (header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}")),
+                (header::CONTENT_LENGTH, len.to_string()),
+            ],
+            stream_range(reader, start, len),
+        )
+            .into_response();
+    }
+    let body = stream_verified(reader, source.hash);
     (
         [
             // Always, and never `model/stl`: a browser that renders the file inline is a
@@ -203,8 +292,9 @@ pub async fn original(
             // Quoted per RFC 9110, strong because these are exact bytes — and the same
             // digest `DATA.md` §5.1 asks the UI to show beside the button, so a user can
             // check what they got against what they were promised.
-            (header::ETAG, format!("\"{}\"", source.hash.to_hex())),
+            (header::ETAG, etag),
             (header::CONTENT_DISPOSITION, content_disposition(&filename)),
+            (header::ACCEPT_RANGES, "bytes".to_owned()),
             // From `blob.size_bytes`, the uncompressed length. Without it the response is
             // chunked and a client cannot tell a complete download from one this route
             // abandoned mid-body on a hash mismatch — which is the whole reason the
@@ -214,6 +304,83 @@ pub async fn original(
         body,
     )
         .into_response()
+}
+
+/// The one byte range a request asks for, inclusive, or `None` to send the whole file.
+///
+/// Only a single `bytes=` range is honoured: `start-end`, `start-` or `-suffix`. Anything else —
+/// several ranges, another unit, a header that does not parse — is ignored and the whole file is
+/// sent, which RFC 9110 §14.2 allows. `If-Range` that names anything but this file's `ETag` also
+/// sends the whole file: the file at `/parts/{id}/file` changes when a revision is recorded, and
+/// resuming a download of the old one onto the new one would splice two files together.
+/// `Err` is a range that starts past the end, which is 416.
+fn requested_range(headers: &HeaderMap, etag: &str, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(range) = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Ok(None);
+    };
+    if let Some(if_range) = headers.get(header::IF_RANGE)
+        && if_range.to_str().ok() != Some(etag)
+    {
+        return Ok(None);
+    }
+    let Some(spec) = range.trim().strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if spec.contains(',') {
+        return Ok(None);
+    }
+    let Some((first, last)) = spec.trim().split_once('-') else {
+        return Ok(None);
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let parsed = match (first.parse::<u64>(), last.parse::<u64>()) {
+        (Ok(start), Ok(end)) if start <= end => (start, end.min(size.saturating_sub(1))),
+        (Ok(start), Err(_)) if last.is_empty() => (start, size.saturating_sub(1)),
+        (Err(_), Ok(suffix)) if first.is_empty() && suffix > 0 => {
+            (size.saturating_sub(suffix), size.saturating_sub(1))
+        }
+        _ => return Ok(None),
+    };
+    if size == 0 || parsed.0 >= size {
+        return Err(());
+    }
+    Ok(Some(parsed))
+}
+
+/// `len` bytes from `start`, streamed the way `stream_verified` streams the whole file. The
+/// stored bytes may be a zstd frame, so the start is reached by reading through, not by seeking.
+fn stream_range(mut reader: Box<dyn std::io::Read + Send>, start: u64, len: u64) -> Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    tokio::task::spawn_blocking(move || {
+        let mut skipped = std::io::Read::take(&mut reader, start);
+        if let Err(source) = std::io::copy(&mut skipped, &mut std::io::sink()) {
+            let _ = tx.blocking_send(Err(source));
+            return;
+        }
+        let mut wanted = std::io::Read::take(reader, len);
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(&mut wanted, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx
+                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(source) => {
+                    let _ = tx.blocking_send(Err(source));
+                    return;
+                }
+            }
+        }
+    });
+    Body::from_stream(ReceiverStream::new(rx))
 }
 
 /// The blob's bytes as a response body, hashed on the way out.

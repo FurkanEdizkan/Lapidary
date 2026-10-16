@@ -333,6 +333,9 @@ pub fn router(state: AppState, role: Role) -> Router {
                 // route is: nothing proxies a browser to the worker, and this URL is one a
                 // user clicks.
                 .route("/api/revisions/{id}/download", get(download::original))
+                // The part's current file, one link that survives new revisions. See
+                // `download::current_file`.
+                .route("/api/parts/{id}/file", get(download::current_file))
                 // A library's tags as an index, and one tag's neighbours (P3). Its own router for the
                 // reason Phase 6's two below give. Not the facet panel: these count over the whole
                 // library and never withhold a count. See `tags.rs`.

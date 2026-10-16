@@ -6,6 +6,7 @@ import {
   blobUrl,
   DEFAULT_LIBRARY_ID,
   downloadUrl,
+  fileLink,
   exportUrl,
   fetchBatchStatus,
   fetchFields,
@@ -899,6 +900,9 @@ export function Detail({
             {strings.download.original}
           </a>
         )}
+        {part.sourceHash === null ? null : (
+          <CopyLink key={part.id} part={part.id} name={part.name} className={page ? standing : control} />
+        )}
         {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
           <SlicerExport key={part.revision} part={part} />
         ) : null}
@@ -1267,6 +1271,60 @@ function History({ part }: { part: PartId }) {
         ))}
       </ol>
     </section>
+  )
+}
+
+/**
+ * Copies the part's stable file link. The clipboard is a secure-context API, and a LAN install is
+ * plain http, where `navigator.clipboard` is absent — so the fallback is the link itself, selected,
+ * for the person to copy, rather than a button that silently does nothing.
+ */
+function CopyLink({ part, name, className }: { part: PartId; name: string; className: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'manual'>('idle')
+  const link = fileLink(part)
+  const copied = state === 'copied'
+  const manual = state === 'manual'
+  const label = copied ? strings.download.linkCopied : strings.download.copyLink
+  const announced = copied ? strings.download.linkCopied : ''
+  useEffect(() => {
+    if (state !== 'copied') return
+    const timer = window.setTimeout(() => setState('idle'), 2000)
+    return () => window.clearTimeout(timer)
+  }, [state])
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={strings.download.copyLinkFor(name)}
+        className={className}
+        onClick={() => {
+          const clipboard = navigator.clipboard as Clipboard | undefined
+          if (clipboard === undefined) {
+            setState('manual')
+            return
+          }
+          clipboard.writeText(link).then(
+            () => setState('copied'),
+            () => setState('manual'),
+          )
+        }}
+      >
+        {label}
+      </button>
+      <span aria-live="polite" className="sr-only">
+        {announced}
+      </span>
+      {manual ? (
+        <input
+          readOnly
+          value={link}
+          aria-label={strings.download.linkToCopy}
+          ref={(input) => input?.select()}
+          onFocus={(event) => event.currentTarget.select()}
+          className="w-full max-w-md rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 font-mono text-xs"
+        />
+      ) : null}
+    </>
   )
 }
 
