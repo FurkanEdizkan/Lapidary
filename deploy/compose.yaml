@@ -10,9 +10,8 @@ services:
         limits:
           memory: 1g
           cpus: "1.0"
-    build:
-      context: .
-      dockerfile: db/Containerfile
+    # Stock Postgres, pinned. pg_trgm ships in its contrib and migration 0001 creates it.
+    image: docker.io/library/postgres:18@sha256:7341002d2b8c7c5bdd7542a671a95b36196c0b5b888daf454ae4fc33ba5346d7
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lapidary}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}

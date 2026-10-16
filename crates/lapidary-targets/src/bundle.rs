@@ -307,7 +307,14 @@ impl Bundle {
             let entry = archive
                 .by_index_raw(index)
                 .map_err(|err| refuse(format!("file {index} cannot be read ({err})")))?;
-            let name = entry.name().to_owned();
+            let name = entry
+                .name()
+                .map_err(|err| {
+                    refuse(format!(
+                        "file {index} has a name that cannot be read ({err})"
+                    ))
+                })?
+                .into_owned();
             if !safe_name(&name) {
                 return Err(refuse(format!("it names a file outside itself, {name}")));
             }

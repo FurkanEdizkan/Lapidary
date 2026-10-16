@@ -11,14 +11,11 @@ members = [
     "crates/lapidary-storage",
     "crates/lapidary-cad",
     "crates/lapidary-jobs",
-    "crates/lapidary-index",
     "crates/lapidary-vcs",
-    "crates/lapidary-build",
     "crates/lapidary-targets",
     "crates/lapidary-api",
     "crates/lapidary-ingest",
     "crates/lapidary-peer",
-    "crates/lapidary-enterprise",
     "bin/lapidary-server",
     "bin/lapidary",
     "xtask",
@@ -41,14 +38,11 @@ lapidary-db = { path = "crates/lapidary-db" }
 lapidary-storage = { path = "crates/lapidary-storage" }
 lapidary-cad = { path = "crates/lapidary-cad" }
 lapidary-jobs = { path = "crates/lapidary-jobs" }
-lapidary-index = { path = "crates/lapidary-index" }
 lapidary-vcs = { path = "crates/lapidary-vcs" }
-lapidary-build = { path = "crates/lapidary-build" }
 lapidary-targets = { path = "crates/lapidary-targets" }
 lapidary-api = { path = "crates/lapidary-api" }
 lapidary-ingest = { path = "crates/lapidary-ingest" }
 lapidary-peer = { path = "crates/lapidary-peer" }
-lapidary-enterprise = { path = "crates/lapidary-enterprise" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.92"
@@ -126,7 +120,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # the crate does not compile.
 ts-rs = { version = "12.0.1", features = ["uuid-impl", "jiff-impl"] }
 uuid = { version = "1.26.0", features = ["v7", "serde"] }
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.lints.clippy]

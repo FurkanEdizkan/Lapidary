@@ -108,7 +108,12 @@ pub(crate) fn open_archive<'a>(bytes: &'a [u8], caps: &Caps) -> Result<Archive<'
     }
     // Names are checked once, up front, so no later lookup can reach a rejected one.
     for name in archive.file_names() {
-        if is_unsafe_name(name) {
+        let name = name.map_err(|source| {
+            malformed(format!(
+                "it holds an entry whose name cannot be read: {source}"
+            ))
+        })?;
+        if is_unsafe_name(&name) {
             return Err(refused(format!("it holds an unsafe entry path: {name}")));
         }
     }

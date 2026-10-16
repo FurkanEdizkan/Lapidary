@@ -223,7 +223,14 @@ async fn a_bundle_holds_every_revision_byte_identical_with_a_manifest_that_names
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body.to_vec())).expect("a ZIP");
     let names: Vec<String> = (0..archive.len())
-        .map(|index| archive.by_index(index).expect("entry").name().to_owned())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .expect("entry")
+                .name()
+                .expect("a readable name")
+                .into_owned()
+        })
         .collect();
     let earlier = "flanges/revisions/1/flange-dn40-lp-3310-02.stl";
     assert_eq!(names, [earlier, FLANGE, VEE, "manifest.json"]);

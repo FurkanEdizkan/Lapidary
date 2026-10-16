@@ -160,6 +160,4 @@ Start at [`docs/README.md`](docs/README.md) for the map.
 
 ## Licence
 
-**AGPL-3.0-only**, for the entire workspace including `lapidary-enterprise`. The Ed25519
-licence file gates fleet size and support entitlement as a contractual boundary, not as
-technical DRM. Contributions are taken under the DCO; there is no CLA.
+**AGPL-3.0-only**, for the entire workspace. Contributions are taken under the DCO; there is no CLA.

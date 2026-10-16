@@ -19,4 +19,3 @@ jobs:
       - run: docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=worker -t lapidary-worker:${{ github.sha }} .
       - run: df -h /
       - run: docker build -f deploy/web/Containerfile -t lapidary-web:${{ github.sha }} .
-      - run: docker build -f deploy/db/Containerfile -t lapidary-db:${{ github.sha }} deploy

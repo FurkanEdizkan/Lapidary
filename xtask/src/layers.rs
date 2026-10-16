@@ -2,19 +2,9 @@
 //!
 //! L0 depends on no workspace crate. L1 depends only on L0. L2 depends only on L0 and
 //! L1 — never on another L2, never on L3. L3 may depend on L0, L1, L2, and other L3
-//! crates, but never on Enterprise and never on a binary.
+//! crates, but never on a binary.
 //!
 //! If two L2 crates need to share something, it moves to lapidary-core.
-//!
-//! `Enterprise` is a wrapper tier above L3, not a fifth peer of L0-L3: it holds only
-//! `lapidary-enterprise`, which wraps auth, RBAC and audit around `lapidary-api`. So
-//! `lapidary-enterprise → lapidary-api` must be allowed — that's Enterprise→L3, permitted
-//! below by the `Layer::Enterprise => to != Layer::Bin` arm (Enterprise may depend on
-//! anything except a binary). The reverse edge, `lapidary-api → lapidary-enterprise`,
-//! would make the free application depend on the enterprise crate, breaking the project
-//! rule that the application is free and complete with no gated features. That edge is
-//! now forbidden structurally, by `edge_allowed` giving L3 no path to `Enterprise` — not
-//! by code review.
 
 use std::collections::BTreeMap;
 
@@ -24,10 +14,6 @@ pub enum Layer {
     L1,
     L2,
     L3,
-    /// Wraps L3, not a peer of it. Holds `lapidary-enterprise` alone: licence
-    /// verification, auth, RBAC, audit. Exists for one product reason — see the
-    /// module doc — so it's named for that reason, not slotted in as `L4`.
-    Enterprise,
     /// Binaries and xtask. Outside the rule; may depend on anything.
     Bin,
 }
@@ -38,8 +24,7 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
     Some(match crate_name {
         "lapidary-core" => Layer::L0,
         "lapidary-db" | "lapidary-storage" => Layer::L1,
-        "lapidary-cad" | "lapidary-jobs" | "lapidary-index" | "lapidary-vcs" | "lapidary-build"
-        | "lapidary-targets" => Layer::L2,
+        "lapidary-cad" | "lapidary-jobs" | "lapidary-vcs" | "lapidary-targets" => Layer::L2,
         // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
         // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
         // exists as its own crate rather than a module inside lapidary-api.
@@ -48,7 +33,6 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         // crate rather than a module in lapidary-api for lapidary-ingest's reason: the api must
         // not link what speaks to another installation, and FORBIDDEN_PAIRS below says so.
         "lapidary-api" | "lapidary-ingest" | "lapidary-peer" => Layer::L3,
-        "lapidary-enterprise" => Layer::Enterprise,
         "lapidary-server" | "lapidary" | "xtask" => Layer::Bin,
         _ => return None,
     })
@@ -59,7 +43,7 @@ pub type Graph = BTreeMap<String, Vec<String>>;
 
 /// Named-pair prohibitions a tier rule cannot express, because they forbid one specific
 /// edge rather than a layer relation. `lapidary-api` (L3) legitimately depends on most L2
-/// crates — `lapidary-db`, `lapidary-index`, `lapidary-vcs` and friends — so L3→L2 stays
+/// crates — `lapidary-jobs`, `lapidary-targets`, `lapidary-vcs` and friends — so L3→L2 stays
 /// permitted in `edge_allowed`. `lapidary-cad` is the one L2 crate it may never reach: the
 /// open path (opening a part for viewing) lives in `lapidary-api`, and a non-negotiable
 /// product rule says the open path never invokes the CAD kernel. Keep the reason next to
@@ -109,19 +93,6 @@ pub enum Violation {
 impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Violation::ForbiddenEdge {
-                from,
-                from_layer,
-                to,
-                to_layer,
-            } if *from_layer == Layer::L3 && *to_layer == Layer::Enterprise => write!(
-                f,
-                "{from} ({from_layer:?}) -> {to} ({to_layer:?}) is forbidden. The \
-                 application is free and complete — no gated features. {from} may not \
-                 depend on {to}; that edge would make the free application depend on the \
-                 enterprise crate. lapidary-enterprise may depend on lapidary-api, never \
-                 the reverse."
-            ),
             Violation::ForbiddenEdge {
                 from,
                 from_layer,
@@ -183,7 +154,6 @@ fn edge_allowed(from: Layer, to: Layer) -> bool {
         // `Layer::L3`, so no graph today can exercise an L3→L3 edge. Nothing tests this arm —
         // do not manufacture a second L3 crate just to cover it.
         Layer::L3 => to == Layer::L0 || to == Layer::L1 || to == Layer::L2 || to == Layer::L3,
-        Layer::Enterprise => to != Layer::Bin,
         Layer::Bin => true,
     }
 }
@@ -263,8 +233,8 @@ mod tests {
         let g = graph(&[
             ("lapidary-core", &[]),
             ("lapidary-db", &["lapidary-core"]),
-            ("lapidary-index", &["lapidary-core", "lapidary-db"]),
-            ("lapidary-api", &["lapidary-core", "lapidary-index"]),
+            ("lapidary-targets", &["lapidary-core", "lapidary-db"]),
+            ("lapidary-api", &["lapidary-core", "lapidary-targets"]),
         ]);
         assert!(check(&g).is_ok());
     }
@@ -273,8 +243,8 @@ mod tests {
     fn rejects_l2_depending_on_l2() {
         let g = graph(&[
             ("lapidary-core", &[]),
-            ("lapidary-vcs", &["lapidary-index"]),
-            ("lapidary-index", &["lapidary-core"]),
+            ("lapidary-vcs", &["lapidary-targets"]),
+            ("lapidary-targets", &["lapidary-core"]),
         ]);
         let violations = check(&g).expect_err("L2 -> L2 must be rejected");
         assert_eq!(
@@ -282,7 +252,7 @@ mod tests {
             vec![Violation::ForbiddenEdge {
                 from: "lapidary-vcs".to_owned(),
                 from_layer: Layer::L2,
-                to: "lapidary-index".to_owned(),
+                to: "lapidary-targets".to_owned(),
                 to_layer: Layer::L2,
             }]
         );
@@ -324,111 +294,16 @@ mod tests {
         let v = Violation::ForbiddenEdge {
             from: "lapidary-vcs".to_owned(),
             from_layer: Layer::L2,
-            to: "lapidary-index".to_owned(),
+            to: "lapidary-targets".to_owned(),
             to_layer: Layer::L2,
         };
         let msg = v.to_string();
         assert!(msg.contains("lapidary-vcs"));
-        assert!(msg.contains("lapidary-index"));
+        assert!(msg.contains("lapidary-targets"));
         assert!(
             msg.contains("lapidary-core"),
             "message must state the remedy"
         );
-    }
-
-    #[test]
-    fn allows_enterprise_to_depend_on_l3_so_enterprise_can_wrap_the_api() {
-        // lapidary-enterprise wraps auth/RBAC/audit around lapidary-api, so
-        // lapidary-enterprise → lapidary-api (Enterprise→L3) must be permitted.
-        // The reverse edge, lapidary-api → lapidary-enterprise, is now forbidden
-        // structurally — see rejects_api_depending_on_enterprise below.
-        //
-        // This is Enterprise→L3, not L3→L3: `layer_of` maps `lapidary-enterprise` to
-        // `Layer::Enterprise` and `lapidary-api` to `Layer::L3`. The `Layer::L3 => to ==
-        // Layer::L3` arm in `edge_allowed` (true L3→L3) is untested — see the comment
-        // beside it.
-        let g = graph(&[
-            ("lapidary-api", &[]),
-            ("lapidary-enterprise", &["lapidary-api"]),
-        ]);
-        assert!(check(&g).is_ok());
-    }
-
-    #[test]
-    fn rejects_api_depending_on_enterprise() {
-        let g = graph(&[("lapidary-api", &["lapidary-enterprise"])]);
-        let violations =
-            check(&g).expect_err("lapidary-api -> lapidary-enterprise must be rejected");
-        assert_eq!(
-            violations,
-            vec![Violation::ForbiddenEdge {
-                from: "lapidary-api".to_owned(),
-                from_layer: Layer::L3,
-                to: "lapidary-enterprise".to_owned(),
-                to_layer: Layer::Enterprise,
-            }]
-        );
-    }
-
-    #[test]
-    fn violation_message_for_api_to_enterprise_names_the_edge_and_the_remedy() {
-        let v = Violation::ForbiddenEdge {
-            from: "lapidary-api".to_owned(),
-            from_layer: Layer::L3,
-            to: "lapidary-enterprise".to_owned(),
-            to_layer: Layer::Enterprise,
-        };
-        let msg = v.to_string();
-        assert!(msg.contains("lapidary-api"));
-        assert!(msg.contains("lapidary-enterprise"));
-        assert!(
-            msg.contains("free and complete"),
-            "message must state the remedy: the app is free and complete"
-        );
-    }
-
-    #[test]
-    fn rejects_enterprise_depending_on_a_binary() {
-        let g = graph(&[("lapidary-enterprise", &["lapidary-server"])]);
-        let violations = check(&g).expect_err("Enterprise -> Bin must be rejected");
-        assert_eq!(violations.len(), 1);
-        match &violations[0] {
-            Violation::ForbiddenEdge {
-                from_layer: Layer::Enterprise,
-                to_layer: Layer::Bin,
-                ..
-            } => {}
-            other => panic!("expected Enterprise->Bin violation, got {other:?}"),
-        }
-        let msg = violations[0].to_string();
-        assert!(msg.contains("lapidary-enterprise"));
-        assert!(msg.contains("lapidary-server"));
-        assert!(
-            !msg.contains("L2 crates may depend only on L0 and L1"),
-            "message must not reuse the L2 remedy for a binary-dependency violation"
-        );
-        assert!(
-            msg.contains("nothing may depend on a binary") || msg.contains("depend on a binary"),
-            "message must state the actual rule broken: nothing may depend on a binary"
-        );
-    }
-
-    #[test]
-    fn rejects_l2_depending_on_enterprise() {
-        // edge_allowed(L2, Enterprise) is already false; this is coverage for existing
-        // correct behaviour, closing a gap left when rejects_l2_depending_on_l3 was
-        // repointed from lapidary-enterprise to lapidary-api.
-        let g = graph(&[("lapidary-jobs", &["lapidary-enterprise"])]);
-        let violations = check(&g).expect_err("L2 -> Enterprise must be rejected");
-        assert_eq!(violations.len(), 1);
-        match &violations[0] {
-            Violation::ForbiddenEdge {
-                from_layer: Layer::L2,
-                to_layer: Layer::Enterprise,
-                ..
-            } => {}
-            other => panic!("expected L2->Enterprise violation, got {other:?}"),
-        }
     }
 
     #[test]
@@ -444,6 +319,17 @@ mod tests {
             } => {}
             other => panic!("expected L3->Bin violation, got {other:?}"),
         }
+        let msg = violations[0].to_string();
+        assert!(msg.contains("lapidary-api"));
+        assert!(msg.contains("lapidary-server"));
+        assert!(
+            !msg.contains("L2 crates may depend only on L0 and L1"),
+            "message must not reuse the L2 remedy for a binary-dependency violation"
+        );
+        assert!(
+            msg.contains("nothing may depend on a binary"),
+            "message must state the actual rule broken: nothing may depend on a binary"
+        );
     }
 
     #[test]
@@ -463,7 +349,7 @@ mod tests {
 
     #[test]
     fn rejects_l1_depending_on_l2() {
-        let g = graph(&[("lapidary-db", &["lapidary-index"])]);
+        let g = graph(&[("lapidary-db", &["lapidary-targets"])]);
         let violations = check(&g).expect_err("L1 -> L2 must be rejected");
         assert_eq!(violations.len(), 1);
         match &violations[0] {
@@ -496,9 +382,9 @@ mod tests {
         // Verify the accumulator collects all violations, not just the first.
         // BTreeMap iteration order is deterministic (alphabetical by crate name).
         let g = graph(&[
-            ("lapidary-core", &["lapidary-db"]),   // L0 -> L1 forbidden
-            ("lapidary-vcs", &["lapidary-index"]), // L2 -> L2 forbidden
-            ("lapidary-jobs", &["lapidary-api"]),  // L2 -> L3 forbidden
+            ("lapidary-core", &["lapidary-db"]),     // L0 -> L1 forbidden
+            ("lapidary-vcs", &["lapidary-targets"]), // L2 -> L2 forbidden
+            ("lapidary-jobs", &["lapidary-api"]),    // L2 -> L3 forbidden
         ]);
         let violations = check(&g).expect_err("multiple violations must be collected");
         assert_eq!(
@@ -519,7 +405,7 @@ mod tests {
                 Violation::ForbiddenEdge {
                     from: "lapidary-vcs".to_owned(),
                     from_layer: Layer::L2,
-                    to: "lapidary-index".to_owned(),
+                    to: "lapidary-targets".to_owned(),
                     to_layer: Layer::L2,
                 },
             ]
@@ -551,9 +437,9 @@ mod tests {
 
     #[test]
     fn allows_a_different_l3_to_l2_edge() {
-        // lapidary-api -> lapidary-index is a legitimate L3->L2 edge. The lapidary-cad
+        // lapidary-api -> lapidary-targets is a legitimate L3->L2 edge. The lapidary-cad
         // prohibition is a named pair, not a blanket L3->L2 ban — this must still pass.
-        let g = graph(&[("lapidary-api", &["lapidary-index"])]);
+        let g = graph(&[("lapidary-api", &["lapidary-targets"])]);
         assert!(check(&g).is_ok());
     }
 
@@ -591,11 +477,11 @@ mod tests {
     #[test]
     fn accepts_all_current_members_as_publishable_false() {
         // Documents intent, not a live guard: `check_publish` ignores `name` when the flag
-        // is `false`, so this loop cannot fail on its own — a fifteenth crate added here
+        // is `false`, so this loop cannot fail on its own — another crate added here
         // without `publish = false` would not turn this test red, only leave the hardcoded
         // list stale. The real protection is `main.rs`, which walks live `cargo metadata`
         // on every CI run and calls `check_publish` per actual member, so an inverted or
-        // missing `publish = false` on any of the 15 crates below turns CI red immediately
+        // missing `publish = false` on any crate below turns CI red immediately
         // regardless of what this list says.
         let members = [
             "lapidary-core",
@@ -603,13 +489,11 @@ mod tests {
             "lapidary-storage",
             "lapidary-cad",
             "lapidary-jobs",
-            "lapidary-index",
+            "lapidary-targets",
             "lapidary-vcs",
-            "lapidary-build",
             "lapidary-targets",
             "lapidary-api",
             "lapidary-ingest",
-            "lapidary-enterprise",
             "lapidary-server",
             "lapidary",
             "xtask",
