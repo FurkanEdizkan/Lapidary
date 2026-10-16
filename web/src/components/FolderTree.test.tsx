@@ -47,7 +47,7 @@ const CABLE_CLIPS: FolderNode = {
 }
 /**
  * No models and two subcategories, which is the shape the delete copy used to lie about:
- * "No models are inside it. Nothing is removed…", and then two rows leave the sidebar.
+ * "No models are inside it.", and then two rows leave the sidebar.
  */
 const ENCLOSURES: FolderNode = {
   id: '01a06b30-4c11-7a92-8f03-6d1e5c9a0005',
@@ -367,7 +367,7 @@ test('a 409 with a reason this client does not recognise is a dead end too', asy
 test('the delete confirmation names the models, the subcategories, and what stays on disk', async () => {
   const fetchMock = stubFetch({
     folders: ok([TERRAIN, ROCKS]),
-    folderDelete: ok({ foldersHidden: 2, partsHidden: TERRAIN.partCount }),
+    folderDelete: ok({ foldersDeleted: 2, partsDeleted: TERRAIN.partCount }),
   })
   renderTree()
 
@@ -388,13 +388,12 @@ test('the delete confirmation names the models, the subcategories, and what stay
   // cascades through subcategories exactly as the subcategory count says it does.
   expect(body).toContain('34 models and 1 subcategory are inside it')
   expect(body).toContain('counting every level')
-  // Soft delete, and the copy has to keep it apart from a purge and from cache eviction:
-  // the models are marked deleted and hidden, and nothing leaves the storage folder.
-  expect(body).toContain('marks them deleted')
-  expect(body).toContain('hides them from the grid')
-  expect(body).toContain('hides the subcategory under it')
-  expect(body).toContain('nothing is removed from your storage folder')
-  expect(body).toContain('no file moves on disk')
+  // Delete is final, and the copy has to say both halves: the models leave the library for
+  // good, and their files stay on disk.
+  expect(body).toContain('takes this category and the subcategory under it and those models out of the library')
+  expect(body).toContain('cannot be undone')
+  expect(body).toContain('The files themselves stay where they are on disk')
+  expect(body).not.toMatch(/hidden|hides|restore/i)
   expect(body).not.toMatch(/delete[sd]? the files|erase|remove the files/i)
 
   fireEvent.click(within(dialog).getByRole('button', { name: strings.folders.deleteConfirm }))
@@ -407,9 +406,9 @@ test('the delete confirmation names the models, the subcategories, and what stay
  * The two branches nothing rendered before, which is how both of them came to be wrong.
  *
  * The singular was an explicit requirement and was written correctly; it was simply never
- * exercised. The empty category was not: `soft_delete_subtree` marks every descendant
- * FOLDER deleted as well, so a category holding nothing but subcategories confirmed with
- * "No models are inside it. Nothing is removed…" and then took every one of those rows off
+ * exercised. The empty category was not: the delete takes every descendant FOLDER as
+ * well, so a category holding nothing but subcategories confirmed with
+ * "No models are inside it." and then took every one of those rows off
  * the sidebar — a destructive confirmation naming none of what it destroys.
  */
 test('the singular reads as one, and an empty category still names the subcategories that go', async () => {
@@ -421,9 +420,9 @@ test('the singular reads as one, and an empty category still names the subcatego
   )
   const one = screen.getByRole('dialog').textContent ?? ''
   expect(one).toContain('1 model and no subcategories are inside it')
-  expect(one).toContain('marks that model deleted and hides it from the grid')
+  expect(one).toContain('takes this category and that model out of the library, with its pictures and tags')
   expect(one).not.toContain('1 models')
-  expect(one).not.toContain('them from the grid')
+  expect(one).not.toContain('those models')
   fireEvent.click(
     within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.cancel }),
   )
@@ -433,8 +432,8 @@ test('the singular reads as one, and an empty category still names the subcatego
   // Two subcategories, neither holding a model, and the dialog says so rather than
   // reporting the category as empty.
   expect(empty).toContain('No models and 2 subcategories are inside it')
-  expect(empty).toContain('hides this category and the subcategories under it')
-  expect(empty).toContain('nothing is removed from your storage folder')
+  expect(empty).toContain('takes this category and the subcategories under it out of the library')
+  expect(empty).toContain('The files themselves stay where they are on disk')
 })
 
 /**
@@ -477,16 +476,16 @@ test('a category that is already gone says so instead of blaming the api service
 
 /**
  * The count in the confirmation is read when it opens, and the library can move underneath
- * an open dialog. The route answers `{ foldersHidden, partsHidden }` precisely so the
+ * an open dialog. The route answers `{ foldersDeleted, partsDeleted }` precisely so the
  * caller can check what it warned about against what happened; the previous version threw
  * that body away.
  */
-test('a delete that hid different numbers than it promised reports the ones that happened', async () => {
+test('a delete that took different numbers than it promised reports the ones that happened', async () => {
   stubFetch({
     folders: ok([TERRAIN, ROCKS]),
     // A scan filed seven more models under Terrain, and two more subcategories with them,
     // between the dialog opening and the confirm landing.
-    folderDelete: ok({ foldersHidden: 4, partsHidden: 41 }),
+    folderDelete: ok({ foldersDeleted: 4, partsDeleted: 41 }),
   })
   renderTree()
 
@@ -497,10 +496,10 @@ test('a delete that hid different numbers than it promised reports the ones that
     within(screen.getByRole('dialog')).getByRole('button', { name: strings.folders.deleteConfirm }),
   )
 
-  // `foldersHidden` counts the category itself along with its descendants, so four rows
-  // hidden is three subcategories — the dialog had named one.
+  // `foldersDeleted` counts the category itself along with its descendants, so four rows
+  // deleted is three subcategories — the dialog had named one.
   const note = await screen.findByText(strings.folders.deleteCountsDiffered(41, 3))
-  expect(note.textContent).toContain('41 models and 3 subcategories were hidden')
+  expect(note.textContent).toContain('41 models and 3 subcategories were deleted')
   expect(note.getAttribute('role')).toBe('alert')
 })
 
@@ -576,7 +575,7 @@ test('the chooser asks about a collision too, and keeps the target it was given'
 test('the delete confirmation takes focus onto cancel and hands it back to the row that opened it', async () => {
   stubFetch({
     folders: ok([TERRAIN, ROCKS]),
-    folderDelete: ok({ foldersHidden: 2, partsHidden: TERRAIN.partCount }),
+    folderDelete: ok({ foldersDeleted: 2, partsDeleted: TERRAIN.partCount }),
   })
   renderTree()
 

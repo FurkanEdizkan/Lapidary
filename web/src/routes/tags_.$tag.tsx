@@ -80,7 +80,7 @@ function Related({ library, tag }: { library: LibraryId; tag: string }) {
       ) : near.data === undefined ? null : near.data.parts === 0 ? (
         /*
           No live model carries it. The grid below will be empty, and an empty grid on its own reads as
-          a filter that went wrong — so the page says which of the two it is. Removal is soft, so the
+          a filter that went wrong — so the page says which of the two it is. The
           honest sentence is about the models, not about a tag being deleted: there is no tag to delete.
         */
         <p role="status" className="max-w-[70ch] text-sm text-[var(--color-muted)]">

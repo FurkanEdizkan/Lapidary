@@ -30,7 +30,7 @@ import type { LibraryId, TagCount } from '../lib/types'
 export const Route = createFileRoute('/tags')({
   component: RouteComponent,
   /*
-    `library` travels in the URL as it does on the grid, Removed and the review queue, for the same
+    `library` travels in the URL as it does on the grid and the review queue, for the same
     reason: addressing the seeded library directly is a wrong-library bug the moment an operator has
     two of them.
 
@@ -61,7 +61,7 @@ export function TagsPage({ library, order }: { library: LibraryId; order?: 'name
   const byLetter = order === 'name'
   return (
     /*
-      No `current` place. The header's places are the grid, the dashboard and Removed; this
+      No `current` place. The header's places are the grid and the dashboard; this
       is reached from the grid's tag panel and from a tag on a model, which is where somebody is when
       they want it. Nor a reading measure on the list — the lead is prose and keeps its 70ch, the list
       is a directory and fills the window, which is the `/duplicates` finding applied before it could

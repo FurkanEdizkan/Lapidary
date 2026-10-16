@@ -24,9 +24,8 @@ export type PartCard = { id: PartId, library: LibraryId,
 revision: RevisionId, name: string, partNumber: string | null, 
 /**
  * The path this part is known by — its identity since slice 6a, carried verbatim
- * from `PartSummary`. The removed list names a part by this in its purge
- * confirmation, because two parts can share a name and only one of them is the one
- * being destroyed.
+ * from `PartSummary`. A delete confirmation names a part by this, because two parts
+ * can share a name and only one of them is the one being deleted.
  */
 sourcePath: string, triangleCount: number | null, 
 /**
@@ -106,9 +105,4 @@ directory: string | null,
  *
  * `None` alongside `directory`, and for the same reason.
  */
-storagePath: string | null, createdAt: string, updatedAt: string, 
-/**
- * When the part was removed, `None` for a live one; carried verbatim from
- * `PartSummary.removed_at`, which says why the removed list needs it.
- */
-removedAt: string | null, };
+storagePath: string | null, createdAt: string, updatedAt: string, };

@@ -34,7 +34,7 @@ test('the page you are on is marked, and the other places are links', async () =
 
 /**
  * M2: the places are the grid and the dashboard. Profile and Settings are the user menu's, at the
- * header's right, and the removed list is no longer a place.
+ * header's right.
  */
 test('Profile and Settings are in the user menu, not among the places', async () => {
   renderInRouter(() => (
@@ -44,7 +44,6 @@ test('Profile and Settings are in the user menu, not among the places', async ()
   ), '/profile')
   const nav = await screen.findByRole('navigation', { name: strings.frame.places })
   expect(nav.textContent).not.toContain(strings.settings.title)
-  expect(nav.textContent).not.toContain(strings.removal.removedTitle)
   expect(screen.getByRole('button', { name: strings.user.menu })).toBeDefined()
   // A closed popover is out of jsdom's accessibility tree; it is found by the id its button names.
   const menu = document.getElementById('user-menu') as HTMLElement

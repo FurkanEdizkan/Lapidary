@@ -83,8 +83,7 @@ function card(suffix: string, name: string, path: string): PartCard {
     storagePath: null,
     createdAt: '2026-09-26T09:05:00Z',
     updatedAt: '2026-09-26T09:05:00Z',
-    removedAt: null,
-  }
+    }
 }
 
 const BRACKET = card('0001', 'Bracket, LP-1042-03', 'mounting/LP-1042-03.stl')
@@ -121,7 +120,7 @@ function valueFor(config: DrawnWidget): WidgetResult {
         status: 'ok',
         value: {
           kind: 'storage',
-          value: { sourceBytes: 4_194_304, derivativeBytes: 314_572, derivativeRatio: 0.075, removedBytes: 0 },
+          value: { sourceBytes: 4_194_304, derivativeBytes: 314_572, derivativeRatio: 0.075 },
         },
       }
     case 'instanceStorage':
@@ -132,7 +131,6 @@ function valueFor(config: DrawnWidget): WidgetResult {
           value: {
             sourceBytes: 8_388_608,
             derivativeBytes: 629_145,
-            removedBytes: 0,
             quarantinedBytes: 0,
             renderCacheBytes: 0,
             onDiskBytes: null,

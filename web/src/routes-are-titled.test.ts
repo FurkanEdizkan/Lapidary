@@ -81,7 +81,7 @@ test('every page route renders its own title', () => {
 test('the gate is looking at the real routes', () => {
   const paths = Object.keys(routes)
   expect(paths).toContain('./routes/index.tsx')
-  expect(paths).toContain('./routes/removed.tsx')
+  expect(paths).toContain('./routes/dashboard.tsx')
   expect(paths).toContain('./routes/parts.$partId.tsx')
 })
 

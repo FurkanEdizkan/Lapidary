@@ -381,7 +381,6 @@ const MOTOR_MOUNT: PartCard = {
   storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
   createdAt: "2026-08-14T09:12:44Z",
   updatedAt: "2026-08-14T09:12:44Z",
-  removedAt: null,
 };
 
 const HEX_NUT: PartCard = {
@@ -404,7 +403,6 @@ const HEX_NUT: PartCard = {
   storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
   createdAt: "2026-08-14T09:12:51Z",
   updatedAt: "2026-08-14T09:12:51Z",
-  removedAt: null,
 };
 
 /**
@@ -434,7 +432,6 @@ const SHAFT_COUPLER: PartCard = {
   storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
   createdAt: "2026-08-14T09:13:02Z",
   updatedAt: "2026-08-14T09:13:02Z",
-  removedAt: null,
 };
 
 const page = (parts: PartCard[]): PartsPage => ({ parts, next: null });
@@ -1984,9 +1981,6 @@ const LIBRARY_STORAGE: LibraryStorage = {
   sourceBytes: 12_480_000,
   derivativeBytes: 5_718_866,
   derivativeRatio: 5_718_866 / 12_480_000,
-  // Nothing removed, which is every library until somebody removes something — and the
-  // case where the panel must say nothing about it rather than "0 B removed".
-  removedBytes: 0,
 };
 
 // The download is a plain anchor on purpose: the browser reads `Content-Disposition`,
@@ -2378,34 +2372,6 @@ test("a finished status closes the stream, so the browser does not re-open it fo
   await waitFor(() => expect(streams[0]?.closed).toBe(true));
 });
 
-test("the storage panel says removed bytes are still on disk, and says nothing when there are none", async () => {
-  // The panel's two totals exclude removed parts, so without this clause a removal reads
-  // as a saving: the number falls and the volume does not. `CLAUDE.md` forbids exactly
-  // that reading, and this is the only place in the app a figure could produce it.
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    storage: ok({ ...LIBRARY_STORAGE, removedBytes: 2_400_000 }),
-  });
-  renderIndex();
-
-  const panel = await screen.findByText(/removed, still on disk/);
-  expect(panel.textContent).toMatch(/2\.4 MB removed, still on disk/);
-  // Never the other word. The bytes are waiting, not recovered.
-  expect(panel.textContent).not.toMatch(/freed|recovered|saved/i);
-
-  // And nothing at all when there is nothing removed, which is every library until
-  // somebody removes something. A permanent "0 B removed" would be noise on all of them.
-  cleanup();
-  stubFetch({
-    healthz: ok(HEALTHY),
-    parts: ok(page([MOTOR_MOUNT])),
-    storage: ok(LIBRARY_STORAGE),
-  });
-  renderIndex();
-  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
-  expect(screen.queryByText(/removed, still on disk/)).toBeNull();
-});
 /**
  * The category tree beside the grid, and the one half of it that needs a real router: the
  * selection is a search param, so proving it lands in the URL means rendering the route
@@ -2474,7 +2440,6 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   compressed: true,
   createdAt: "2026-08-30T11:04:19Z",
   updatedAt: "2026-08-30T11:04:19Z",
-  removedAt: null,
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
   storagePath: "libraries/default/Terrain/Rocks/basalt_cliff_face/basalt_cliff_face.stl",
 };
@@ -2498,7 +2463,6 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   compressed: true,
   createdAt: "2026-05-02T08:41:07Z",
   updatedAt: "2026-05-02T08:41:07Z",
-  removedAt: null,
   directory: null,
   storagePath: null,
 };
@@ -2779,7 +2743,6 @@ function instanceStorage(hostStorageRoot: string | null) {
   return {
     sourceBytes: 150406654,
     derivativeBytes: 7555924,
-    removedBytes: 0,
     quarantinedBytes: 0,
     onDiskBytes: null,
     hostStorageRoot,
@@ -2801,11 +2764,10 @@ function cliffPath(): string {
  * The whole store, under the one library's line — including the two figures no per-library
  * panel can carry.
  *
- * `quarantinedBytes` is the one that matters: a purge removes the part chain, so those
- * bytes belong to no library and appear in no other number this application renders. They
- * are on the disk for thirty days regardless, and a storage panel that could not mention
- * them was under-reporting by everything anybody had purged — and, since R4's `0055`, by
- * every thumbnail and rung Lapidary deleted on its own behalf.
+ * `quarantinedBytes` is the one that matters: those bytes belong to no library and appear in
+ * no other number this application renders. They are on the disk for thirty days regardless,
+ * and a storage panel that could not mention them was under-reporting by every thumbnail and
+ * rung Lapidary deleted on its own behalf since R4's `0055`.
  */
 test("the instance panel reports quarantined bytes, which no library total can", async () => {
   stubFetch({
@@ -2814,13 +2776,11 @@ test("the instance panel reports quarantined bytes, which no library total can",
     storage: ok({
       sourceBytes: 9684,
       derivativeBytes: 4096,
-      removedBytes: 0,
       derivativeRatio: 0.42,
     }),
     instanceStorage: ok({
       sourceBytes: 9684,
       derivativeBytes: 4096,
-      removedBytes: 0,
       quarantinedBytes: 12976,
       onDiskBytes: null,
       hostStorageRoot: null,
@@ -2829,7 +2789,7 @@ test("the instance panel reports quarantined bytes, which no library total can",
   renderIndex();
 
   expect(
-    await screen.findByText(strings.storage.everything(9684, 4096, 0, 12976)),
+    await screen.findByText(strings.storage.everything(9684, 4096, 12976)),
   ).toBeDefined();
   // And the library's own line still says nothing about them, which is why the other exists.
   expect(screen.getByText(strings.storage.totals(9684, 4096, 0.42))).toBeDefined();
@@ -2846,7 +2806,6 @@ test("measuring the disk asks the server to walk it and explains the difference"
   const tracked = {
     sourceBytes: 9684,
     derivativeBytes: 4096,
-    removedBytes: 0,
     quarantinedBytes: 0,
     hostStorageRoot: null,
   };
@@ -3033,13 +2992,11 @@ test("the card's name is still a link to the full page", async () => {
 /**
  * The panel shows the part; it does not offer to change it.
  *
- * `Detail` is shared with the page, and the page hands it a remove button through the
- * `actions` slot. This asserts the slot is genuinely how that arrives — the first version
- * rendered the hint *inside* `Detail`, so the quick-look told people they could restore a
- * model from a panel that offered no way to remove one. Visible immediately in a browser
- * and to no test, which is why there is one now.
+ * `Detail` is shared with the page, and the page hands it a delete button through the
+ * `actions` slot. This asserts the slot is genuinely how that arrives, so the quick-look never
+ * offers to delete a part.
  */
-test("the quick-look shows the part without offering to remove it", async () => {
+test("the quick-look shows the part without offering to delete it", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT])),
@@ -3052,7 +3009,6 @@ test("the quick-look shows the part without offering to remove it", async () => 
   // Waited for, so the assertion is about a filled panel and not an empty one.
   await within(dialog).findAllByText(strings.detail.approximate);
 
-  expect(within(dialog).queryByText(strings.removal.removeHint)).toBeNull();
   expect(within(dialog).queryByRole("button", { name: strings.removal.remove })).toBeNull();
 });
 
@@ -3702,7 +3658,7 @@ test("shift-click selects a range, and the count says how many", async () => {
 });
 
 /** One request per part, and the one that failed is named, with why, and left selected. */
-test("removing a selection reports the part that failed and keeps it selected", async () => {
+test("deleting a selection reports the part that failed and keeps it selected", async () => {
   const fetchMock = stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
@@ -3716,6 +3672,8 @@ test("removing a selection reports the part that failed and keeps it selected", 
   );
   fireEvent.click(screen.getByRole("checkbox", { name: strings.selection.selectPart(HEX_NUT.name) }));
   fireEvent.click(screen.getByRole("button", { name: strings.removal.remove }));
+  const confirm = await screen.findByRole("dialog", { name: strings.removal.confirmTitleMany(2) });
+  fireEvent.click(within(confirm).getByRole("button", { name: strings.removal.confirm }));
 
   expect(
     await screen.findByText(strings.selection.failure(HEX_NUT.name, strings.removal.removeFailed)),
@@ -3723,6 +3681,34 @@ test("removing a selection reports the part that failed and keeps it selected", 
   expect(fetchMock).toHaveBeenCalledWith(`/api/parts/${MOTOR_MOUNT.id}`, { method: "DELETE" });
   expect(fetchMock).toHaveBeenCalledWith(`/api/parts/${HEX_NUT.id}`, { method: "DELETE" });
   expect(screen.getByText(strings.selection.count(1))).toBeTruthy();
+});
+
+/**
+ * Delete is final, so the bar asks first: the dialog names the count and says the files stay on
+ * disk, and cancelling it sends nothing.
+ */
+test("deleting a selection asks first, and cancelling deletes nothing", async () => {
+  const fetchMock = stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([MOTOR_MOUNT, HEX_NUT])),
+    partRemove: async () => ({ ok: true, status: 204 }),
+  });
+  renderIndex();
+  fireEvent.click(await screen.findByRole("button", { name: strings.selection.toggle }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: strings.selection.selectPart(MOTOR_MOUNT.name) }),
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: strings.selection.selectPart(HEX_NUT.name) }));
+  fireEvent.click(screen.getByRole("button", { name: strings.removal.remove }));
+
+  const confirm = await screen.findByRole("dialog", { name: strings.removal.confirmTitleMany(2) });
+  expect(confirm.textContent).toContain(strings.removal.confirmBodyMany(2));
+  expect(confirm.textContent).toContain("stay where they are on disk");
+  fireEvent.click(within(confirm).getByRole("button", { name: strings.folders.cancel }));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+  expect(screen.getByText(strings.selection.count(2))).toBeTruthy();
 });
 
 /** Ids picked in one library mean nothing in the next, even where the cards look the same. */

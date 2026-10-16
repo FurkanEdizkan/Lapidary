@@ -780,3 +780,48 @@ test('a field value changed elsewhere replaces what the box shows when the part 
   fireEvent.keyDown(bin, { key: 'Enter' })
   await waitFor(() => expect(stock.value).toBe('7'))
 })
+
+/**
+ * Delete is final (owner, 2026-10-17), so it asks first, and the question says the file on
+ * disk is left alone. Confirmed, the part is gone and the page leaves for the grid; cancelled,
+ * nothing is sent.
+ */
+test('delete asks first, says the file stays on disk, and leaves the page once done', async () => {
+  stub(PART)
+  const rootRoute = createRootRoute({ component: () => <PartPage partId={PART.id} /> })
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: [`/parts/${PART.id}`] }),
+  })
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RouterProvider router={router as never} />
+    </QueryClientProvider>,
+  )
+
+  const menu = await openMenu(strings.detail.more)
+  fireEvent.click(within(menu).getByRole('button', { name: strings.removal.remove }))
+  const dialog = await screen.findByRole('dialog', { name: strings.removal.confirmTitle(PART.name) })
+  expect(dialog.textContent).toContain('The file itself stays where it is on disk.')
+  expect(dialog.textContent).toContain('cannot be undone')
+
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.removal.confirm }))
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(`/api/parts/${PART.id}`, { method: 'DELETE' }),
+  )
+  await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+})
+
+test('cancelling the delete sends nothing', async () => {
+  stub(PART)
+  renderPage()
+
+  const menu = await openMenu(strings.detail.more)
+  fireEvent.click(within(menu).getByRole('button', { name: strings.removal.remove }))
+  const dialog = await screen.findByRole('dialog', { name: strings.removal.confirmTitle(PART.name) })
+  fireEvent.click(within(dialog).getByRole('button', { name: strings.folders.cancel }))
+
+  expect(screen.queryByRole('dialog')).toBeNull()
+  const calls = vi.mocked(fetch).mock.calls as unknown as [string, RequestInit | undefined][]
+  expect(calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
+})

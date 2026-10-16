@@ -241,8 +241,8 @@ function selectsAll(event: { key: string; ctrlKey: boolean; metaKey: boolean }):
 /**
  * The count, the two actions, and afterwards the parts an action did not change.
  *
- * Move and Remove only: purge stays on the Removed page, one part at a time, because it is the
- * one thing in the product that cannot be undone.
+ * Delete asks first — the page holding this bar puts a confirmation in front of it, because
+ * delete cannot be undone.
  */
 export function SelectionBar({
   count,
@@ -288,7 +288,6 @@ export function SelectionBar({
           className={button}
           disabled={count === 0 || busy}
           onClick={onRemove}
-          title={strings.removal.removeHint}
         >
           {strings.removal.remove}
         </button>

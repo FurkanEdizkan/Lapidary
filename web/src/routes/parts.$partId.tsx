@@ -13,6 +13,7 @@ import { MovePartDialog } from '../components/FolderTree'
 import { ShowInFolder } from '../components/ShowInFolder'
 import { Menu } from '../components/Menu'
 import { closeMenu } from '../components/Dialog'
+import { ConfirmDelete } from '../components/ConfirmDelete'
 import { strings } from '../lib/strings'
 import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
@@ -98,7 +99,7 @@ const ITEM =
  * Everything a part's page can do to the part besides downloading it, behind one ⋯ button.
  *
  * Download is the page's one standing control, because getting the file is what a person came
- * for; Render, Move, the storage path and Remove are occasional, and seven buttons in a row made
+ * for; Move, the storage path and Delete are occasional, and seven buttons in a row made
  * every one of them look as important as Download.
  *
  * They were on the grid's panel alone once, which a keyboard could not open, so for a while they
@@ -112,6 +113,7 @@ function PartActions({ part }: { part: PartDetail }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [moving, setMoving] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   // The host's own view of the store, so the path this page prints is one a person can
   // paste. `false` because the walk behind `onDisk` is the expensive figure and this page
   // wants only the root.
@@ -122,10 +124,11 @@ function PartActions({ part }: { part: PartDetail }) {
   const remove = useMutation({
     mutationFn: () => removePart(part.id),
     onSuccess: async () => {
-      // Both lists change: this part leaves the grid and joins the removed list. Awaited so the
-      // navigation lands on a grid that has already dropped the card, rather than showing it for
-      // one frame and then blinking it away. This part's own library, which `PartDetail` carries.
+      // The part no longer exists, so this page has nothing left to show: back to the grid.
+      // Awaited so the navigation lands on a grid that has already dropped the card, rather
+      // than showing it for one frame and then blinking it away.
       await queryClient.invalidateQueries({ queryKey: ['parts', part.library] })
+      queryClient.removeQueries({ queryKey: ['part', part.id] })
       await navigate({ to: '/' })
     },
   })
@@ -147,21 +150,30 @@ function PartActions({ part }: { part: PartDetail }) {
         </div>
         <ShowInFolder part={part} hostRoot={instance.data?.hostStorageRoot ?? null} />
         <div className="border-t border-[var(--color-border)] pt-2">
-          <button type="button" onClick={() => remove.mutate()} disabled={remove.isPending} className={ITEM}>
-            {remove.isPending ? strings.removal.removing : strings.removal.remove}
+          <button
+            type="button"
+            onClick={(event) => {
+              closeMenu(event.currentTarget)
+              setConfirming(true)
+            }}
+            className={ITEM}
+          >
+            {strings.removal.remove}
           </button>
-          {/*
-            The reassurance sits under the control rather than behind a confirmation dialog.
-            Removing is reversible and touches nothing on disk, so a modal would spend on this
-            action the alarm that purge is going to need.
-          */}
-          <p className="mt-1 px-2 text-xs text-[var(--color-muted)]">{strings.removal.removeHint}</p>
         </div>
       </Menu>
-      {remove.isError ? (
-        <span role="alert" className="text-xs text-[var(--color-muted)]">
-          {strings.removal.removeFailed}
-        </span>
+      {confirming ? (
+        <ConfirmDelete
+          title={strings.removal.confirmTitle(part.name)}
+          body={strings.removal.confirmBody(part.name)}
+          busy={remove.isPending}
+          failure={remove.isError ? strings.removal.removeFailed : null}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => {
+            remove.reset()
+            setConfirming(false)
+          }}
+        />
       ) : null}
       {moving ? (
         <MovePartDialog part={{ id: part.id, name: part.name }} library={part.library} onClose={() => setMoving(false)} />

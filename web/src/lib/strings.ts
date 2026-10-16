@@ -93,7 +93,6 @@ export const strings = {
      * is findable in a tab strip and one called `Part 0193…` is not.
      */
     part: (name: string | null) => (name === null ? 'Part — Lapidary' : `${name} — Lapidary`),
-    removed: 'Removed parts — Lapidary',
     settings: 'Settings — Lapidary',
     profile: 'Profile — Lapidary',
     dashboard: 'Dashboard — Lapidary',
@@ -171,7 +170,7 @@ export const strings = {
   frame: {
     /** The accessible name of the header's nav — "navigation" alone says nothing. */
     places: 'Places',
-    /** The grid of a library's parts, as a place beside Dashboard and Removed. */
+    /** The grid of a library's parts, as a place beside Dashboard. */
     parts: 'Parts',
     /** The narrow-screen button that slides the places, and a grid's categories and filters, in over the page. */
     openDrawer: 'Menu',
@@ -292,8 +291,7 @@ export const strings = {
     facetTally: (count: number | null) =>
       count === null ? 'present' : count.toLocaleString('en-US'),
     /**
-     * The worker's queue for one library. Only the clauses that are true, for the reason the
-     * storage line only shows removed bytes when there are some: a standing row of zeroes is
+     * The worker's queue for one library. Only the clauses that are true: a standing row of zeroes is
      * noise, and the moment one is not zero it is the only thing on the widget worth reading.
      */
     queueLine: (pending: number, running: number, failed: number) => {
@@ -637,49 +635,22 @@ export const strings = {
     mass: 'Mass',
   },
   removal: {
-    remove: 'Remove from library',
-    /** Said before the click, so the reassurance arrives when the hesitation does. */
-    removeHint: 'Hidden from the library. Nothing on disk changes, and you can restore it.',
-    removing: 'Removing…',
-    removeFailed: 'Could not remove this part. Nothing changed — try again.',
-    restore: 'Restore',
-    restoring: 'Restoring…',
-    restoreFailed: 'Could not restore this part. It is still removed — try again.',
-    /** The list is the only route back to a removed part: every other read path filters
-     *  them out, so without this delete would be a one-way door. */
-    removedTitle: 'Removed parts',
-    removedEmpty: 'Nothing has been removed from this library.',
-    removedLead:
-      'These are hidden from the library and still on disk. Restore one at any time, or purge it to start the 30-day countdown before its bytes are removed.',
-    removedCount: (count: number) =>
-      count === 1 ? '1 removed part' : `${count.toLocaleString('en-US')} removed parts`,
-    purge: 'Purge permanently',
+    remove: 'Delete',
+    removing: 'Deleting…',
+    removeFailed: 'Could not delete this part. Nothing changed — try again.',
     /**
-     * Names the part by its *path*, not its name, because a confirmation that cannot be
-     * answered correctly is worse than none: since slice 6a the path is what tells two
-     * parts called `bracket` apart, and this is the one irreversible action in the
-     * product. The second sentence is the one fact that makes this survivable, and it is
-     * stated as a deadline rather than a promise of recovery — there is no restore button
-     * after this, only a hash and an operator.
+     * Delete is final (owner, 2026-10-17): there is no restore and no removed list. The body
+     * says so, and says the one thing that makes it safe to press — the model file itself is
+     * never touched, so the part comes back by scanning or uploading that file again.
      */
-    /**
-     * When a removed part was removed: purge starts a 30-day countdown the page describes, and
-     * a row that cannot say how long a part has sat here leaves somebody guessing. A date, not a
-     * time, since that is the grain the countdown is counted in.
-     */
-    removedOn: (iso: string) => `Removed ${new Date(iso).toLocaleDateString('en-US', { dateStyle: 'medium' })}`,
-    purgeTitle: 'Purge this part?',
-    purgeConfirmAction: 'Purge permanently',
-    purgeConfirm: (sourcePath: string) =>
-      `Purge “${sourcePath}” permanently? Its part, revision and file records are removed now. Bytes nothing else uses are kept for 30 days, then deleted.`,
-    purging: 'Purging…',
-    purgeFailed: 'Could not purge this part. Nothing was removed — try again.',
-    /** Deliberately not "freed". Nothing is freed today; these bytes are waiting. */
-    purgedNothing: 'Purged. Its bytes are still in use by another part and were kept.',
-    purgedQuarantined: (blobs: number, stored: number) =>
-      blobs === 1
-        ? `Purged. 1 file (${bytes(stored)}) is kept for 30 days, then deleted.`
-        : `Purged. ${blobs.toLocaleString('en-US')} files (${bytes(stored)}) are kept for 30 days, then deleted.`,
+    confirmTitle: (name: string) => `Delete ${name}?`,
+    confirmTitleMany: (count: number) =>
+      count === 1 ? 'Delete 1 part?' : `Delete ${count.toLocaleString('en-US')} parts?`,
+    confirmBody: (name: string) =>
+      `“${name}” is taken out of the library: its pictures, tags and revisions go with it, and this cannot be undone. The file itself stays where it is on disk.`,
+    confirmBodyMany: (count: number) =>
+      `${count === 1 ? 'This part is' : `These ${count.toLocaleString('en-US')} parts are`} taken out of the library: their pictures, tags and revisions go with them, and this cannot be undone. The files themselves stay where they are on disk.`,
+    confirm: 'Delete',
   },
   scan: {
     /**
@@ -888,43 +859,24 @@ export const strings = {
       typeof ratio !== 'number'
         ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
         : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
-    /**
-     * Appended when the library holds removed parts, and the wording is the point: they
-     * are *still on disk*, not freed. Without this clause the totals above fall the moment
-     * somebody removes a part and the volume does not, which reads as a saving — the one
-     * reading `CLAUDE.md` says this area must never produce.
-     *
-     * Says nothing about quarantined bytes, which have no library to belong to: a purge
-     * removes the part chain, so those blobs are counted by no library's panel. That gap
-     * is real, was recorded in the slice 7 design as closing with Phase 4 — and is closed
-     * instead by `everything` below, which is the panel that *can* report them.
-     */
-    removed: (stored: number) => ` ${bytes(stored)} removed, still on disk.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
 
     /**
-     * The whole store, across every library, and the two figures no per-library line can
-     * carry: `removed` is on the disk until somebody purges it, and `quarantined` is on the
-     * disk *and* belongs to no library at all, because whatever would have said which one is
-     * gone.
+     * The whole store, across every library, and the figure no per-library line can carry:
+     * `quarantined` is on the disk *and* belongs to no library at all, because whatever would
+     * have said which one is gone.
      *
-     * Both clauses are conditional for the reason `removed` above is: a permanent
-     * "0 B waiting" is noise on every installation where nothing has been removed, and the
-     * moment one exists it is bytes nothing else in the application admits to.
+     * Conditional: a permanent "0 B on hold" is noise on every installation where nothing is
+     * waiting, and the moment some is it is bytes nothing else in the application admits to.
      *
-     * **The quarantine clause does not say "purged" any more.** It did, and it was true while
-     * a purge was the only thing that put bytes in there; after R4's `0055` the figure on
-     * every upgraded installation is mostly the thumbnails and rungs *Lapidary* deleted, and
-     * telling somebody who has purged nothing that their store holds purged data is the
-     * data-loss reading `CLAUDE.md` forbids this area from producing. It names the hold and
-     * what ends it instead, which is the part a person can act on.
-     *
-     * There is no thumbnail figure. It was `inlinePreviewBytes`, the one kind of derivative
-     * that lived in Postgres rather than on the volume, and `0055` deleted every row of it.
+     * **The quarantine clause does not say "purged".** That figure is mostly the thumbnails
+     * and rungs *Lapidary* deleted, and telling somebody their store holds deleted data is
+     * the data-loss reading `CLAUDE.md` forbids this area from producing. It names the hold
+     * and what ends it instead, which is the part a person can act on.
      */
-    everything: (source: number, derivative: number, removed: number, quarantined: number) =>
-      `Everything: ${bytes(source + derivative + removed + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of files made for other tools${removed > 0 ? `, ${bytes(removed)} removed and still on disk` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} on hold for 30 days before the space comes back` : ''}.`,
+    everything: (source: number, derivative: number, quarantined: number) =>
+      `Everything: ${bytes(source + derivative + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of files made for other tools${quarantined > 0 ? `, ${bytes(quarantined)} on hold for 30 days before the space comes back` : ''}.`,
     /**
      * The walk is opt-in because it costs the server a look at every file. Worded as the
      * question it answers rather than as the work it does — "measure" is what the user
@@ -987,10 +939,9 @@ export const strings = {
    *
    * A category is a location and never an identity (`FolderId`'s own doc says so), and
    * every string here has to keep that true. Moving a model changes where it is filed and
-   * where its directory sits on disk. Deleting a category hides what is inside it and
-   * leaves every byte alone. Neither is `DATA.md` §1.6's purge, and neither is evicting
-   * the derivative cache — three different things this product must never let read as
-   * each other, which is why the delete copy below says what stays as plainly as it says
+   * where its directory sits on disk. Deleting a category takes what is inside it out of the
+   * library and leaves every model file alone. Neither is evicting the derivative cache —
+   * different things this product must never let read as each other, which is why the delete copy below says what stays as plainly as it says
    * what goes.
    */
   /**
@@ -1025,7 +976,7 @@ export const strings = {
   /** The grid opened on a category deleted since a saved filter or a link named it. */
   categoryGone: {
     title: 'This category was deleted',
-    body: 'Its models were removed with it, and Removed parts can bring them back. The rest of these filters still work without it.',
+    body: 'Its models were deleted from the library with it; their files are still on disk. The rest of these filters still work without it.',
     widen: 'Show these filters without the category',
   },
   /** The grid opened on a field filter the library no longer takes: not offered, removed, or of another kind. */
@@ -1122,26 +1073,18 @@ export const strings = {
     deleteFor: (name: string) => `Delete the category ${name}`,
     deleteTitle: (name: string) => `Delete ${name}?`,
     /**
-     * What a delete actually does, counted — in models AND in subcategories, because
-     * `soft_delete_subtree` marks every descendant folder deleted as well. Naming only the
-     * models is how a category holding twelve empty subcategories used to read "No models
-     * are inside it. Nothing is removed…" and then take twelve rows off the sidebar. The
-     * requirement is that a destructive confirmation names what it affects, and half of
-     * what this one affects is the tree itself.
+     * What a delete actually does, counted — in models AND in subcategories, because the
+     * delete takes every descendant folder as well. Naming only the models is how a category
+     * holding twelve empty subcategories used to read "No models are inside it." and then
+     * take twelve rows off the sidebar. A destructive confirmation names what it affects, and
+     * half of what this one affects is the tree itself.
      *
      * `FolderNode.partCount` is subtree-inclusive for the same reason; the subcategory
      * count is the caller's own walk of the tree it already has, excluding the category
      * being deleted, so the two numbers count different things and neither counts twice.
      *
-     * Deliberately NOT the plan's "The N models inside will be moved to deleted": that
-     * reads at a glance as files being relocated on disk, which is the exact confusion
-     * this product forbids, and it is ungrammatical at one. Nothing moves and nothing is
-     * erased — the rows are marked deleted and the grid stops showing them.
-     *
-     * It also drops the plan's "and you can undo this". A soft delete is recoverable in
-     * the database, but this slice ships no control that recovers one, and copy that
-     * promises an action the app does not have is the same class of lie as a mesh figure
-     * presented as analytic.
+     * Delete is final (owner, 2026-10-17) and there is no restore, so the copy promises none.
+     * What it does promise is the thing that stays true: no model file is touched on disk.
      */
     deleteBody: (parts: number, subcategories: number = 0) => {
       const inside =
@@ -1149,22 +1092,14 @@ export const strings = {
           ? 'Nothing is inside it — no models, no subcategories.'
           : `${opensSentence(countedModels(parts))} and ${countedSubcategories(subcategories)} are inside it, counting every level.`
       const subcategoriesGo =
-        subcategories === 0
-          ? ''
-          : subcategories === 1
-            ? ', and hides the subcategory under it'
-            : ', and hides the subcategories under it'
+        subcategories === 0 ? '' : subcategories === 1 ? ' and the subcategory under it' : ' and the subcategories under it'
       const action =
         parts === 0
-          ? subcategories === 0
-            ? 'Deleting hides this category'
-            : subcategories === 1
-              ? 'Deleting hides this category and the subcategory under it'
-              : 'Deleting hides this category and the subcategories under it'
+          ? `Deleting takes this category${subcategoriesGo} out of the library`
           : parts === 1
-            ? `Deleting marks that model deleted and hides it from the grid${subcategoriesGo}`
-            : `Deleting marks them deleted and hides them from the grid${subcategoriesGo}`
-      return `${inside} ${action}; nothing is removed from your storage folder and no file moves on disk.`
+            ? `Deleting takes this category${subcategoriesGo} and that model out of the library, with its pictures and tags`
+            : `Deleting takes this category${subcategoriesGo} and those models out of the library, with their pictures and tags`
+      return `${inside} ${action}. This cannot be undone. The files themselves stay where they are on disk.`
     },
     deleteConfirm: 'Delete category',
     deleteFailed:
@@ -1184,7 +1119,7 @@ export const strings = {
      * have been a different number.
      */
     deleteCountsDiffered: (parts: number, subcategories: number) =>
-      `The category changed while the confirmation was open: ${countedModels(parts)} and ${countedSubcategories(subcategories)} were hidden, not the numbers shown. Nothing was removed from your storage folder.`,
+      `The category changed while the confirmation was open: ${countedModels(parts)} and ${countedSubcategories(subcategories)} were deleted, not the numbers shown. Their files are still on disk.`,
     cancel: 'Cancel',
     /**
      * Not "Show in folder": that is the reveal-in-Finder idiom, and every OS that has it
@@ -1735,11 +1670,11 @@ export const strings = {
     relatedNone: 'Nothing else is tagged on enough of these models to be worth following.',
     relatedFailed: 'Could not load the tags near this one. The models below are unaffected.',
     /**
-     * A tag no live model carries any more. Removal is soft here as everywhere, so the honest
+     * A tag no model carries any more. The honest
      * sentence is that the models went, not that the tag was deleted — there is no tag to delete.
      */
     gone: (tag: string) =>
-      `No model in this library carries “${tag}” any more. The last model with it was removed, or the tag was taken off it.`,
+      `No model in this library carries “${tag}” any more. The last model with it was deleted, or the tag was taken off it.`,
     /**
      * How many models carry the tag. **In this library**, and it says so: the grid under it is the
      * same models narrowed by whatever else is chosen, so "74 models carry this tag" over "Showing

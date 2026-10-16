@@ -41,7 +41,7 @@ import { Board, settleAll } from '../components/dashboard/Board'
 export const Route = createFileRoute('/dashboard')({
   component: RouteComponent,
   /*
-    The library travels in the URL as it does on the grid and the removed list — but only as
+    The library travels in the URL as it does on the grid — but only as
     the *first offer* to the Add form. Every widget stores the library it is
     about, so a dashboard is about as many libraries as somebody put on it, and this parameter
     changes nothing already on the page.
