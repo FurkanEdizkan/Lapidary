@@ -540,10 +540,10 @@ cmd_up() {
   that is the argument to put to the owner rather than a floor to lower."
   [ "$min_ram" = 5 ] ||
     note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
-  # The declared ceilings in deploy/ total 3 GB. A stack brought up beside a cargo build is how a
+  # The declared ceilings in deploy/ total 4 GB. A stack brought up beside a cargo build is how a
   # session gets its processes killed; 5 GiB available is the floor that leaves the stack room.
   [ "$(ram_gib)" -ge "$min_ram" ] || ask_owner "$(ram_gib) GiB of RAM is available, under the $min_ram GiB
-  floor. This stack's declared ceilings total 3 GB (db 1g, app 2g).
+  floor. This stack's declared ceilings total 4 GB (db 1g, app 3g).
   Wait until the other lanes have stopped compiling, then run this again — or, for installations that are
   never seeded, say \`--min-ram <gib>\` and record the number you chose."
 

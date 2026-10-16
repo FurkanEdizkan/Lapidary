@@ -37,12 +37,14 @@ services:
     # they were three containers, `api`, `worker` and a Caddy `web`, split so the api image never
     # linked the OCCT kernel; the kernel is gone and ingest takes about 200 ms a file.
     # Resource ceiling: Lapidary must run on a modest workstation, not only on a machine with
-    # spare gigabytes. The mesh parsers are the largest user, so this is the old worker's share.
+    # spare gigabytes. The mesh parsers are the largest user. 3g since F3 (2026-10-16): with the
+    # 3MF cap at 20 M triangles, two of the owner's 11 M-triangle Bambu kits parsing at once
+    # touched 2 GiB; see docs/goals/F3.md for what 3g measured.
     # Compose v2 honours deploy.resources outside swarm.
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 3g
           cpus: "2.0"
     build:
       context: ..
