@@ -747,10 +747,10 @@ library_named() { # name
 
 # The chunked upload, following the plan the server answers rather than sending regardless.
 #
-# `POST /uploads/probe` answers `UploadPlan { have, needRows, needBytes }`, and those three cases are the
-# whole protocol: `have` means this library already holds these bytes at this path and there is nothing to
-# do; `needRows` means the store has the bytes (some other library ingested them) so only a row is needed
-# and **no transfer at all**; `needBytes` means send them. check-plain.sh sent the chunks unconditionally
+# `POST /uploads/probe` answers `UploadPlan { have, needBytes }`, and those two cases are the whole
+# protocol: `have` means this library already holds these bytes at this path and there is nothing to do;
+# `needBytes` means send them. (There was a third, `needRows`, for bytes the store already held; since M4
+# an upload is its own file in the inbox and there is no stored copy to reuse.) check-plain.sh sent the chunks unconditionally
 # because it only ever ran against an empty library — do that against a library that already holds the
 # file and the PUT is refused, correctly, with nothing staged to write into. "Hash first, always" is what
 # makes the plan possible; ignoring it is what made this rig look broken on its second run.
@@ -763,15 +763,10 @@ upload_file() { # library, local file, source path in the library
   plan=$(json POST "$API/api/libraries/$lib/uploads/probe" "$manifest") ||
     { echo "  probe refused for $path"; return 1; }
 
-  case "$(printf '%s' "$plan" | field 'next((k for k in ("have", "needRows", "needBytes") if value.get(k)), "?")')" in
+  case "$(printf '%s' "$plan" | field 'next((k for k in ("have", "needBytes") if value.get(k)), "?")')" in
     have)
       echo "already here (the library holds these bytes at this path)"
       return 0
-      ;;
-    needRows)
-      # The bytes are already in the store, so commit alone is right: sending them again would be the
-      # transfer the content-addressed store exists to avoid.
-      echo -n "bytes already stored, row only: "
       ;;
     needBytes)
       while [ $offset -lt "$size" ]; do
@@ -783,7 +778,7 @@ upload_file() { # library, local file, source path in the library
       done
       ;;
     *)
-      echo "  the probe named neither have, needRows nor needBytes for $path: $plan"
+      echo "  the probe named neither have nor needBytes for $path: $plan"
       return 1
       ;;
   esac
@@ -816,6 +811,10 @@ cmd_seed() {
   echo "== INGEST TREE"
   build_ingest_tree
 
+  # The Owner library's folder (M4, below), made before Sweep's scan so it is part of the tree Sweep
+  # sees on every run, with the same bytes every time: Owner's revision step puts them back after.
+  mkdir -p "$INGEST/m4-owner"
+  cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$INGEST/m4-owner/flange-dn40-lp-3310-02.stl"
   local fingerprint
   fingerprint=$(ingest_fingerprint)
 
@@ -1084,9 +1083,6 @@ print(count(json.load(sys.stdin)))')
   # bytes over the file in place — the one change to the tree this rig makes, made from the host — and
   # the re-scan records it as revision 2 where it is. Neither scan may write anything under the tree.
   local owner owner_dir=$INGEST/m4-owner owner_batch owner_scanned owner_revisions before_owner
-  mkdir -p "$owner_dir"
-  [ -f "$owner_dir/flange-dn40-lp-3310-02.stl" ] ||
-    cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
   owner=$(curl -sf "$API/api/libraries" | field "next((l['id'] for l in value if l['name'] == 'Owner'), '')")
   [ -n "$owner" ] || owner=$(json POST "$API/api/libraries" '{"name":"Owner","root":"m4-owner"}' | field 'value["id"]')
   [ -n "$owner" ] || die "could not create the Owner library."
@@ -1097,12 +1093,8 @@ print(count(json.load(sys.stdin)))')
   seed_check "a library with its own folder scans only there, and writes nothing" \
     "$(holds "$(sql "SELECT count(*) FROM part WHERE library_id = '$owner'")" -eq 1 -a "$(ingest_fingerprint)" = "$before_owner")" \
     "$(sql "SELECT string_agg(source_path, ', ') FROM part WHERE library_id = '$owner'")"
-  # The owner's edit: the other example's bytes saved over it (alternating, so a re-seed is a change).
-  if cmp -s "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"; then
-    cp "$ROOT/example/parts/hex-spacer-m4x20-lp-2145-01.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
-  else
-    cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
-  fi
+  # The owner's edit: another example's bytes saved over it, in place.
+  cp "$ROOT/example/parts/hex-spacer-m4x20-lp-2145-01.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
   local edited; edited=$(ingest_fingerprint)
   owner_batch=$(json POST "$API/api/libraries/$owner/scan" | field 'value["batchId"]')
   owner_scanned=$(settle "$owner" "$owner_batch" 600)
@@ -1114,7 +1106,10 @@ print(count(json.load(sys.stdin)))')
   seed_check "uploads land in the inbox, never under the ingest tree" \
     "$(holds "$(find "$INBOX/uploads" -type f 2>/dev/null | wc -l)" -ge 4 -a "$(sql "SELECT count(*) FROM file WHERE root = 'library' AND storage_path LIKE 'uploads/%'")" -eq 0)" \
     "$(find "$INBOX/uploads" -type f 2>/dev/null | wc -l) files under $INBOX/uploads"
-  # What `drive` compares against: every move, upload and scan a flow makes must leave this unchanged.
+  # Back to the bytes Sweep holds, so Sweep's re-scans in `drive` see the tree it was seeded from — and
+  # what `drive` compares against is taken after: every move, upload and scan a flow makes must leave it
+  # unchanged.
+  cp "$ROOT/example/parts/flange-dn40-lp-3310-02.stl" "$owner_dir/flange-dn40-lp-3310-02.stl"
   ingest_fingerprint > "$WORK/ingest.fingerprint"
 
   echo "== EMPTY, created and never scanned"

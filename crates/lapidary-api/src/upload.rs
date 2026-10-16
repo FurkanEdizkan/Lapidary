@@ -425,8 +425,7 @@ pub async fn commit(
 ///
 /// Grouped by hash: two paths with the same bytes share one staged file, which goes only once
 /// both are placed. A file the browser did not send — its staged file is missing — refuses the
-/// whole commit before any job is queued; files already placed stay in the inbox, and a retry
-/// places the rest beside them under their own names.
+/// whole commit before anything is placed or queued.
 async fn place_all(
     state: &AppState,
     library: LibraryId,
@@ -438,6 +437,14 @@ async fn place_all(
             Some((_, paths)) => paths.push(file.path.clone()),
             None => by_hash.push((file.blake3, vec![file.path.clone()])),
         }
+    }
+    // Every file sent before any is placed, so a commit missing one places nothing and a retry
+    // does not leave a second copy of the others beside the first.
+    if let Some((_, paths)) = by_hash
+        .iter()
+        .find(|(hash, _)| !staged_path(&state.upload_dir, library, hash).exists())
+    {
+        return Err(not_sent(&paths[0]));
     }
     // As many at a time as there are cores, less one: hashing the copy is a commit's cost.
     let at_once = std::thread::available_parallelism()

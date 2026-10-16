@@ -133,10 +133,14 @@ impl WorkerHandler {
                 message: e.to_string(),
             })?;
         if lapidary_core::BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes()) != stored.hash {
+            let remedy = match stored.root {
+                lapidary_core::FileRoot::Inbox => "Upload or import it again, then export.",
+                _ => "Scan again, then export.",
+            };
             return Err(HandlerError::Permanent {
                 message: format!(
-                    "The file for revision {revision} changed in your folder since Lapidary last \
-                     read it, so no export was built from it. Scan again, then export."
+                    "The file for revision {revision} changed since Lapidary last read it, so no \
+                     export was built from it. {remedy}"
                 ),
             });
         }

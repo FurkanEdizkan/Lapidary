@@ -344,6 +344,15 @@ async fn main() -> Result<()> {
                 .clone()
                 .context("Could not start: LAPIDARY_INBOX_DIR is not set. It names the folder Lapidary writes uploads and link imports into before indexing them; keep it outside the folders you scan.")?;
         refuse_inbox_inside(&inbox_dir, &ingest_dir)?;
+        // And on the host: inside the containers the two are `/inbox` and `/ingest`, which never nest,
+        // while the folders they are mounted from can. Both host paths come from the same `.env`.
+        if let (Some(host_inbox), Some(host_ingest)) =
+            (&config.host_inbox_root, &config.host_ingest_root)
+            && host_inbox.is_absolute()
+            && host_ingest.is_absolute()
+        {
+            refuse_inbox_inside(host_inbox, host_ingest)?;
+        }
 
         // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
         // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
@@ -647,5 +656,16 @@ mod tests {
         );
         refuse_inbox_inside(&ingest, &ingest).expect_err("the same folder is refused too");
         refuse_inbox_inside(&root.path().join("inbox"), &ingest).expect("a sibling folder is fine");
+        // The host's folders, which need not exist where the server runs: compared as written.
+        refuse_inbox_inside(
+            std::path::Path::new("/srv/parts/inbox"),
+            std::path::Path::new("/srv/parts"),
+        )
+        .expect_err("an inbox inside the owner's folders on the host is refused too");
+        refuse_inbox_inside(
+            std::path::Path::new("/srv/lapidary-inbox"),
+            std::path::Path::new("/srv/parts"),
+        )
+        .expect("beside them is fine");
     }
 }

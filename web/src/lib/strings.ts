@@ -438,6 +438,11 @@ export const strings = {
      */
     storedSize: (stored: number) => `${bytes(stored)} on disk`,
     /**
+     * A file in the owner's folders or Lapidary's inbox (M4): read where it is, never compressed or
+     * copied, so the only figure is its size and the only fact worth adding is where it is.
+     */
+    storedWhere: (stored: number, folder: string) => `${bytes(stored)}, in ${folder}`,
+    /**
      * The whole library fitted in one page, so the count is the count.
      */
     showingAll: (count: number) =>

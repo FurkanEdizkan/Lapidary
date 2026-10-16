@@ -212,7 +212,7 @@ fn serve_original(
             Ok(now)
                 if now.mtime_ns == mtime_ns
                     && i64::try_from(now.size).ok() == Some(source.size_bytes) => {}
-            Ok(_) => return changed_on_disk(),
+            Ok(_) => return changed_on_disk(source.root),
             Err(StorageError::Io { source: io, .. })
                 if io.kind() == std::io::ErrorKind::NotFound =>
             {
@@ -462,9 +462,10 @@ fn stream_verified(
                 "stored bytes do not hash to the digest they are filed under; download truncated"
             );
             let message = match root {
-                // The owner's own file, edited in place in a way that kept its size and time.
+                // A file edited in place in a way that kept its size and time.
                 FileRoot::Library | FileRoot::Inbox => format!(
-                    "This file changed in your folder since Lapidary last read it — scan again. (It hashes to {served_hex}, not {expected_hex}; the download was stopped rather than completed.)"
+                    "{} (It hashes to {served_hex}, not {expected_hex}; the download was stopped rather than completed.)",
+                    changed(root)
                 ),
                 FileRoot::Store => format!(
                     "The bytes stored for blob {expected_hex} hash to {served_hex}, so they are not the file that was ingested. The download was stopped rather than completed. Restore that blob from a backup, or re-ingest the source file to replace it."
@@ -824,15 +825,26 @@ fn no_longer_on_disk() -> Response {
 }
 
 /// The pre-flight's refusal (M4): the file's size or modification time is not what was indexed.
-fn changed_on_disk() -> Response {
+fn changed_on_disk(root: FileRoot) -> Response {
     (
         StatusCode::CONFLICT,
         Json(serde_json::json!({
             "reason": "changedOnDisk",
-            "message": CHANGED_ON_DISK,
+            "message": changed(root),
         })),
     )
         .into_response()
+}
+
+/// What to do about a changed file depends on where it is: a scan reads the owner's folders, and
+/// never the inbox, so a changed upload is uploaded again.
+fn changed(root: FileRoot) -> &'static str {
+    match root {
+        FileRoot::Inbox => {
+            "This file changed in Lapidary's inbox since it was indexed — upload or import it again."
+        }
+        FileRoot::Library | FileRoot::Store => CHANGED_ON_DISK,
+    }
 }
 
 /// The sentence a changed file is refused with, before a byte is sent.
@@ -841,16 +853,16 @@ pub const CHANGED_ON_DISK: &str =
 
 /// The pre-flight found nothing at the recorded path: moved, renamed or deleted in the folder.
 fn missing_from_folder(root: FileRoot, rel: &str) -> Response {
-    let place = match root {
-        FileRoot::Inbox => "Lapidary's inbox",
-        _ => "your folders",
+    let (place, remedy) = match root {
+        FileRoot::Inbox => ("Lapidary's inbox", "upload or import it again"),
+        _ => ("your folders", "put it back, or scan again"),
     };
     (
         StatusCode::CONFLICT,
         Json(serde_json::json!({
             "reason": "missingFromFolder",
             "message": format!(
-                "There is no file at {rel} in {place} any more: it was moved, renamed or deleted there since Lapidary last read it. Put it back, or scan again."
+                "There is no file at {rel} in {place} any more: it was moved, renamed or deleted there since Lapidary last read it. To download it, {remedy}."
             ),
         })),
     )
@@ -1112,7 +1124,7 @@ async fn plan_bundle(
                 if !unchanged {
                     return Err(refuse(
                         StatusCode::CONFLICT,
-                        format!("{} ({}): {CHANGED_ON_DISK}", part.name, rel),
+                        format!("{} ({}): {}", part.name, rel, changed(source.root)),
                     ));
                 }
             }

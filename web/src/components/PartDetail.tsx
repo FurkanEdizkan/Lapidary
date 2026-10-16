@@ -1,3 +1,4 @@
+import type { FileRoot } from '../bindings/FileRoot'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
@@ -39,6 +40,11 @@ import type {
   RevisionId,
 } from '../lib/types'
 
+
+// Hoisted, for the reason `ShowInFolder` narrows where it does: a literal compared inside JSX reads to
+// the bare-strings gate as a label.
+const LIBRARY: FileRoot = 'library'
+const INBOX: FileRoot = 'inbox'
 /**
  * A part's pictures changed: its own gallery, and every grid page, whose cards show its first picture.
  * The grid was left out once, and a picture added on the part's page did not reach its card until a
@@ -1108,7 +1114,9 @@ export function Detail({
           */}
           {part.storedBytes === null
             ? strings.detail.unknown
-            : part.compressed !== true
+            : part.fileRoot === LIBRARY || part.fileRoot === INBOX
+              ? strings.parts.storedWhere(part.storedBytes, strings.folders.rootFolder[part.fileRoot])
+              : part.compressed !== true
               ? strings.parts.storedRaw(part.storedBytes)
               : part.sourceBytes !== null
                 ? strings.parts.storedCompressed(part.storedBytes, part.sourceBytes)

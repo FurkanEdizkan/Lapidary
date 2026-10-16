@@ -2374,6 +2374,10 @@ impl PgParts {
     /// part's size while the volume does not: the figure is what the library catalogues, not
     /// what the disk holds. The instance view's directory walk answers the second question.
     ///
+    /// **A revision whose file a later one replaced in place is not counted** (M4, `f.on_disk`):
+    /// the owner overwrote those bytes and they are nowhere, so counting them would be a figure
+    /// for space nothing occupies.
+    ///
     /// **Quarantined bytes are not here, and cannot be.** A quarantined blob has nothing
     /// pointing at it and therefore no library: the figure is library-less by construction.
     /// It belongs to [`Self::instance_storage`].
@@ -2388,7 +2392,7 @@ impl PgParts {
              FROM file f \
              JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
              WHERE p.library_id = l.id \
-             AND f.role = 'source'), \
+             AND f.role = 'source' AND f.on_disk), \
              (SELECT coalesce(sum(b.stored_bytes), 0)::bigint FROM blob b \
              WHERE b.blake3 IN (SELECT d.blake3 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id JOIN part p ON p.id = r.part_id \
