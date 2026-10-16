@@ -445,3 +445,38 @@ test('Copy link copies the part’s current-file link, and shows it to copy wher
   expect(shown.value).toBe(link)
   vi.unstubAllGlobals()
 })
+
+/**
+ * M1: a picture added on the part's page reached its gallery and not its grid card, which kept the
+ * old answer until a reload. Adding one now refreshes every grid page too.
+ */
+test('adding a picture refreshes the grid as well as the gallery', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'POST'
+        ? { ok: true, status: 201, json: async () => ({ id: '01931b6e-0000-7000-8000-00000000f00d', width: 128, height: 128 }) }
+        : { ok: true, status: 200, json: async () => [] },
+    ),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const invalidated = vi.spyOn(client, 'invalidateQueries')
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Detail part={BRACKET} recordable />
+    </QueryClientProvider>,
+  )
+  // Hidden behind its button, which is the control a person uses; the change is what matters here.
+  const input = await waitFor(() => {
+    const found = view.container.querySelector('input[type="file"][accept^="image/"]')
+    if (found === null) throw new Error('no picture input yet')
+    return found as HTMLInputElement
+  })
+  fireEvent.change(input, { target: { files: [new File(['png'], 'bracket.png', { type: 'image/png' })] } })
+  await waitFor(() =>
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([['part-images', BRACKET.id], ['parts']]),
+    ),
+  )
+  vi.unstubAllGlobals()
+})
