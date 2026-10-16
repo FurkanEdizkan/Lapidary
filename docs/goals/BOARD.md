@@ -68,6 +68,29 @@ auth"); DATA.md §3.8 (`part_shape`, `part_link`, the profile version rule); ARC
 number. `0047` restated `job_outcome_known` to add `profiled`: a later migration that restates it again keeps
 `profiled` and every value before it.
 
+## Slimming, and the creator library (planned 2026-10-16)
+
+The owner kept Lapidary over Manyfold and PrintStash and narrowed it to **hobbyist models and creator libraries**:
+pictures, search, a link to the file, and import from a creator's page. Container first — the app and Postgres; the
+installer is a later phase. The research and the decisions are in the plan these goals were cut from; the lead copies
+them into `docs/ROADMAP.md` with the first merge.
+
+| Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
+|---|---|---|---|---|---|---|---|---|
+| [S1](S1.md) | One process, two containers | 6 | Rust + deploy | — | `bin/lapidary-server/src/main.rs`, `deploy/`, `xtask/src/{deploy,layers}.rs`, `scripts/e2e/stack.sh` | — | open | `chore/one-process` |
+| [S2](S2.md) | Empty crates and pgvector | 6 | Rust (small) | — | the three placeholder crates, `deploy/db/` | — | open | `chore/drop-placeholders` |
+| [S3](S3.md) | Peer sharing out | 6 | Rust + web | S1 | `lapidary-peer`, the sharing modules in db/api/web, `repo.rs` (wave 6) | 0056 | open | `chore/remove-sharing` |
+| [S4](S4.md) | Governance, locks and the desktop agent out | 6 | Rust + web | S3 | `lapidary-vcs`, `bin/lapidary`, locks/states/approvals in db/api/web | 0057 | open | `chore/remove-governance` |
+| [F1](F1.md) | Pictures without rendering | 7 | Rust + web | S4 | `lapidary-cad/src/tmf.rs` thumbnail read, `images.rs::normalize`'s new home, `Viewer.tsx` snapshot | 0058 | open | `feat/embedded-thumbnails` |
+| [F2](F2.md) | A stable file link | 7 | Rust + web | S4 | `download.rs`, the copy-link action | — | open | `feat/stable-file-link` |
+| [F3](F3.md) | Import from a creator link (Printables, Thingiverse, MyMiniFactory) | 7 | Rust + web | S1, S4 | `fetch.rs`'s new home, the link-import job and route, the paste-a-link field | — | open | `feat/link-import` |
+
+**P1** (creator packs) follows F3 and keeps its own row above; its G2 and L3 dependencies are both merged.
+**P2 and P4** wait for the owner. **S1 and S2 are disjoint** and may run at once; everything after is sequential
+through `repo.rs` and `lib.rs`'s route list.
+
+**Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1.
+
 ## Backlog — recorded, not scheduled
 
 Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a `ponytail:` comment.
