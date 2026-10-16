@@ -1,4 +1,11 @@
-//! Container entrypoint: the API, and optionally an in-process worker.
+//! Container entrypoint: the API, the job worker and the browser app, in one process.
+//!
+//! Until S1 (2026-10-16) the API and the worker were two containers built from this binary with
+//! and without a `worker` feature, so the API image never linked the OCCT kernel. The kernel is
+//! gone, ingest takes about 200 ms a file, and a hobby library does not need four containers. The
+//! one other mode left is `LAPIDARY_ROLE=peer`, until sharing comes out (S3).
+
+mod web;
 
 use anyhow::{Context, Result, bail};
 use figment::Figment;
@@ -12,40 +19,24 @@ struct Config {
     database_url: String,
     #[serde(default = "default_bind")]
     bind: String,
-    // No default, deliberately, and left `Option` (checked by hand below) rather than a
-    // required field on the struct, so a missing LAPIDARY_ROLE gets its own actionable
-    // error instead of being folded into the generic "configuration is incomplete"
-    // message below, which is written for the DATABASE_URL case and would be misleading
-    // for this one. The two roles are not interchangeable, and that asymmetry is exactly
-    // why a *default* would be wrong: if the `api` service loses this variable it stays
-    // `api` and nothing looks wrong; if `worker` loses it, ingest silently stops with no
-    // error anywhere — the container would start, bind its port, and pass its healthcheck
-    // while never mounting /scan. Missing it is now a startup failure instead. The
-    // matching CI-side guard lives in xtask/src/deploy.rs, which fails `check-deploy` if
-    // deploy/compose.yaml ever stops setting this for a service that runs lapidary-server.
+    /// Unset for the app. `peer` for the sharing listener (`deploy/compose.sharing.yaml`). The old
+    /// `api` and `worker` values are refused by name, so a compose file from before S1 says what
+    /// changed instead of starting half an application.
     role: Option<String>,
-    // Same reasoning as `role`, and `Option` rather than required for the same reason:
-    // only the worker role reads these, so requiring them unconditionally would make the
-    // `api` service's config incomplete for no reason it would ever hit. Checked by hand
-    // in `worker_router` below when `role` turns out to be `Role::Worker`. No hardcoded
-    // container path either way: tests build `lapidary_ingest::AppState` directly, and
-    // `deploy/compose.yaml` (Task 12) supplies the real `/ingest` mount.
+    // `Option` and checked by hand when the app starts, so each missing one gets its own sentence
+    // rather than figment's generic one, and so the peer role, which reads none of them, starts
+    // without them.
     ingest_dir: Option<PathBuf>,
     blob_root: Option<PathBuf>,
-    // Where the api assembles a partial upload. The mirror of `ingest_dir`: only the
-    // `api` role reads it, and only when someone uploads, so it is `Option` for the
-    // same reason and checked in the `Role::Api` arm below rather than here.
+    // Where a partial upload is assembled before its bytes are verified and enter the store.
     upload_dir: Option<PathBuf>,
-    /// Where the peer role keeps this installation's identity key. `Option` for `upload_dir`'s
-    /// reason: only the `peer` role reads it, so requiring it unconditionally would make the api
-    /// and worker services incomplete for no reason either would ever hit. Checked in the
-    /// `Role::Peer` arm below.
+    /// Where the peer role keeps this installation's identity key. Checked in the peer arm below.
     ///
     /// The key's digest is this installation's device id — what everyone sharing with it added by
     /// hand — so this directory is the one whose loss changes who this machine says it is.
     peer_dir: Option<PathBuf>,
     /// Where the peer role stages the files it pulls until they are bundled into the store.
-    /// Checked in the `Role::Peer` arm, for `peer_dir`'s reason.
+    /// Checked in the peer arm, for `peer_dir`'s reason.
     peer_staging: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
@@ -66,34 +57,23 @@ struct Config {
     ///
     /// Deliberately not `ingest_dir`, even though `deploy/compose.yaml` defaults that to
     /// the same six files: `LAPIDARY_INGEST_DIR` is the *operator's*, and one who pointed
-    /// it at a 320 GB corpus must not have it scanned because they restarted the worker.
+    /// it at a 320 GB corpus must not have it scanned because they restarted the server.
     /// `deploy/Containerfile` puts these at a path the image owns.
     ///
     /// Unset, or a path that does not exist, means no seeding — which is the normal case
     /// for a binary run outside the image.
     example_dir: Option<PathBuf>,
-    // Only the worker role reads these four, and each is `Option` for the same reason as
-    // the two above. Their defaults live in `lapidary_jobs::WorkerConfig`'s `Default` impl
-    // rather than here, so one place decides them: a second set of numbers in this file
-    // would be free to drift from the ones the crate's own tests exercise. Unset is the
-    // normal case — deploy/compose.yaml sets none of them, because the defaults are what
-    // a single-machine worker wants.
-    //
-    // Gated, unlike `ingest_dir` and `blob_root`, because only `spawn_worker` reads them
-    // and only this feature compiles it: left ungated they are dead code in the `api`
-    // image, which `deploy/Containerfile` builds with no features at all. Figment ignores
-    // environment variables that match no field, so setting one of these against an `api`
-    // build is inert either way — and an `api` process has no worker for them to configure.
-    #[cfg(feature = "worker")]
+    /// Where `npm run build` put the browser app (`web/dist`). Unset serves the API alone, which is
+    /// what `npm run dev` wants: Vite serves the app and proxies `/api` here.
+    web_dir: Option<PathBuf>,
+    // The job worker's knobs. Their defaults live in `lapidary_jobs::WorkerConfig`'s `Default`
+    // impl, so one place decides them; unset is the normal case.
     #[serde(default, deserialize_with = "empty_str_as_none")]
     worker_concurrency: Option<usize>,
-    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     job_lease_secs: Option<u64>,
-    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     job_poll_secs: Option<u64>,
-    #[cfg(feature = "worker")]
     #[serde(default, deserialize_with = "empty_str_as_none")]
     worker_id: Option<String>,
 }
@@ -120,7 +100,6 @@ struct Config {
 /// took the worker down with
 /// `invalid type: found unsigned int 10, expected a string for key "JOB_LEASE_SECS"`,
 /// which is the opposite of the failure it was written to prevent.
-#[cfg(feature = "worker")]
 fn empty_str_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -169,116 +148,21 @@ fn default_bind() -> String {
     "0.0.0.0:8080".to_owned()
 }
 
-/// What this build can read, for the startup log. `deploy/Containerfile` takes the feature
-/// list as a build arg, empty by default, and `deploy/compose.yaml` sets it only for the
-/// `worker` service — so only `worker`'s image links the parsers and prints this branch;
-/// `api` prints the `not(feature = "worker")` line below instead. This is the only way an
-/// operator can tell from `podman logs` whether that feature chain actually held, so it names
-/// the parsers files really go to and the formats they read. STEP and IGES are refused by
-/// name (`lapidary_core::cad_refusal`).
-#[cfg(feature = "worker")]
+/// What this build can read, for the startup log. Asked of `lapidary-cad` rather than written out,
+/// so the line is evidence of what was linked rather than a literal that would print regardless.
 fn parsers_description() -> String {
-    // Asked of `lapidary-cad` rather than written out here, because that is what makes this
-    // line evidence: a literal would print the same words in a build that never linked the
-    // crate at all.
     format!("{}, for stl, obj and 3mf", lapidary_cad::IMPLEMENTATION)
-}
-
-#[cfg(not(feature = "worker"))]
-fn parsers_description() -> String {
-    "none — this build has no parsers and no ingest (build with --features worker)".to_owned()
-}
-
-/// Builds the worker process's router: `lapidary-api`'s (health only — `Role::Worker`
-/// mounts nothing else) merged with `lapidary-ingest`'s (the scan route). Only this
-/// build's feature gates whether that merge is even possible — see
-/// `Cargo.toml`'s `worker` feature doc.
-#[cfg(feature = "worker")]
-fn worker_router(
-    db: lapidary_db::PgPool,
-    ingest_dir: Option<PathBuf>,
-    blob_root: Option<PathBuf>,
-) -> Result<axum::Router> {
-    let ingest_dir =
-        ingest_dir.context("Could not start as worker: LAPIDARY_INGEST_DIR is not set.")?;
-    let blob_root =
-        blob_root.context("Could not start as worker: LAPIDARY_BLOB_ROOT is not set.")?;
-    let api = router(
-        AppState {
-            db: db.clone(),
-            blob_root: blob_root.clone(),
-            // The worker mounts no upload volume and serves no upload route: `router`
-            // puts all three behind `Role::Api`. An unreachable path is the honest value
-            // for a field this role never reads.
-            upload_dir: PathBuf::new(),
-            // The worker serves no route that shows a path to anybody.
-            host_storage_root: None,
-            touches: Default::default(),
-        },
-        Role::Worker,
-    );
-    let ingest = lapidary_ingest::router(lapidary_ingest::AppState {
-        db,
-        ingest_dir,
-        blob_root,
-    });
-    Ok(api.merge(ingest))
-}
-
-/// Seed the bundled example parts, if this build has ingest and the image has the files.
-///
-/// Split by feature the same way `worker_router` is, and for the same reason: the `api`
-/// image is built without `worker` and therefore does not link `lapidary-ingest` at
-/// all, so a call to it has to be absent from that build rather than merely unreachable.
-///
-/// Best-effort inside `seed_examples`: it logs and returns zero rather than failing, so a
-/// server that cannot load its demo content still starts. An operator has both a scan
-/// button and a drop target to fill the grid with.
-#[cfg(feature = "worker")]
-async fn seed_examples(db: &lapidary_db::PgPool, config: &Config) {
-    if let (Some(examples), Some(blobs)) = (&config.example_dir, &config.blob_root) {
-        lapidary_ingest::seed_examples(db.clone(), blobs, examples).await;
-    }
-}
-
-/// No ingest in this build, so nothing to seed with. The `api` image takes this arm and
-/// never runs as a worker anyway.
-#[cfg(not(feature = "worker"))]
-async fn seed_examples(_db: &lapidary_db::PgPool, _config: &Config) {}
-
-/// This build was not compiled with the feature that pulls `lapidary-ingest` in at all
-/// (see `Cargo.toml`) — fail loudly rather than silently start a worker with no scan
-/// route. `deploy/compose.yaml` always builds the worker image with the feature, so this
-/// only fires when someone runs a default-featured binary manually with
-/// `LAPIDARY_ROLE=worker`.
-#[cfg(not(feature = "worker"))]
-fn worker_router(
-    _db: lapidary_db::PgPool,
-    _ingest_dir: Option<PathBuf>,
-    _blob_root: Option<PathBuf>,
-) -> Result<axum::Router> {
-    bail!(
-        "Could not start as worker: this binary was built without ingest support. Rebuild \
-         with `--features worker` — deploy/compose.yaml does this automatically for \
-         the worker service."
-    );
 }
 
 /// One `migrate_storage` job per library still holding source files in the old
 /// content-addressed store, so an operator upgrading from before that migration existed
-/// never has to hand-write `INSERT INTO job` -- the gap Task 8b closes. Worker role
-/// only: called from the `Role::Worker` arm alone, never from `Role::Api`.
-///
-/// Not gated by the `worker` feature, unlike `worker_router` and `spawn_worker`
-/// beside it: this touches only `lapidary-db`, which both images link unconditionally,
-/// and neither the CAD kernel nor `lapidary-ingest`. Nothing here can pull either into
-/// the api image.
+/// never has to hand-write `INSERT INTO job` -- the gap Task 8b closes.
 ///
 /// Never fails startup. `libraries_needing_migration` and `enqueue_migration_if_absent`
 /// each log and return on their own error rather than propagate one, because a database
-/// hiccup at this one moment must cost a delayed migration -- picked up on this same
-/// worker's next restart, exactly as any other resumable job would be -- and not a
-/// worker that never came up at all.
+/// hiccup at this one moment must cost a delayed migration -- picked up on the next
+/// restart, exactly as any other resumable job would be -- and not a server that never
+/// came up at all.
 async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
     let libraries = match lapidary_db::PgStorageMigration(db.clone())
         .libraries_needing_migration()
@@ -289,7 +173,7 @@ async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
             tracing::warn!(
                 %error,
                 "could not check for libraries needing a storage migration; skipping for \
-                 this boot -- the next worker restart tries again"
+                 this boot -- the next restart tries again"
             );
             return;
         }
@@ -311,35 +195,26 @@ async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
                 %library,
                 %error,
                 "could not queue a storage migration for this library; it will be \
-                 retried on the next worker restart"
+                 retried on the next restart"
             ),
         }
     }
 }
 
-/// Spawns the job worker that drains what `/scan` enqueued. Gated by the same feature as
-/// `worker_router` and for the same reason: without it there is no `lapidary-ingest`, and
-/// therefore no `JobHandler` to hand the loop.
+/// Spawns the job worker that drains what `/scan`, uploads and imports enqueue, and the hourly
+/// quarantine sweep beside it.
 ///
 /// Returns the loop's `JoinHandle` so `main` can wait for it. That wait is not optional —
 /// `lapidary_jobs::run` releases this worker's leases as its last act, and a process that
 /// exits without letting it get there leaves every in-flight job leased until it expires.
-#[cfg(feature = "worker")]
 fn spawn_worker(
     db: lapidary_db::PgPool,
     config: &Config,
+    ingest_dir: PathBuf,
+    blob_root: PathBuf,
     shutdown: tokio_util::sync::CancellationToken,
-) -> Result<tokio::task::JoinHandle<()>> {
+) -> tokio::task::JoinHandle<()> {
     use std::time::Duration;
-
-    let ingest_dir = config
-        .ingest_dir
-        .clone()
-        .context("Could not start the worker loop: LAPIDARY_INGEST_DIR is not set.")?;
-    let blob_root = config
-        .blob_root
-        .clone()
-        .context("Could not start the worker loop: LAPIDARY_BLOB_ROOT is not set.")?;
 
     let defaults = lapidary_jobs::WorkerConfig::default();
     let worker_config = lapidary_jobs::WorkerConfig {
@@ -356,9 +231,8 @@ fn spawn_worker(
         listen: true,
     };
 
-    // The counterpart to the `role` and `parsers` lines above: an operator reading
-    // container logs can see the worker started and with what, without attaching a
-    // debugger to find out whether the loop is running at all.
+    // An operator reading container logs can see the worker started and with what, without
+    // attaching a debugger to find out whether the loop is running at all.
     tracing::info!(
         worker = %worker_config.worker_id,
         concurrency = worker_config.concurrency,
@@ -374,9 +248,8 @@ fn spawn_worker(
         pause: None,
     });
 
-    // The quarantine sweep rides along with the worker rather than getting a process or a
-    // job kind of its own. It is a timer with no row to lease and nothing to report, and
-    // the worker is the only role that may open a source-bytes handle to unlink with.
+    // The quarantine sweep rides along with the worker rather than getting a job kind of its
+    // own. It is a timer with no row to lease and nothing to report.
     //
     // Not awaited by `main` the way the job loop is: it holds no leases, so a process that
     // exits mid-sweep leaves nothing behind — the sweep's own transaction either committed
@@ -391,33 +264,16 @@ fn spawn_worker(
         shutdown.clone(),
     ));
 
-    Ok(tokio::spawn(async move {
+    tokio::spawn(async move {
         // Before the loop takes its first job, and never a reason not to start: see
-        // `enqueue_stale_derivatives`. Here rather than beside `enqueue_pending_migrations`,
-        // because it asks the kernel for its version and the api image must not link one.
+        // `enqueue_stale_derivatives`.
         handler.enqueue_stale_derivatives().await;
         if let Err(error) =
             lapidary_jobs::run(lapidary_db::PgJobs(db), handler, worker_config, shutdown).await
         {
             tracing::error!(%error, "the job worker stopped");
         }
-    }))
-}
-
-/// Unreachable in practice — `worker_router` bails on this same build before `main` gets
-/// here — but it must compile, and if it ever does run it says the same thing that one
-/// does rather than starting a worker that would drain nothing.
-#[cfg(not(feature = "worker"))]
-fn spawn_worker(
-    _db: lapidary_db::PgPool,
-    _config: &Config,
-    _shutdown: tokio_util::sync::CancellationToken,
-) -> Result<tokio::task::JoinHandle<()>> {
-    bail!(
-        "Could not start the worker loop: this binary was built without ingest support. \
-         Rebuild with `--features worker` — deploy/compose.yaml does this \
-         automatically for the worker service."
-    );
+    })
 }
 
 /// Resolves on SIGTERM or Ctrl-C, then cancels `token` so the job worker stops dequeuing
@@ -487,20 +343,13 @@ async fn main() -> Result<()> {
         .extract()
         .context("Configuration is incomplete. Set LAPIDARY_DATABASE_URL (preferred — it wins if both are set) or DATABASE_URL; see deploy/.env.example.")?;
 
-    let Some(role_str) = config.role.as_deref() else {
-        bail!(
-            "Could not start: LAPIDARY_ROLE is not set. Set it to `api` (serves the grid \
-             and the open path) or `worker` (runs ingest) — deploy/compose.yaml sets it per \
-             service."
-        );
-    };
-    let role = Role::from_env_str(role_str).context("Could not start: bad LAPIDARY_ROLE.")?;
+    let mode = Mode::from_env(config.role.as_deref())?;
 
-    // `lapidary_db::connect()` now classifies *why* the connection failed
-    // (unreachable, wrong credentials, missing database) and that message is
-    // actionable on its own — this outer line must only name the startup stage, not
-    // guess a cause the classified error below it might contradict.
-    let db = lapidary_db::connect(&config.database_url, ceiling_of(role))
+    // `lapidary_db::connect()` classifies *why* the connection failed (unreachable, wrong
+    // credentials, missing database) and that message is actionable on its own — this outer
+    // line must only name the startup stage, not guess a cause the classified error below it
+    // might contradict.
+    let db = lapidary_db::connect(&config.database_url, lapidary_db::INTERACTIVE)
         .await
         .context("Could not start: connecting to the database failed.")?;
 
@@ -518,33 +367,51 @@ async fn main() -> Result<()> {
         })?;
 
     tracing::info!(bind = %config.bind, "lapidary-server listening");
-    // Two containers run this one binary (deploy/compose.yaml: api on 8080, worker on
-    // 8081) and only the router differs between them — this line is what lets `podman
-    // logs` tell an operator which one a given container actually took.
-    tracing::info!(role = %role_str, "role");
-    tracing::info!(parsers = %parsers_description(), "parsers");
+    tracing::info!(mode = ?mode, "mode");
     let shutdown = tokio_util::sync::CancellationToken::new();
-    // Set by the `Role::Peer` arm alone, and read at the one `serve` below. A variable rather than
-    // a fourth element on the match's tuple: the api and worker arms have nothing to say about
-    // TLS, and widening what all three return to carry something two of them always leave empty
-    // would be a worse shape than this.
+    // Set by the peer arm alone, and read at the one `serve` below.
     let mut peer_tls = None;
-    let (app_router, worker, flusher) = match role {
-        Role::Api => {
-            // As required here as it is for the worker now that the api role serves
-            // derivative bytes -- see deploy/compose.yaml's api service.
+    let (app_router, worker, flusher) = match mode {
+        Mode::App => {
+            tracing::info!(parsers = %parsers_description(), "parsers");
             let blob_root = config
                 .blob_root
                 .clone()
-                .context("Could not start as api: LAPIDARY_BLOB_ROOT is not set.")?;
-            // Required rather than defaulted for the same reason `blob_root` is: a
-            // default would put half-transferred files somewhere nobody chose, and the
-            // one wrong answer here — the blob root itself — would put incomplete bytes
-            // inside a store whose whole contract is that everything in it is complete.
+                .context("Could not start: LAPIDARY_BLOB_ROOT is not set. It names the store every model is kept in.")?;
+            let ingest_dir = config
+                .ingest_dir
+                .clone()
+                .context("Could not start: LAPIDARY_INGEST_DIR is not set. It names the folder the scan button reads.")?;
+            // Required rather than defaulted: a default would put half-transferred files somewhere
+            // nobody chose, and the one wrong answer here — the blob root itself — would put
+            // incomplete bytes inside a store whose whole contract is that everything in it is
+            // complete.
             let upload_dir = config
                 .upload_dir
                 .clone()
-                .context("Could not start as api: LAPIDARY_UPLOAD_DIR is not set.")?;
+                .context("Could not start: LAPIDARY_UPLOAD_DIR is not set. It names where an upload waits until its bytes are checked.")?;
+
+            // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
+            // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
+            // never hold a connection a browser is waiting for.
+            let jobs_db = lapidary_db::connect(&config.database_url, lapidary_db::BACKGROUND)
+                .await
+                .context("Could not start: connecting the job worker to the database failed.")?;
+            // Before the loop starts, so a first run has a populated grid by the time anyone
+            // opens it; and the migration check after the seed, so the two do not race for the
+            // same library on a first run.
+            if let Some(examples) = &config.example_dir {
+                lapidary_ingest::seed_examples(jobs_db.clone(), &blob_root, examples).await;
+            }
+            enqueue_pending_migrations(&jobs_db).await;
+            let worker = spawn_worker(
+                jobs_db,
+                &config,
+                ingest_dir,
+                blob_root.clone(),
+                shutdown.clone(),
+            );
+
             // Which blobs were read, written every five minutes and once more when the server
             // stops (`docs/DATA.md` §1.4), rather than one UPDATE per read.
             let touches = lapidary_db::Touches::default();
@@ -568,58 +435,45 @@ async fn main() -> Result<()> {
             // record a read.
             let last = (touches.clone(), db.clone());
             // One Postgres listener for this whole process, fanned out to every open tab
-            // (`crates/lapidary-api/src/events.rs`). Its own router merged below rather than a field
-            // on `AppState`, which is built in 88 places, none of which wants a hub. It holds one
-            // pooled connection for as long as the process runs, so the api serves on seven of its
-            // eight. `shutdown` ends it, and its end is what ends every open stream.
+            // (`crates/lapidary-api/src/events.rs`). It holds one pooled connection for as long as
+            // the process runs, and `shutdown` ends it, which is what ends every open stream.
             let hub = lapidary_api::events::Hub::spawn(db.clone(), shutdown.clone()).await;
-            (
-                router(
-                    AppState {
-                        db,
-                        blob_root,
-                        upload_dir,
-                        touches,
-                        // Absolute or nothing — see the field's doc. A relative path here
-                        // is compose's unset default rather than an operator's choice, and
-                        // showing it as though it were one is the mistake this guards.
-                        host_storage_root: config
-                            .host_storage_root
-                            .as_ref()
-                            .filter(|path| path.is_absolute())
-                            .map(|path| path.display().to_string()),
-                    },
-                    Role::Api,
-                )
-                .merge(lapidary_api::events::router(hub)),
-                None,
-                Some((flusher, last)),
+            let api = router(
+                AppState {
+                    db,
+                    blob_root,
+                    upload_dir,
+                    touches,
+                    // Absolute or nothing — see the field's doc. A relative path here is
+                    // compose's unset default rather than an operator's choice, and showing it as
+                    // though it were one is the mistake this guards.
+                    host_storage_root: config
+                        .host_storage_root
+                        .as_ref()
+                        .filter(|path| path.is_absolute())
+                        .map(|path| path.display().to_string()),
+                },
+                Role::Api,
             )
+            .merge(lapidary_api::events::router(hub));
+            let app = match &config.web_dir {
+                Some(dist) => {
+                    if !dist.join("index.html").is_file() {
+                        bail!(
+                            "Could not start: LAPIDARY_WEB_DIR is {} and there is no index.html in \
+                             it. Point it at the folder `npm --prefix web run build` writes \
+                             (web/dist), or unset it to serve the API alone.",
+                            dist.display()
+                        );
+                    }
+                    tracing::info!(web_dir = %dist.display(), "serving the browser app");
+                    web::with_web(api, dist)
+                }
+                None => api,
+            };
+            (app, Some(worker), Some((flusher, last)))
         }
-        Role::Worker => {
-            // worker_router is built first on purpose: on a build without ingest support
-            // it bails, and that is the error an operator should see, rather than one
-            // about the loop that was only ever a consequence of the same missing feature.
-            let app = worker_router(
-                db.clone(),
-                config.ingest_dir.clone(),
-                config.blob_root.clone(),
-            )?;
-            // Before the loop starts, so a first run has a populated grid by the time
-            // anyone opens it.
-            seed_examples(&db, &config).await;
-            // After the seed, so the two do not race for the same library on a first run:
-            // seeded parts are ingested straight into their model directories and have
-            // nothing to migrate, and enqueuing first would put a `migrate_storage` job in
-            // front of an empty library. Worker role only -- the api role must never
-            // enqueue this, and nothing above this arm can reach it. See
-            // `enqueue_pending_migrations`'s own doc for why a failure here logs and
-            // continues rather than joining the `?` chain the rest of this function uses.
-            enqueue_pending_migrations(&db).await;
-            let handle = spawn_worker(db, &config, shutdown.clone())?;
-            (app, Some(handle), None)
-        }
-        Role::Peer => {
+        Mode::Peer => {
             // Required rather than defaulted, for `upload_dir`'s reason and one of its own: the
             // identity key's digest is what everyone sharing with this installation wrote down, so
             // a default path would put it somewhere a rebuild forgets, and this machine would come
@@ -681,7 +535,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // One `serve` for every role, and one shutdown token: the peer role differs only in what it
+    // One `serve` for both modes, and one shutdown token: the peer differs only in what it
     // accepts a connection over. Its listener refuses anyone whose key nobody wrote down, during
     // the handshake, so nothing above this line ever sees such a connection.
     let served = match peer_tls {
@@ -728,50 +582,65 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// How long a statement may run on this role's pool, and how long it may wait for a lock.
-///
-/// The one place a role becomes a ceiling. `lapidary_db::Ceiling` carries both numbers and the
-/// reasoning; the split is here because this is where the role is known, and it is a whole function
-/// rather than a `match` inlined at the `connect` call so that `a_role_nobody_waits_on_gets_the_long
-/// _ceiling` can assert it without starting a server.
-///
-/// **The worker is the different one.** It tessellates for minutes with nobody waiting, so it takes
-/// the long ceiling; a job that runs long is not a stuck query. The api and the peer role both
-/// answer somebody who is waiting — a browser and another installation respectively — so both take
-/// the interactive one.
-fn ceiling_of(role: Role) -> lapidary_db::Ceiling {
-    match role {
-        Role::Api | Role::Peer => lapidary_db::INTERACTIVE,
-        Role::Worker => lapidary_db::BACKGROUND,
+/// What this process runs. The app unless `LAPIDARY_ROLE` says `peer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The API, the job worker and the browser app.
+    App,
+    /// The sharing listener (`deploy/compose.sharing.yaml`).
+    Peer,
+}
+
+impl Mode {
+    fn from_env(role: Option<&str>) -> Result<Mode> {
+        match role.map(str::trim) {
+            None | Some("") => Ok(Mode::App),
+            Some("peer") => Ok(Mode::Peer),
+            Some(old @ ("api" | "worker")) => bail!(
+                "Could not start: LAPIDARY_ROLE={old} is gone. One process now serves the API, \
+                 runs ingest and serves the app; remove LAPIDARY_ROLE from this service and \
+                 delete the separate api/worker/web services from your compose file (see \
+                 deploy/compose.yaml)."
+            ),
+            Some(other) => bail!(
+                "Could not start: LAPIDARY_ROLE={other} is not a mode this server has. Leave it \
+                 unset for the app, or set it to `peer` for the sharing listener."
+            ),
+        }
     }
 }
 
 #[cfg(test)]
-mod ceiling_tests {
-    use super::{Role, ceiling_of};
+mod mode_tests {
+    use super::Mode;
 
-    /// The mapping itself, which no integration test reaches: a stack built from this binary would
-    /// have to be inspected through `pg_stat_activity` to tell one role's ceiling from another's.
-    /// Both directions are asserted, because "the worker gets the long ceiling" and "the api does
-    /// not" are two different mistakes.
     #[test]
-    fn a_role_nobody_waits_on_gets_the_long_ceiling_and_the_others_do_not() {
-        assert_eq!(ceiling_of(Role::Worker), lapidary_db::BACKGROUND);
-        assert_eq!(ceiling_of(Role::Api), lapidary_db::INTERACTIVE);
-        assert_eq!(
-            ceiling_of(Role::Peer),
-            lapidary_db::INTERACTIVE,
-            "a remote installation is waiting at the other end of every statement the peer runs"
-        );
-        assert_ne!(
-            ceiling_of(Role::Api),
-            ceiling_of(Role::Worker),
-            "the api and the worker must not share a ceiling"
-        );
+    fn unset_is_the_app_and_peer_is_the_peer() {
+        assert_eq!(Mode::from_env(None).expect("unset"), Mode::App);
+        assert_eq!(Mode::from_env(Some("")).expect("empty"), Mode::App);
+        assert_eq!(Mode::from_env(Some("peer")).expect("peer"), Mode::Peer);
+    }
+
+    #[test]
+    fn the_two_old_roles_are_refused_by_name_with_what_to_do() {
+        for old in ["api", "worker"] {
+            let message = Mode::from_env(Some(old))
+                .expect_err("an old role must not start half an application")
+                .to_string();
+            assert!(
+                message.contains(&format!("LAPIDARY_ROLE={old} is gone")),
+                "{message}"
+            );
+            assert!(message.contains("remove LAPIDARY_ROLE"), "{message}");
+        }
+        let message = Mode::from_env(Some("ingest"))
+            .expect_err("unknown")
+            .to_string();
+        assert!(message.contains("unset for the app"), "{message}");
     }
 }
 
-#[cfg(all(test, feature = "worker"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -828,74 +697,15 @@ mod tests {
         for format in lapidary_core::MESH_EXTENSIONS {
             assert!(
                 description.contains(format),
-                "names the formats a person may hand this worker, got: {description}"
+                "names the formats a person may hand this server, got: {description}"
             );
         }
     }
 
-    // worker_router is what actually runs in the worker container, and it's the thing
-    // fix round 1 introduced: lapidary-api's router (health only) merged with
-    // lapidary-ingest's (scan). Each half already has its own unit tests in its own
-    // crate; this is the one place the *merge* itself is exercised, so a route added to
-    // one side that silently collides with, or fails to reach, the other stops being
-    // provable "by inspection" and starts being caught here.
-    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-    async fn the_worker_router_serves_both_health_and_scan(pool: sqlx::PgPool) {
-        let ingest_dir = tempfile::tempdir().expect("temp dir");
-        let blob_root = tempfile::tempdir().expect("temp dir");
-        let app = worker_router(
-            pool,
-            Some(ingest_dir.path().to_path_buf()),
-            Some(blob_root.path().to_path_buf()),
-        )
-        .expect("worker router builds");
-
-        let health = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/healthz")
-                    .body(Body::empty())
-                    .expect("builds"),
-            )
-            .await
-            .expect("responds");
-        assert_eq!(health.status(), StatusCode::OK);
-
-        let scan = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/libraries/{SEEDED_LIBRARY}/scan"))
-                    .body(Body::empty())
-                    .expect("builds"),
-            )
-            .await
-            .expect("responds");
-        // An empty ingest_dir scans cleanly — 202, not merely "not 404" — which is a
-        // stronger proof the merge actually wired the route through to a working
-        // handler, not just to something that answers. 202 proves it exactly as well as
-        // the 200 this asserted before task 10: reaching ACCEPTED means the walk ran and
-        // the batch was written, so both the ingest router and the database are wired.
-        assert_eq!(scan.status(), StatusCode::ACCEPTED);
-    }
-
-    // The other half of the same regression: `lapidary-ingest`'s router must never be
-    // merged into the Api arm, where it would drag the kernel into the api image.
-    //
-    // Until slice 5 that was pinned by asserting the api role 404s on /scan at all.
-    // `0a9f32d` gave `lapidary-api` its own scan route — an enqueue that walks nothing —
-    // so a 404 there no longer means what it meant, and this test asserted the old
-    // behaviour for three commits while the suite was reported green.
-    //
-    // The two handlers are still told apart, by the one place they differ: for a library
-    // id that names nothing, `lapidary_api::scan` probes first and answers a clean 404,
-    // while `lapidary_ingest::scan` enqueues blind, trips `job.library_id`'s foreign key
-    // and answers 500 through `enqueue_failed`. So a bogus id is the discriminator, and
-    // the seeded id proves the api's own route is mounted at all.
-    //
-    // The 500 is not a guess: removing the probe from `lapidary_api::scan` was run as the
-    // mutation for this test, and the assertion below failed with 500 against 404.
+    // The app mounts `lapidary-api`'s scan route, which enqueues, and not `lapidary-ingest`'s,
+    // which walks the folder inside the request. The two are told apart by the one place they
+    // differ: for a library id that names nothing, `lapidary_api::scan` probes first and answers a
+    // clean 404, while `lapidary_ingest::scan` enqueues blind and answers 500 on the foreign key.
     #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
     async fn the_api_role_router_serves_its_own_scan_and_not_ingests(pool: sqlx::PgPool) {
         let app = router(

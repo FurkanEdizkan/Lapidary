@@ -204,7 +204,7 @@ echo "== the override says nothing check-deploy cannot see"
 if grep -nE 'target:|SERVER_FEATURES|LAPIDARY_ROLE|build:|image:' "$HERE/e2e.override.yaml"; then
   no "e2e.override.yaml names a build stage, feature set, role or image"
 else ok "e2e.override.yaml carries ports and extra_hosts only"; fi
-for svc in api worker web peer; do
+for svc in app peer; do
   if grep -A2 "^  $svc:" "$HERE/e2e.override.yaml" | grep -q 'ports: !override'; then
     ok "$svc publishes with !override (so deploy/'s literal is replaced, not appended)"
   else no "$svc does not carry \`ports: !override\`"; fi
@@ -268,8 +268,8 @@ for pair in 'a 34000 34080 34081 34082' 'b 34100 34180 34181 34182' 'c 34200 342
   code=$(run_stack LAPIDARY_LANE=4 "AS=$1" LAPIDARY_PORT_WEB=34000 LAPIDARY_PORT_API=34080 \
     LAPIDARY_PORT_WORKER=34081 LAPIDARY_PORT_PEER=34082 -- status)
   if [ "$code" != 3 ] && grep -q "lapidary-e2e-4$1" "$WORK/out.txt" &&
-    grep -q "web $2, api $3, worker $4, peer $5" "$WORK/out.txt"; then
-    ok "AS=$1 is project lapidary-e2e-4$1 on $2/$3/$4/$5"
+    grep -q "app $2, peer $5" "$WORK/out.txt"; then
+    ok "AS=$1 is project lapidary-e2e-4$1 on $2/$5"
   else
     no "AS=$1: exit $code, and status said $(grep -m1 '^ports' "$WORK/out.txt" || echo nothing)"
   fi

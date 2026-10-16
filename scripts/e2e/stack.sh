@@ -2,7 +2,7 @@
 # The whole application, up and driven: one compose stack on this lane's port block, a library worth
 # testing seeded into it, and a real browser over the real api.
 #
-#   scripts/e2e/stack.sh build            # deploy/'s five images, one service at a time, disk-guarded
+#   scripts/e2e/stack.sh build            # deploy/'s two images, one service at a time, disk-guarded
 #   scripts/e2e/stack.sh up               # bring it up and wait until every role answers
 #   scripts/e2e/stack.sh seed             # the ingest tree and the four libraries
 #   scripts/e2e/stack.sh drive [--compare <report.json>] [--only <flow,flow>]
@@ -173,9 +173,11 @@ ENVFILE=$WORK/e2e.env
 STORE=$WORK/store
 INGEST=$WORK/ingest
 RUNS=$WORK/runs
+# One process serves the app, its API and the worker since S1, so all three names are one origin. Kept
+# as three names because the flows and the seed say which of them they mean.
 WEB=http://127.0.0.1:$LAPIDARY_PORT_WEB
-API=http://127.0.0.1:$LAPIDARY_PORT_API
-WORKER_URL=http://127.0.0.1:$LAPIDARY_PORT_WORKER
+API=$WEB
+WORKER_URL=$WEB
 # The corpus lives in the **main checkout's** `target/`, not this worktree's.
 #
 # `target/` is per-worktree and gitignored — that is the whole point of the lane rules — so the 1,000
@@ -293,7 +295,7 @@ settle() { # library, batch, seconds
 # comes up owned by whoever made it, so it has to be handed over before `up` — and handed back before
 # `down` removes it, or the host user cannot delete it and `scripts/release-goal.sh` cannot remove the
 # worktree. `target/docker-check/group/a/store` is still root-owned proof of forgetting.
-# The five images belong to the lane, built once by `build` from the lane's own checkout. A suffixed
+# The two images belong to the lane, built once by `build` from the lane's own checkout. A suffixed
 # installation borrows them under its own project's names, because compose looks for `<project>-<service>`
 # when it is told not to build: `docker tag` names the same layers a second time, so three installations
 # cost one build and not a byte of disk. Never the other way round — `build` refuses a suffix.
@@ -302,22 +304,22 @@ IMAGE_PROJECT=lapidary-e2e-$LANE
 tag_borrowed_images() {
   [ -n "$AS" ] || return 0
   local svc
-  for svc in db api worker web peer; do
+  for svc in app peer; do
     docker image inspect "$IMAGE_PROJECT-$svc" > /dev/null 2>&1 || die "there is no \`$IMAGE_PROJECT-$svc\`
-  image for $PROJECT to borrow. Build this lane's five images first, with no AS set:
+  image for $PROJECT to borrow. Build this lane's two images first, with no AS set:
   \`cargo xtask heavy -- scripts/e2e/stack.sh build\`."
     docker tag "$IMAGE_PROJECT-$svc" "$PROJECT-$svc" ||
       die "could not tag $IMAGE_PROJECT-$svc as $PROJECT-$svc."
   done
-  echo "  $PROJECT's five images are tags of $IMAGE_PROJECT-*: same layers, nothing built"
+  echo "  $PROJECT's two images are tags of $IMAGE_PROJECT-*: same layers, nothing built"
 }
 
-# Only ever the tags this project put on, and only when there is a suffix — the lane's own five images are
+# Only ever the tags this project put on, and only when there is a suffix — the lane's own two images are
 # what every installation is made of, and a `down` that removed them would cost the next one a rebuild.
 untag_borrowed_images() {
   [ -n "$AS" ] || return 0
   local svc removed=0
-  for svc in db api worker web peer; do
+  for svc in app peer; do
     if docker image inspect "$PROJECT-$svc" > /dev/null 2>&1; then
       docker rmi "$PROJECT-$svc" > /dev/null 2>&1 && removed=$((removed + 1))
     fi
@@ -327,7 +329,7 @@ untag_borrowed_images() {
 
 chown_store() { # owner, e.g. 10001:10001
   local image=''
-  for candidate in "$PROJECT-api" "$PROJECT-worker" docker.io/library/postgres:18; do
+  for candidate in "$PROJECT-app" docker.io/library/postgres:18; do
     docker image inspect "$candidate" > /dev/null 2>&1 && { image=$candidate; break; }
   done
   [ -n "$image" ] || { echo "  no local image to chown with; leaving $STORE as it is"; return 1; }
@@ -405,7 +407,7 @@ verify_ports() {
 import json, os, sys
 
 resolved = json.load(sys.stdin)
-want = {os.environ["LAPIDARY_PORT_" + k] for k in ("WEB", "API", "WORKER", "PEER")}
+want = {os.environ["LAPIDARY_PORT_" + k] for k in ("WEB", "PEER")}
 published = set()
 mounts = {}
 for name, service in resolved.get("services", {}).items():
@@ -437,7 +439,7 @@ sys.exit(1 if problems else 0)
 cmd_build() {
   [ -z "$AS" ] || die "an installation with AS=$AS borrows the lane's images; it never builds its own.
   Build once with no AS set (\`cargo xtask heavy -- scripts/e2e/stack.sh build\`), then bring each
-  installation up — \`up\` tags the lane's five images under this project's names."
+  installation up — \`up\` tags the lane's two images under this project's names."
   # **The 8 GB floor below is the protocol's and this rig does not let anybody past it.**
   #
   # R6 (2026-10-04) measured what a build of all five actually costs on this machine and it is 7.5 GB:
@@ -469,7 +471,7 @@ cmd_build() {
   done
   [ "$min_free" = 8 ] ||
     note "--min-free $min_free: built under the 8 GB default on purpose. Say why in the goal file."
-  local services=${SERVICES:-db web api peer worker}
+  local services=${SERVICES:-app peer}
   write_env
   verify_ports
   local summary=$WORK/build-summary.txt
@@ -544,10 +546,10 @@ cmd_up() {
   that is the argument to put to the owner rather than a floor to lower."
   [ "$min_ram" = 5 ] ||
     note "--min-ram $min_ram: brought up under the 5 GiB default on purpose. Say why in the goal file."
-  # The declared ceilings in deploy/ total 4.3 GB. A stack brought up beside a cargo build is how a
+  # The declared ceilings in deploy/ total 3.5 GB. A stack brought up beside a cargo build is how a
   # session gets its processes killed; 5 GiB available is the floor that leaves the stack room.
   [ "$(ram_gib)" -ge "$min_ram" ] || ask_owner "$(ram_gib) GiB of RAM is available, under the $min_ram GiB
-  floor. This stack's declared ceilings total 4.3 GB (db 1g, worker 2g, api 512m, peer 512m, web 256m).
+  floor. This stack's declared ceilings total 3.5 GB (db 1g, app 2g, peer 512m).
   Wait until the other lanes have stopped compiling, then run this again — or, for installations that are
   never seeded, say \`--min-ram <gib>\` and record the number you chose."
 
@@ -561,10 +563,9 @@ cmd_up() {
   note "up"
   local began=$SECONDS
   compose up -d --no-build 2>&1 | tail -8
-  wait_for "$API/api/healthz" "the api" || die "the api never became healthy. \`stack.sh status\` and
-  \`docker compose -p $PROJECT logs api\` say why."
-  wait_for "$WORKER_URL/api/healthz" "the worker" || die "the worker never became healthy."
-  wait_for "$WEB/" "the web server" || die "the web server never answered on $LAPIDARY_PORT_WEB."
+  wait_for "$API/api/healthz" "the app" || die "the app never became healthy. \`stack.sh status\` and
+  \`docker compose -p $PROJECT logs app\` say why."
+  wait_for "$WEB/" "the browser app" || die "the browser app never answered on $LAPIDARY_PORT_WEB."
   # The peer role claims this installation's identity on first start. Its absence is how goal 9's run
   # found a peer that had come up without its key volume.
   until_true "$API/api/sharing/identity" 'value["deviceId"] is not None' \
@@ -580,14 +581,14 @@ cmd_up() {
   echo "  extensions: $extensions"
   echo "  newest migration: $migration"
   echo "  device id: $device"
-  echo "  ports: web $LAPIDARY_PORT_WEB, api $LAPIDARY_PORT_API, worker $LAPIDARY_PORT_WORKER, peer $LAPIDARY_PORT_PEER"
+  echo "  ports: app $LAPIDARY_PORT_WEB, peer $LAPIDARY_PORT_PEER"
 
   python3 - "$WORK/stack.json" <<EOF
 import json, sys
 json.dump({
     "project": "$PROJECT", "lane": $LANE, "upSeconds": $secs,
-    "ports": {"web": $LAPIDARY_PORT_WEB, "api": $LAPIDARY_PORT_API,
-              "worker": $LAPIDARY_PORT_WORKER, "peer": $LAPIDARY_PORT_PEER},
+    "ports": {"web": $LAPIDARY_PORT_WEB, "api": $LAPIDARY_PORT_WEB,
+              "worker": $LAPIDARY_PORT_WEB, "peer": $LAPIDARY_PORT_PEER},
     "extensions": """$extensions""", "migration": """$migration""",
     "deviceId": "$device",
     # Which tree these images were built from, and which tree drove them. A comparison is only meaningful
@@ -721,12 +722,12 @@ build_ingest_tree() {
 check_worker_sees_ingest() {
   local host_files seen
   host_files=$(find "$INGEST" -type f ! -name .seeded | wc -l)
-  seen=$(compose exec -T worker sh -c 'find /ingest -type f ! -name .seeded | wc -l' 2>/dev/null | tr -dc '0-9')
+  seen=$(compose exec -T app sh -c 'find /ingest -type f ! -name .seeded | wc -l' 2>/dev/null | tr -dc '0-9')
   [ "${seen:-0}" = "$host_files" ] || die "the host has $host_files files under $INGEST but the worker sees
   ${seen:-0} in /ingest, so the bind mount is not showing this directory and every scan will find nothing.
   A bind mount follows the inode, not the path: if anything replaced the directory rather than its
   contents, only \`stack.sh down\` then \`up\` reattaches it. Compare \`stat -c %i $INGEST\` with
-  \`compose exec -T worker stat -c %i /ingest\` to confirm that is what happened."
+  \`compose exec -T app stat -c %i /ingest\` to confirm that is what happened."
   echo "  the worker sees all $seen of them in /ingest"
 }
 
@@ -818,7 +819,7 @@ cmd_seed() {
   batch=$(json POST "$API/api/libraries/$sweep/scan" | field 'value["batchId"]')
   # The worker's memory while the STEP files go through the kernel. Sampled into a file, never into
   # this script's stdout: a background writer on a `tee` pipe keeps it open and the caller hangs.
-  ( while true; do docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' "$PROJECT-worker-1" 2>/dev/null; sleep 2; done ) > "$WORK/worker-stats.txt" 2>/dev/null &
+  ( while true; do docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' "$PROJECT-app-1" 2>/dev/null; sleep 2; done ) > "$WORK/worker-stats.txt" 2>/dev/null &
   local stats=$!
   local scanned; scanned=$(settle "$sweep" "$batch" 5400)
   kill "$stats" 2>/dev/null
@@ -994,7 +995,7 @@ print(count(json.load(sys.stdin)))')
   # order.
   watermark=$(sql "SELECT coalesce(max(id::text), '00000000-0000-0000-0000-000000000000') FROM job")
   note "restarting the worker: one stale export planted, job rows now ${jobs_before:-?}"
-  compose restart worker > /dev/null 2>&1 || die "could not restart the worker."
+  compose restart app > /dev/null 2>&1 || die "could not restart the app."
   wait_for "$WORKER_URL/api/healthz" "the restarted worker" 120 ||
     die "the worker did not come back after a restart."
   # The start-up sweep runs after the job loop is up, so health is not enough on its own: give it time
@@ -1330,7 +1331,7 @@ cmd_peer() {
 
 cmd_status() {
   echo "project  $PROJECT (lane $LANE${AS:+, installation $AS})"
-  echo "ports    web $LAPIDARY_PORT_WEB, api $LAPIDARY_PORT_API, worker $LAPIDARY_PORT_WORKER, peer $LAPIDARY_PORT_PEER"
+  echo "ports    app $LAPIDARY_PORT_WEB, peer $LAPIDARY_PORT_PEER"
   echo "work     $WORK"
   echo "disk     / $(free_gb /) GB, $ROOT $(free_gb "$ROOT") GB; RAM available $(ram_gib) GiB"
   echo "images   $(or_none bash -c "docker images --format '{{.Repository}} {{.Size}}' | grep '^$PROJECT-'")"

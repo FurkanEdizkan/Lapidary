@@ -23,7 +23,7 @@
 # peer port>`, as goal 8's check did (docs/ROADMAP.md, "Containers").
 services:
   peer:
-    # The same ceiling as the api: this serves metadata and files to a handful of machines a
+    # The same ceiling the api had: this serves metadata and files to a handful of machines a
     # person knows, not a fleet.
     deploy:
       resources:
@@ -33,10 +33,6 @@ services:
     build:
       context: ..
       dockerfile: deploy/Containerfile
-      # The `api` target, deliberately: the peer role runs no ingest, so it must not build the
-      # `worker` target. `cargo xtask check-deploy` requires exactly this of every
-      # lapidary-server service that is not kernel-linked.
-      target: api
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
       LAPIDARY_BIND: 0.0.0.0:8082
@@ -49,7 +45,7 @@ services:
       # add by hand, so losing this volume changes who this machine says it is and everyone
       # sharing with it has to add the new id.
       LAPIDARY_PEER_DIR: /var/lib/lapidary-peer
-      # The same store the api reads, at the same path, so a file a paired machine asks for is the
+      # The same store the app reads, at the same path, so a file a paired machine asks for is the
       # file the part's page downloads.
       LAPIDARY_BLOB_ROOT: /var/lib/lapidary
       # Where a pull's files wait, whole or in part, until they are bundled into the store. Its own
@@ -59,7 +55,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      # 8082, beside api on 8080 and worker on 8081. The only port in this project meant to be
+      # 8082, beside the app's 3000. The only port in this project meant to be
       # reachable from another machine, and the only one whose every connection is refused
       # unless its key was written down first.
       - "8082:8082"

@@ -10,12 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      # What deploy/compose.yaml builds, target for target. The api image serves the open path and carries no worker;
-      # the worker image is a binary built with `worker`, its ingest half. An untargeted build takes the file's
-      # last stage, the worker, around a binary with neither, which refuses to start as a worker: what this workflow built
-      # until goal 8. `cargo xtask check-deploy` holds these lines to compose's.
+      # The one image deploy/compose.yaml builds: the server, its parsers and the browser app.
       - run: df -h /
-      - run: docker build -f deploy/Containerfile --target api -t lapidary-api:${{ github.sha }} .
-      - run: docker build -f deploy/Containerfile --target worker --build-arg SERVER_FEATURES=worker -t lapidary-worker:${{ github.sha }} .
+      - run: docker build -f deploy/Containerfile -t lapidary:${{ github.sha }} .
       - run: df -h /
-      - run: docker build -f deploy/web/Containerfile -t lapidary-web:${{ github.sha }} .
