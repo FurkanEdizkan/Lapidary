@@ -350,12 +350,45 @@ pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
     // is the difference between headroom and none.
     drop(rels);
     let model = entry(&mut archive, &model_name, &caps)?;
-    let (objects, build, scale) = read_model(&model)?;
+    let (mut objects, build, scale) = read_model(&model)?;
+    drop(model);
+    // Every other model part a component points into, each read once and its objects filed under
+    // the part's path. Its own components without a `p:path` name objects in that same part.
+    let parts: std::collections::BTreeSet<String> = objects
+        .values()
+        .flat_map(|object| object.components.iter())
+        .filter_map(|(key, _)| key.split_once('#').map(|(path, _)| path.to_owned()))
+        .collect();
+    for path in parts {
+        let xml = entry(&mut archive, &path, &caps)?;
+        let (part_objects, _, part_scale) = read_model(&xml)?;
+        // ponytail: one unit for the whole package. Every slicer that writes `p:path` writes
+        // millimetres in every part; combining parts in different units is the upgrade if one ever
+        // turns up, and until then it is refused rather than drawn at the wrong size.
+        if part_scale != scale {
+            return Err(malformed(format!(
+                "its model part {path} uses a different unit from the main model, which this reader does not combine"
+            )));
+        }
+        for (id, mut object) in part_objects {
+            for (child, _) in &mut object.components {
+                if !child.contains('#') {
+                    *child = part_key(&path, child);
+                }
+            }
+            objects.insert(part_key(&path, &id), object);
+        }
+    }
     let mut triangles = Vec::new();
     for (id, transform) in &build {
         emit(&objects, id, *transform, scale, 0, &caps, &mut triangles)?;
     }
     finish(FORMAT, triangles)
+}
+
+/// An object's key when it lives in another model part: the part's entry name, then its id.
+fn part_key(path: &str, id: &str) -> String {
+    format!("{}#{id}", path.trim_start_matches('/'))
 }
 
 fn attr(e: &quick_xml::events::BytesStart<'_>, want: &[u8]) -> Option<String> {
@@ -455,6 +488,14 @@ fn read_model(xml: &[u8]) -> Result<Model, CadError> {
                             let target = attr(e, b"objectid").ok_or_else(|| {
                                 malformed("a component names no object".to_owned())
                             })?;
+                            // The Production extension's `p:path`: the object lives in another
+                            // model part of the package, which is how Bambu Studio and Orca save
+                            // every project. Keyed by part as well as id, because each part
+                            // numbers its objects from 1.
+                            let target = match attr(e, b"path") {
+                                Some(path) => part_key(&path, &target),
+                                None => target,
+                            };
                             let m = matrix(attr(e, b"transform").as_deref())?;
                             if let Some(o) = objects.get_mut(&id) {
                                 o.components.push((target, m));
@@ -892,6 +933,40 @@ mod tests {
         let dangling = br#"<Relationships><Relationship Id="t" Target="/Metadata/gone.png" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/></Relationships>"#;
         let broken = zip_of(&[("_rels/.rels", dangling)]);
         assert!(thumbnail_3mf(&broken).is_err());
+    }
+
+    /// Bambu Studio's and Orca's layout (the Production extension): the main model's objects are only
+    /// components, each pointing with `p:path` into another model part that numbers its own objects
+    /// from 1. Both parts here hold an object 1, and they must not be confused.
+    #[test]
+    fn components_in_other_model_parts_are_followed_by_path() {
+        let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>"#;
+        let root = br#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" requiredextensions="p">
+<resources>
+<object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>
+<object id="2" type="model"><components><component p:path="/3D/Objects/object_7.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 100 0 0"/></components></object>
+</resources>
+<build><item objectid="2"/></build>
+</model>"#;
+        let part = br#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<resources><object id="1" type="model"><mesh>
+<vertices><vertex x="0" y="0" z="0"/><vertex x="40" y="0" z="0"/><vertex x="0" y="60" z="0"/><vertex x="0" y="0" z="5"/></vertices>
+<triangles><triangle v1="0" v2="1" v3="2"/><triangle v1="0" v2="1" v3="3"/></triangles>
+</mesh></object></resources>
+</model>"#;
+        let package = zip_of(&[
+            ("_rels/.rels", rels),
+            ("3D/3dmodel.model", root),
+            ("3D/Objects/object_7.model", part),
+        ]);
+        let mesh = parse_3mf(&package).expect("parses");
+        // The other part's object 1 — two triangles, 40 × 60 × 5, moved 100 along x — and not the
+        // main model's own object 1, which is one small triangle nothing in the build names.
+        assert_eq!(mesh.triangles.len(), 2);
+        let xs: Vec<f32> = mesh.triangles.iter().flatten().map(|v| v[0]).collect();
+        assert!(xs.iter().all(|x| (100.0..=140.0).contains(x)), "{xs:?}");
     }
 
     #[test]
