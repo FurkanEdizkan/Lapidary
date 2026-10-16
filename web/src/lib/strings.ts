@@ -472,22 +472,12 @@ export const strings = {
       `Uploading ${bytes(sent)} of ${bytes(total)} — file ${Math.min(files + 1, filesTotal).toLocaleString('en-US')} of ${filesTotal.toLocaleString('en-US')}.`,
     committing: 'Finishing the upload…',
     /**
-     * What the probe saved, said once, after the transfer is queued. Both halves are
-     * worth reporting and they are not the same thing: `alreadyHere` is a file this
-     * library already indexes at that path, and `skipped` is bytes some library already
-     * holds, so only the rows had to be written. The second is the larger number on a
-     * re-import into a new library and is invisible without this line.
+     * What the probe saved, said once, after the transfer is queued: files this library already
+     * indexes at that path with those bytes. There used to be a second half, bytes some other
+     * library held; since M4 an upload is its own file in the inbox, so every new file is sent.
      */
-    saved: (alreadyHere: number, bytesSkipped: number) => {
-      const parts: string[] = []
-      if (alreadyHere > 0) {
-        parts.push(`${alreadyHere.toLocaleString('en-US')} already here`)
-      }
-      if (bytesSkipped > 0) {
-        parts.push(`${bytes(bytesSkipped)} already stored`)
-      }
-      return parts.length === 0 ? '' : `Skipped ${parts.join(' and ')}.`
-    },
+    saved: (alreadyHere: number) =>
+      alreadyHere > 0 ? `Skipped ${alreadyHere.toLocaleString('en-US')} already here.` : '',
     /** Nothing in the drop was worth sending, which is a success and reads as one. */
     nothingToDo: 'Every file in that folder is already in this library.',
     /**
@@ -625,6 +615,13 @@ export const strings = {
     unknown: 'Unknown',
     /** A part's revisions, shown once it has more than one (Phase 4 slice 1). */
     history: 'History',
+    /**
+     * Where a revision's download would be, for one whose file a later revision replaced in the
+     * owner's folder (M4): its figures and hash are kept, and its bytes are not anywhere.
+     */
+    historyNotOnDisk: 'No longer on disk',
+    historyNotOnDiskWhy:
+      'A later revision replaced this file in your folder, and Lapidary keeps no copy of it. Its figures are still here.',
     historyRevision: (label: string) => `Revision ${label}`,
     /** Where a revision's bytes came from, in the words a person would use for it. */
     origin: { ingest: 'Scanned', upload: 'Uploaded', agent: 'Saved from the desktop app' },
@@ -856,9 +853,11 @@ export const strings = {
       // the server stops sending arrives as undefined, which `=== null` waves through
       // into `(undefined * 100)` and renders `NaN% of source`. Same defence `SourceFile`
       // applies to its three fields, applied to the one field this component reads.
+      //
+      // "In your folders" since M4: a model's file is read where it is, never copied.
       typeof ratio !== 'number'
-        ? `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}.`
-        : `Sources ${bytes(source)} on disk · derivatives ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of source.`,
+        ? `Models ${bytes(source)}, in your folders · files made for other tools ${bytes(derivative)}.`
+        : `Models ${bytes(source)}, in your folders · files made for other tools ${bytes(derivative)}, ${(ratio * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}% of the models.`,
     failed:
       'Could not read what this library occupies. Check that the api service is running, then reload.',
 
@@ -876,7 +875,7 @@ export const strings = {
      * and what ends it instead, which is the part a person can act on.
      */
     everything: (source: number, derivative: number, quarantined: number) =>
-      `Everything: ${bytes(source + derivative + quarantined)} across all libraries — ${bytes(source)} of models, ${bytes(derivative)} of files made for other tools${quarantined > 0 ? `, ${bytes(quarantined)} on hold for 30 days before the space comes back` : ''}.`,
+      `Lapidary’s own store: ${bytes(source + derivative + quarantined)} across all libraries — ${bytes(derivative)} of files made for other tools${source > 0 ? `, ${bytes(source)} of models kept from before Lapidary read your folders where they are` : ''}${quarantined > 0 ? `, ${bytes(quarantined)} on hold for 30 days before the space comes back` : ''}. Your models are in your folders and are not counted here: Lapidary never copies them.`,
     /**
      * The walk is opt-in because it costs the server a look at every file. Worded as the
      * question it answers rather than as the work it does — "measure" is what the user
@@ -928,10 +927,10 @@ export const strings = {
      */
     onDisk: (disk: number, tracked: number) =>
       disk >= tracked
-        ? `On disk: ${bytes(disk)} in the storage folder. That is ${bytes(disk - tracked)} more than the figures above, which is the manifest beside each model plus anything you have put in the folder yourself — neither is tracked, both are real.`
-        : `On disk: ${bytes(disk)} in the storage folder, which is ${bytes(tracked - disk)} less than the figures above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
+        ? `On disk: ${bytes(disk)} in Lapidary’s storage folder. That is ${bytes(disk - tracked)} more than the figures above: anything an older version left there, such as a metadata.json beside a model, or that was put there by hand — untracked, but real.`
+        : `On disk: ${bytes(disk)} in Lapidary’s storage folder, which is ${bytes(tracked - disk)} less than the figures above. That should not happen — every one of those should be a file. Something has removed files from the store without going through the app.`,
     onDiskFailed:
-      'Could not measure the storage folder. The figures above still stand — they come from the database, not from the disk.',
+      'Could not measure Lapidary’s storage folder. The figures above still stand — they come from the database, not from the disk.',
   },
   /**
    * The category tree beside the grid, moving models between categories, and the folder a
@@ -1148,22 +1147,25 @@ export const strings = {
     directoryHintAbsolute:
       'A browser cannot open a file manager, so this is the path rather than a button. Copy it and paste it into yours.',
     /**
-     * Shown under a store-relative path, once, where a person is looking at exactly the
-     * thing it would fix. Names the variable rather than describing it: somebody editing
-     * `deploy/.env` needs the string to search for.
+     * Shown under a relative path, once, where a person is looking at exactly the thing it
+     * would fix. Names the variable rather than describing it: somebody editing `deploy/.env`
+     * needs the string to search for. Which folder the path is inside depends on where the file
+     * is (M4): your own folders, Lapidary's inbox, or — for a part from before — its store.
      */
-    directoryPartial:
-      'This is the path inside your storage folder. Set LAPIDARY_STORAGE_ROOT to an absolute path in deploy/.env and the full path appears here instead.',
+    directoryPartial: (folder: string, variable: string) =>
+      `This is the path inside ${folder}. Set ${variable} to an absolute path in deploy/.env and the full path appears here instead.`,
+    /** The three folders a file can be in, as `directoryPartial` names them. */
+    rootFolder: {
+      library: 'your folders',
+      inbox: 'Lapidary’s inbox',
+      store: 'Lapidary’s storage folder',
+    },
     /**
-     * `directory` is null: this model predates the folder layout and still lives in the
-     * shared store. Wording taken from the move route's own refusal, so the two places a
-     * user meets this state say the same thing.
+     * `storagePath` is null: a part indexed before Lapidary kept files in folders at all, whose
+     * file is in its store under its hash. It still downloads; there is just no folder to show.
      */
     directoryPending:
-      'This model has not finished moving into the new storage layout yet, so it has no folder of its own to show. It gets one when the storage migration finishes.',
-    /** The same state, where it stops a move rather than a path from being shown. */
-    notMigrated:
-      'This model has not finished moving into the new storage layout yet. Wait for the storage migration to finish, then try again.',
+      'This model’s file is in Lapidary’s store under its hash, from before files were kept in folders, so there is no folder to show. It still downloads.',
     copyPath: 'Copy path',
 
     /**
@@ -1198,8 +1200,8 @@ export const strings = {
      * and then goes looking for a `Terrain` folder needs to have been told, once, that they
      * will not find one.
      */
-    renameKeepsDirectory: (slug: string) =>
-      `The folder on disk stays ${slug}. A category keeps the folder it was created in, so renaming changes what you see here and moves nothing on your drive.`,
+    renameKeepsDirectory:
+      'A category is this library’s own grouping: renaming it changes what you see here and nothing in your folders.',
 
     /**
      * The refusals a create or a rename can answer with. Mapped from `reason` rather than
@@ -1214,7 +1216,7 @@ export const strings = {
      * store, and a sibling that was renamed away from this name and kept its folder.
      */
     slugTaken:
-      'Another category here already occupies the folder that name needs — either the two names differ only in characters a filesystem cannot store, or that category was renamed and kept the folder it was created in. Pick a different name.',
+      'Another category here already has a name that differs from this one only in characters a folder name cannot hold. Pick a different name.',
     emptyName: 'A category needs a name. Type one and try again.',
     writeGone:
       'That category is no longer there — it was deleted somewhere else while this was open. Reload and try again.',

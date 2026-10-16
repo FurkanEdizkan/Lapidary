@@ -96,7 +96,7 @@ pub struct DownloadSource {
     /// `file.zstd_level` exactly as stored, `None` and all. Never `COALESCE`d to 0 — but
     /// not for the reason ruling T1-A first gave, which was wrong and is retracted here:
     /// a `COALESCE` could not serve a zstd frame as the file, because
-    /// `SourceReader::get` decodes on `is_some_and(|level| level != 0)` and reads `None`
+    /// `LibraryReader` decodes on `is_some_and(|level| level != 0)` and reads `None`
     /// and `Some(0)` identically. The two are byte-identical on the wire.
     ///
     /// The real reason is smaller. NULL means nobody recorded how these bytes were
@@ -443,7 +443,7 @@ impl PgBlobs {
     ///
     /// `zstd_level` is the reason this exists. A reader that re-derived compression from
     /// the file's extension would hand out zstd frames as though they were the file the
-    /// day ingest-time policy changed — `SourceReader::get` says so at length — and the
+    /// day ingest-time policy changed — `LibraryReader` says so at length — and the
     /// upload path makes that gap wider than a re-scan ever did: the api chooses the
     /// level, in another process, on a build that may not be this one, and the worker
     /// decodes what it finds one job later.
@@ -463,7 +463,7 @@ impl PgBlobs {
                 size_bytes: size_bytes as u64,
                 stored_bytes: stored_bytes as u64,
                 // The column is nullable and reads as uncompressed, exactly like level 0 —
-                // `0002_parts.sql`, and the same collapse `SourceReader` makes.
+                // `0002_parts.sql`, and the same collapse `LibraryReader` makes.
                 zstd_level: zstd_level.unwrap_or(0),
             }),
         )
@@ -2121,7 +2121,7 @@ impl PgParts {
     /// so this answers `None`.
     ///
     /// `zstd_level` comes off the `file` row itself — never from
-    /// `Compression::for_source_format`. That is ingest-time policy and slice 7 is about to
+    /// the old per-format compression policy. That is ingest-time policy and slice 7 is about to
     /// move it, so a reader that re-derived it would start serving zstd frames as files the
     /// day the policy changed (spec §2.5). It is passed through as the nullable column it
     /// is; see [`DownloadSource::zstd_level`].
@@ -3393,7 +3393,7 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         // the column is nullable, so a `None` level on a row that exists
         // means "nobody recorded how these bytes were stored", which is a
         // different fact from "this revision has no source file" and must
-        // not collapse into it. The predicate matches `SourceReader::get`'s
+        // not collapse into it. The predicate matches `LibraryReader`'s
         // for every level actually recorded, which is what keeps a card
         // claiming "compressed" from sitting over a raw download. A `NULL`
         // one is not a download this card describes at all: `download.rs`

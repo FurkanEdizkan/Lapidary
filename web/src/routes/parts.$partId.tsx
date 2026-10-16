@@ -10,7 +10,7 @@ import {
 } from '../lib/api'
 import { Detail } from '../components/PartDetail'
 import { MovePartDialog } from '../components/FolderTree'
-import { ShowInFolder } from '../components/ShowInFolder'
+import { ShowInFolder, hostRootsOf } from '../components/ShowInFolder'
 import { Menu } from '../components/Menu'
 import { closeMenu } from '../components/Dialog'
 import { ConfirmDelete } from '../components/ConfirmDelete'
@@ -148,7 +148,7 @@ function PartActions({ part }: { part: PartDetail }) {
             {strings.folders.moveTo}
           </button>
         </div>
-        <ShowInFolder part={part} hostRoot={instance.data?.hostStorageRoot ?? null} />
+        <ShowInFolder part={part} hostRoots={hostRootsOf(instance.data)} />
         <div className="border-t border-[var(--color-border)] pt-2">
           <button
             type="button"

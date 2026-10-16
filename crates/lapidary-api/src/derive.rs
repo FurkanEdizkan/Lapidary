@@ -74,6 +74,7 @@ pub struct NewLibrary {
     /// The library's own folder, relative to the owner's folders (the ingest mount); absent or
     /// `''` is the whole mount (M4, `0062`). A scan reads there and writes nothing.
     #[serde(default)]
+    #[ts(optional)]
     pub root: Option<String>,
 }
 

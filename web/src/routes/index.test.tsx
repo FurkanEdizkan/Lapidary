@@ -379,6 +379,7 @@ const MOTOR_MOUNT: PartCard = {
   compressed: true,
   directory: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face",
   storagePath: "libraries/default/Motors/NEMA 17 motor mount, 42 mm face/NEMA 17 motor mount, 42 mm face.stl",
+  fileRoot: 'store',
   createdAt: "2026-08-14T09:12:44Z",
   updatedAt: "2026-08-14T09:12:44Z",
 };
@@ -401,6 +402,7 @@ const HEX_NUT: PartCard = {
   compressed: true,
   directory: "libraries/default/Fasteners/Hex nut M8, DIN 934",
   storagePath: "libraries/default/Fasteners/Hex nut M8, DIN 934/Hex nut M8, DIN 934.stl",
+  fileRoot: 'store',
   createdAt: "2026-08-14T09:12:51Z",
   updatedAt: "2026-08-14T09:12:51Z",
 };
@@ -430,6 +432,7 @@ const SHAFT_COUPLER: PartCard = {
   compressed: false,
   directory: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm",
   storagePath: "libraries/default/Couplers/Flexible shaft coupler, 5 mm to 8 mm/Flexible shaft coupler, 5 mm to 8 mm.stl",
+  fileRoot: 'store',
   createdAt: "2026-08-14T09:13:02Z",
   updatedAt: "2026-08-14T09:13:02Z",
 };
@@ -1880,7 +1883,6 @@ test("an upload's batch reads as an upload, not as a scan", async () => {
   vi.mocked(uploadFiles).mockResolvedValue({
     accepted: { batchId: UPLOAD_BATCH_ID, queued: 3 },
     alreadyHere: 0,
-    bytesSkipped: 0,
   });
   let calls = 0;
   stubFetch({
@@ -2112,7 +2114,7 @@ test("the library totals report both storage classes and the ratio between them"
   await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   expect(
     await screen.findByText(
-      "Sources 12.5 MB on disk · derivatives 5.7 MB, 45.8% of source.",
+      "Models 12.5 MB, in your folders · files made for other tools 5.7 MB, 45.8% of the models.",
     ),
   ).toBeDefined();
   expect(fetchMock).toHaveBeenCalledWith(
@@ -2164,7 +2166,7 @@ test("a library with no source bytes reports its totals without a ratio", async 
   renderIndex();
 
   expect(
-    await screen.findByText("Sources 0 B on disk · derivatives 41 kB."),
+    await screen.findByText("Models 0 B, in your folders · files made for other tools 41 kB."),
   ).toBeDefined();
   expect(screen.queryByText(/NaN/)).toBeNull();
   expect(screen.queryByText(/% of source/)).toBeNull();
@@ -2183,7 +2185,7 @@ test("a ratio the server stopped sending renders as no ratio, not as NaN", async
   renderIndex();
 
   expect(
-    await screen.findByText("Sources 12.5 MB on disk · derivatives 5.7 MB."),
+    await screen.findByText("Models 12.5 MB, in your folders · files made for other tools 5.7 MB."),
   ).toBeDefined();
   expect(screen.queryByText(/NaN/)).toBeNull();
 });
@@ -2442,6 +2444,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   updatedAt: "2026-08-30T11:04:19Z",
   directory: "libraries/default/Terrain/Rocks/basalt_cliff_face",
   storagePath: "libraries/default/Terrain/Rocks/basalt_cliff_face/basalt_cliff_face.stl",
+  fileRoot: 'store',
 };
 
 /** Ingested before the folder layout existed, so it is still in the shared store. */
@@ -2465,6 +2468,7 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   updatedAt: "2026-05-02T08:41:07Z",
   directory: null,
   storagePath: null,
+  fileRoot: 'store',
 };
 
 test("selecting a category puts it in the URL and asks the grid for that category", async () => {
@@ -2551,7 +2555,7 @@ test("show in folder reveals the model's own path as copyable text and opens not
   expect(within(card).getByText(cliffPath())).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHint)).toBeDefined();
   // The one sentence that says what to change to get a full path. Shown only here.
-  expect(within(card).getByText(strings.folders.directoryPartial)).toBeDefined();
+  expect(within(card).getByText(strings.folders.directoryPartial(strings.folders.rootFolder.store, "LAPIDARY_STORAGE_ROOT"))).toBeDefined();
   // No browser opens a host file manager, and `file://` navigation from a page is blocked
   // everywhere — so nothing here pretends to. The path is text, and there is no link.
   expect(document.querySelector('a[href^="file:"]')).toBeNull();
@@ -2593,7 +2597,7 @@ test("a deployment that says where the store is gets the full path on the card",
   ).toBeDefined();
   expect(within(card).getByText(strings.folders.directoryHintAbsolute)).toBeDefined();
   // The "set the variable" sentence is about a state this deployment is not in.
-  expect(within(card).queryByText(strings.folders.directoryPartial)).toBeNull();
+  expect(within(card).queryByText(strings.folders.directoryPartial(strings.folders.rootFolder.store, "LAPIDARY_STORAGE_ROOT"))).toBeNull();
 });
 
 /** A trailing slash on the root must not produce a doubled separator in the path. */
@@ -2618,7 +2622,7 @@ test("a host root with a trailing slash still joins to one separator", async () 
   ).toBeDefined();
 });
 
-test("a model still in the shared store says so rather than showing an invented path", async () => {
+test("a model whose file is in the store under its hash says so rather than showing an invented path", async () => {
   stubFetch({
     healthz: ok(HEALTHY),
     parts: ok(page([OLD_BRACKET])),
@@ -2627,8 +2631,9 @@ test("a model still in the shared store says so rather than showing an invented 
   });
   renderIndex();
 
+  // A move is a database change since M4, so even a part with no folder to show moves.
   const tile = await screen.findByRole("article", { name: OLD_BRACKET.name });
-  expect(tile.getAttribute("draggable")).toBe("false");
+  expect(tile.getAttribute("draggable")).toBe("true");
 
   const card = await openPanel(OLD_BRACKET.name);
   fireEvent.click(
@@ -2640,15 +2645,34 @@ test("a model still in the shared store says so rather than showing an invented 
   expect(
     within(card).getByText(strings.folders.directoryPending),
   ).toBeDefined();
-  // And the move is withheld with its reason rather than offered and refused at the
-  // server with a 409 — the same status a name collision uses, which the UI would then
-  // present as one.
   expect(
-    within(card).queryByRole("button", {
+    within(card).getByRole("button", {
       name: strings.folders.moveToFor(OLD_BRACKET.name),
     }),
-  ).toBeNull();
-  expect(within(card).getByText(strings.folders.notMigrated)).toBeDefined();
+  ).toBeDefined();
+});
+
+/** A file in the owner's folders is shown under where those folders are on the host (M4). */
+test("a file in your folders is shown under your folders' host path", async () => {
+  const inFolders = { ...CLIFF_FACE, fileRoot: "library" as const, storagePath: "Terrain/Rocks/basalt-cliff-face.stl" };
+  stubFetch({
+    healthz: ok(HEALTHY),
+    parts: ok(page([inFolders])),
+    partDetail: ok(detailFor(inFolders)),
+    folders: ok([TERRAIN]),
+    instanceStorage: ok({ ...instanceStorage("/srv/lapidary-storage"), hostIngestRoot: "/srv/parts" }),
+  });
+  renderIndex();
+
+  const card = await openPanel(inFolders.name);
+  fireEvent.click(
+    within(card).getByRole("button", {
+      name: strings.folders.showInFolderFor(inFolders.name),
+    }),
+  );
+  expect(
+    await within(card).findByText("/srv/parts/Terrain/Rocks/basalt-cliff-face.stl"),
+  ).toBeDefined();
 });
 
 test("a card offers the move chooser, and is draggable for the tree to catch", async () => {
@@ -2746,6 +2770,8 @@ function instanceStorage(hostStorageRoot: string | null) {
     quarantinedBytes: 0,
     onDiskBytes: null,
     hostStorageRoot,
+    hostIngestRoot: null,
+    hostInboxRoot: null,
   };
 }
 

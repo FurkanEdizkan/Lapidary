@@ -26,4 +26,10 @@ massG: Approximate<number> | null,
  * The centre of the volume, in the part's own millimetres: exact from a B-rep, approximate from a mesh.
  * Needs no density. `None` for a revision recorded before centres were, or with no volume.
  */
-centreMm: Approximate<[number, number, number]> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, };
+centreMm: Approximate<[number, number, number]> | null, sourceHash: BlobHash | null, sourceFormat: string | null, sourceBytes: number | null, 
+/**
+ * False once a later revision's bytes replaced this one's file where it was (M4). Its
+ * figures stay in the history; its download answers 410, and the page says "no longer on
+ * disk" instead of offering one.
+ */
+onDisk: boolean, };

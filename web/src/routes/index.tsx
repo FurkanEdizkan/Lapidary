@@ -63,6 +63,7 @@ import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '.
 import type { BulkProgress } from '../components/Grid'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { QuickLook, StageLook, useWide } from '../components/QuickLook'
+import { hostRootsOf } from '../components/ShowInFolder'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
@@ -724,11 +725,11 @@ export function Index({
   const upload = useMutation({
     mutationFn: (picked: PickedFile[]) =>
       uploadFiles(library, picked, setUploading),
-    onSuccess: ({ accepted, alreadyHere, bytesSkipped }) => {
+    onSuccess: ({ accepted, alreadyHere }) => {
       setUploading(undefined)
       // `queued: 0` means the probe found every file already indexed here, which is a
       // success with no batch to watch — and reads as one rather than as silence.
-      const saved = strings.upload.saved(alreadyHere, bytesSkipped)
+      const saved = strings.upload.saved(alreadyHere)
       setUploadNote(
         accepted.queued === 0 ? strings.upload.nothingToDo : saved === '' ? null : saved,
       )
@@ -816,8 +817,8 @@ export function Index({
       <QuickLook
         part={looking}
         from={openFrom}
-        hostRoot={instance.data?.hostStorageRoot ?? null}
-        onMove={looking.directory === null ? null : () => setMoving(looking)}
+        hostRoots={hostRootsOf(instance.data)}
+        onMove={() => setMoving(looking)}
         onClose={closeLook}
         pane={wide}
       />
@@ -1106,7 +1107,6 @@ export function Index({
             ) : null}
             <Grid
               parts={loaded}
-              hostRoot={instance.data?.hostStorageRoot ?? null}
               density={density}
               layout={layout}
               selecting={selecting}

@@ -97,7 +97,7 @@ test('Upload wears no accent at rest, and an accent bar while an upload runs', (
     <UploadButton
       onUpload={() => {}}
       busy
-      progress={{ phase: 'transferring', filesDone: 3, filesTotal: 12, bytesSent: 25, bytesToSend: 100, alreadyHere: 0, bytesSkipped: 0 }}
+      progress={{ phase: 'transferring', filesDone: 3, filesTotal: 12, bytesSent: 25, bytesToSend: 100, alreadyHere: 0 }}
     />,
   )
   expect(container.innerHTML).toContain('--color-accent')

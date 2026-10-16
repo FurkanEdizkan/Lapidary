@@ -40,7 +40,7 @@ interface Call {
  * A fetch that records every call and answers from a probe plan. Chunks answer with the
  * running length of what they were sent, which is what the real route answers.
  */
-function stubApi(plan: { have?: string[]; needRows?: string[]; needBytes?: string[] }) {
+function stubApi(plan: { have?: string[]; needBytes?: string[] }) {
   const calls: Call[] = []
   const received = new Map<string, number>()
   vi.stubGlobal(
@@ -52,7 +52,6 @@ function stubApi(plan: { have?: string[]; needRows?: string[]; needBytes?: strin
         return new Response(
           JSON.stringify({
             have: plan.have ?? [],
-            needRows: plan.needRows ?? [],
             needBytes: plan.needBytes ?? [],
           }),
         )
@@ -90,11 +89,9 @@ test('a file is hashed the way the server hashes it', async () => {
   expect(hash).toBe('54eb9a529fa1343a5b1e16eaade0c274d0b58e9d7a02b017f8fc01cbe0e2dfde')
 })
 
-test('only the files the probe asked for are transferred, and all of them are committed', async () => {
-  // The branch the probe exists for. `needRows` bytes are already in the store, so they
-  // must skip the transfer entirely and still reach the manifest — a client that uploads
-  // everything anyway is correct and moves 25 GB to do it, and one that commits only what
-  // it transferred silently drops every file it deduplicated.
+test('only the files the probe asked for are transferred, and every one of them is committed', async () => {
+  // The branch the probe exists for: a file the library already holds at that path is neither
+  // sent nor committed, and every other one is both (M4: there is no stored copy to reuse).
   const picked = [
     pick('brackets/a.stl', 'aaaa'),
     pick('brackets/b.stl', 'bbbb'),
@@ -102,22 +99,20 @@ test('only the files the probe asked for are transferred, and all of them are co
   ]
   const calls = stubApi({
     have: ['brackets/a.stl'],
-    needRows: ['brackets/b.stl'],
-    needBytes: ['brackets/c.stl'],
+    needBytes: ['brackets/b.stl', 'brackets/c.stl'],
   })
 
   const result = await uploadFiles(LIBRARY, picked, () => {})
 
   const chunks = calls.filter((call) => call.method === 'PUT')
-  expect(chunks).toHaveLength(1)
-  expect(chunks[0]!.url).toContain(await hashFile(picked[2]!.file))
+  expect(chunks).toHaveLength(2)
+  expect(chunks[1]!.url).toContain(await hashFile(picked[2]!.file))
 
   const commits = calls.filter((call) => call.url.includes('/uploads/commit'))
   expect(commits).toHaveLength(1)
   const manifest = (commits[0]!.body as { files: { path: string }[] }).files
   expect(manifest.map((file) => file.path)).toEqual(['brackets/b.stl', 'brackets/c.stl'])
   expect(result.alreadyHere).toBe(1)
-  expect(result.bytesSkipped).toBe(4)
 })
 
 test('a drop of many files is committed in one call, not one per file', async () => {
@@ -166,7 +161,7 @@ test('a chunk the server already holds resumes from where the server is', async 
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes('/uploads/probe')) {
-        return new Response(JSON.stringify({ have: [], needRows: [], needBytes: ['a.stl'] }))
+        return new Response(JSON.stringify({ have: [], needBytes: ['a.stl'] }))
       }
       if (url.includes('/uploads/commit')) {
         return new Response(JSON.stringify({ batchId: 'b', queued: 1 }))
@@ -247,7 +242,7 @@ test('a bundle is always sent, then handed to the import route by hash and name'
   // Never committed as a part: the worker checks the whole archive before writing any of it. And
   // sent even when the server holds those bytes: an import reads only this library's own upload.
   const bundle = new File(['PK a bundle of flange revisions'], 'workshop-bundle.lapidary.zip')
-  const calls = stubApi({ needRows: ['workshop-bundle.lapidary.zip'] })
+  const calls = stubApi({ have: ['workshop-bundle.lapidary.zip'] })
 
   const accepted = await importBundle(LIBRARY, bundle)
 

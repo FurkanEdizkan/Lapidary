@@ -132,7 +132,7 @@ pub struct PartSummary {
     #[ts(type = "number | null")]
     pub stored_bytes: Option<u64>,
     /// Whether the stored bytes are a zstd frame — `blob.zstd_level` is `Some(level)`
-    /// with `level != 0`, the same predicate `SourceReader::get` decodes on.
+    /// with `level != 0`, the same predicate `LibraryReader` decodes on.
     ///
     /// An unrecorded level (`NULL`) reports `false`, not "unknown" — and not because the
     /// download would hand those bytes over raw. It would not: `download.rs` refuses a
@@ -184,11 +184,9 @@ pub fn path_escapes(source_path: &str) -> bool {
 
 /// The source format, lowercase and without a dot, taken from a source path.
 ///
-/// Two crates ask now. `lapidary-ingest` writes the answer into `file.format` and hands
-/// it to the kernel; `lapidary-api`'s upload route asks `Compression::for_source_format`
-/// whether the bytes are worth compressing. Nothing forces those two to agree — the level
-/// actually used is recorded on the `blob` row and read back from there — but one
-/// definition is cheaper than a second that only looks the same.
+/// Two crates ask. `lapidary-ingest` writes the answer into `file.format` and hands it to
+/// the parser; `lapidary-api`'s upload route refuses a drop of B-rep files by it before a
+/// byte moves. One definition is cheaper than a second that only looks the same.
 ///
 /// An extension the kernel has no parser for reaches `process` and comes back as a
 /// per-file `Permanent` failure naming the format; the scan admits only `stl`, `obj` and

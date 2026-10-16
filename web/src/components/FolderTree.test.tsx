@@ -311,20 +311,6 @@ test('a target in another library refuses the move without offering to retry', a
   expect(screen.queryByRole('dialog')).toBeNull()
 })
 
-test('a model still migrating refuses the move without offering to retry', async () => {
-  const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('migrationPending') })
-  renderTree()
-
-  fireEvent.drop(await screen.findByRole('button', { name: 'Terrain' }), draggingCliff)
-
-  await waitFor(() => expect(moveCalls(fetchMock)).toHaveLength(1))
-  // Same wording the card's own "not movable yet" state uses. No dialog: acknowledging
-  // cannot finish a migration, so offering "move anyway" would invite a retry that can
-  // never succeed.
-  expect(screen.getByText(strings.folders.notMigrated)).toBeDefined()
-  expect(screen.queryByRole('dialog')).toBeNull()
-})
-
 test('a folder that no longer exists refuses the move without offering to retry', async () => {
   const fetchMock = stubFetch({ folders: ok([TERRAIN]), move: conflict('noSuchFolder') })
   renderTree()
@@ -830,18 +816,15 @@ test('a rename sends the name alone and never a parent', async () => {
 })
 
 /**
- * The rename dialog names the folder on disk, and it has to read that off `slug` rather than
- * off the name it is about to replace. `TERRAIN`'s slug is `Terain` — created with the typo,
- * renamed to fix it, folder unchanged — which is exactly the state `DATA.md` §1.1 makes
- * ordinary, and the one a dialog printing `folder.name` would get wrong while looking
- * correct against every other fixture here.
+ * The rename dialog says what a rename does since M4: a category is the library's own grouping,
+ * and renaming it touches nothing in the owner's folders.
  */
-test('the rename dialog names the folder on disk, not the category', async () => {
+test('the rename dialog says a rename moves nothing in your folders', async () => {
   stubFetch({ folders: ok([TERRAIN, ROCKS]) })
   renderTree()
 
   fireEvent.click(await screen.findByRole('button', { name: strings.folders.renameFor('Terrain') }))
-  expect(screen.getByText(strings.folders.renameKeepsDirectory('Terain'))).toBeTruthy()
+  expect(screen.getByText(strings.folders.renameKeepsDirectory)).toBeTruthy()
 })
 
 /**

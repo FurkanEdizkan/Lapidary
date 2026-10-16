@@ -662,14 +662,12 @@ export async function moveSavedFilter(
  * that acknowledging can never fix.
  */
 export type MoveRefusalReason =
-  | 'migrationPending'
   | 'crossLibrary'
   | 'duplicateName'
   | 'noSuchFolder'
   | 'unknown'
 
 const KNOWN_MOVE_REFUSAL_REASONS: readonly string[] = [
-  'migrationPending',
   'crossLibrary',
   'duplicateName',
   'noSuchFolder',
@@ -714,12 +712,12 @@ async function moveRefusalReason(response: Response): Promise<MoveRefusalReason>
  * `PATCH /api/parts/{id}` — file a model under a category, or under none.
  *
  * `409` is an answer rather than a failure, which is why this returns an outcome instead
- * of throwing on it — but the status alone does not say which of four refusals it is, so
+ * of throwing on it — but the status alone does not say which of three refusals it is, so
  * the body's `reason` rides along. Only `duplicateName` is the collision slice 6a decided
  * two models called `bracket` can both be true; the client shows that warning once and
- * re-sends the same target with `acknowledgeDuplicate: true`. The other three —
- * `migrationPending`, `crossLibrary`, `noSuchFolder` — are dead ends for this attempt, and
- * acknowledging would not change the answer.
+ * re-sends the same target with `acknowledgeDuplicate: true`. The other two —
+ * `crossLibrary`, `noSuchFolder` — are dead ends for this attempt, and acknowledging would
+ * not change the answer. A move is a database change since M4: nothing on disk can refuse it.
  *
  * Both fields are always sent. The route defaults `acknowledgeDuplicate`, but a request
  * that omitted it would be indistinguishable on the wire from one that meant `false`, and
@@ -1259,15 +1257,11 @@ async function refusal(response: Response): Promise<UploadRefused | undefined> {
 }
 
 /**
- * `POST /api/libraries/{id}/uploads/probe` — which of these files this library still
- * needs, and which of those need their bytes.
+ * `POST /api/libraries/{id}/uploads/probe` — which of these files this library still needs.
  *
- * Three lists, and the client acts on all three differently: `have` is dropped on the
- * floor, `needRows` skips the transfer and goes straight into the commit manifest, and
- * only `needBytes` is sent. Uploading everything anyway would still be *correct* — the
- * store is content-addressed and the worker's short-circuit would settle the duplicates
- * — but re-importing a 25 GB corpus would move 25 GB, which is the whole reason this
- * route exists.
+ * Two lists: `have` is dropped on the floor, and `needBytes` is sent and committed. A re-drop
+ * of a folder the library already holds moves nothing, which is the whole reason this route
+ * exists.
  */
 export async function probeUpload(
   library: LibraryId,

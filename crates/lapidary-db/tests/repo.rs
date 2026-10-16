@@ -867,7 +867,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
 #[sqlx::test(migrations = "./migrations")]
 async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
     // Two source blobs that differ the way the ingest policy makes them differ: an STL
-    // goes through zstd (`Compression::for_source_format`), a 3MF is already a zip and
+    // goes through zstd (the old per-format compression policy), a 3MF is already a zip and
     // is stored `AsIs`. Written out here rather than through `blob_row`, because the
     // whole assertion is that these two rows read back differently — a fixture pair
     // that happened to carry the same sizes would pass whatever the query reported.

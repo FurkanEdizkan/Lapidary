@@ -48,6 +48,7 @@ const PART: PartDetail = {
   compressed: true,
   directory: 'libraries/default/Brackets/nema-17-motor-mount',
   storagePath: 'libraries/default/Brackets/nema-17-motor-mount/nema-17-motor-mount.stl',
+  fileRoot: 'store',
   createdAt: '2026-09-06T10:00:00Z',
   updatedAt: '2026-09-06T10:00:00Z',
 }

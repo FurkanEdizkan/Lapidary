@@ -68,7 +68,7 @@ sourceBytes: number | null,
 storedBytes: number | null, 
 /**
  * Whether the stored bytes are a zstd frame — `blob.zstd_level` is `Some(level)`
- * with `level != 0`, the same predicate `SourceReader::get` decodes on.
+ * with `level != 0`, the same predicate `LibraryReader` decodes on.
  *
  * An unrecorded level (`NULL`) reports `false`, not "unknown" — and not because the
  * download would hand those bytes over raw. It would not: `download.rs` refuses a

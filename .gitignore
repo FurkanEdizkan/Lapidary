@@ -26,6 +26,8 @@ volumes/
 # what an ignore entry cannot do: `git clean -xfd` removes ignored files by definition,
 # so a store that matters belongs outside the repository — set LAPIDARY_STORAGE_ROOT.
 /storage/
+# The default inbox, for the same reason: ${LAPIDARY_INBOX_DIR:-../inbox} (M4).
+/inbox/
 
 # Generated
 crates/*/bindings/

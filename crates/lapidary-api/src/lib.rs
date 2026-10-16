@@ -44,14 +44,8 @@ use lapidary_db::PgPool;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// Where `DerivativeStore` looks. The same root the worker writes to, and it holds
-    /// both halves: source blobs and derivatives share one content-addressed layout. This
-    /// crate reaches the source half from the download route and nowhere else — that
-    /// route hands a user the exact bytes they asked for, which is not the open path.
-    /// Nothing at the type level enforces "nowhere else": the read-only handle the route
-    /// uses takes no `WorkerRole` proof, deliberately (spec
-    /// `2026-09-05-phase-1-slice-5-browser-design.md` §1.2), so `cargo xtask check-deploy`
-    /// is what holds that line, by rejecting any other file that names it.
+    /// Lapidary's own store: pictures, exports, imported bundles, and the files of parts
+    /// indexed before M4, which stay where they were and still download.
     pub blob_root: std::path::PathBuf,
     /// Where a partial upload is assembled before it is verified and moved into the blob
     /// store. Never the blob root: everything under that root is content-addressed and

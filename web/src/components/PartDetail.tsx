@@ -1288,13 +1288,19 @@ function History({ part }: { part: PartId }) {
             {revision.volumeMm3 === null ? null : (
               <Figure figure={revision.volumeMm3} render={strings.detail.volumeValue} />
             )}
-            <a
-              href={downloadUrl(revision.id)}
-              download
-              className="underline underline-offset-2"
-            >
-              {strings.download.original}
-            </a>
+            {revision.onDisk ? (
+              <a
+                href={downloadUrl(revision.id)}
+                download
+                className="underline underline-offset-2"
+              >
+                {strings.download.original}
+              </a>
+            ) : (
+              <span className="text-[var(--color-muted)]" title={strings.detail.historyNotOnDiskWhy}>
+                {strings.detail.historyNotOnDisk}
+              </span>
+            )}
           </li>
         ))}
       </ol>
