@@ -484,7 +484,7 @@ async fn place_all(
         .collect())
 }
 
-type Placements = Result<Vec<(String, String)>, Response>;
+type Placements = Result<Vec<(String, String)>, Box<Response>>;
 
 fn collect(
     result: Result<Placements, tokio::task::JoinError>,
@@ -494,7 +494,7 @@ fn collect(
     match result {
         Ok(Ok(more)) => placed.extend(more),
         Ok(Err(response)) => {
-            refused.get_or_insert(response);
+            refused.get_or_insert(*response);
         }
         Err(error) => {
             tracing::error!(%error, "placing an uploaded file stopped");
@@ -521,7 +521,7 @@ fn place_staged(
     paths: &[String],
 ) -> Placements {
     if !staged.exists() {
-        return Err(not_sent(&paths[0]));
+        return Err(Box::new(not_sent(&paths[0])));
     }
     let writer = InboxWriter::open(inbox);
     let mut placed = Vec::with_capacity(paths.len());
@@ -532,15 +532,17 @@ fn place_staged(
             // sends them again.
             Err(err @ StorageError::HashMismatch { .. }) => {
                 let _ = std::fs::remove_file(staged);
-                return Err(bad_request(err.to_string()));
+                return Err(Box::new(bad_request(err.to_string())));
             }
             Err(err) => {
                 tracing::error!(error = %err, "could not place an uploaded file in the inbox");
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "message": err.to_string() })),
-                )
-                    .into_response());
+                return Err(Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "message": err.to_string() })),
+                    )
+                        .into_response(),
+                ));
             }
         }
     }
