@@ -61,6 +61,8 @@ impl Host {
     /// A path inside this container, on the host.
     fn outside(&self, inner: &Path) -> String {
         match inner.strip_prefix(&self.dir) {
+            // `join("")` would end the root in a slash.
+            Ok(rest) if rest.as_os_str().is_empty() => self.root.display().to_string(),
             Ok(rest) => self.root.join(rest).display().to_string(),
             Err(_) => inner.display().to_string(),
         }
