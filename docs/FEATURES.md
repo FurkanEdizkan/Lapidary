@@ -67,6 +67,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | The folder picker as a dialog: a path field, the path bar from the browse root, folders with icons, and New folder (one plain-named empty folder, never over anything, only where Lapidary may write) | A9, built |
 | Upload single files, and zip and 7z archives: kept as sent, their stl, obj and 3mf unpacked beside them into parts, never over a file; RAR and encrypted archives refused by name | A10, built |
 | View in 3D reads the model in a worker, so the page never freezes; a 3MF reader of our own that follows the server's (projects with components in other model parts, transforms, units) | A11, built |
+| The 3D view's tools: a millimetre grid, the part's box and size, a measurement between two clicked points with their coordinates, each figure with its ≈, and an X/Y/Z axis gizmo | A12, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
