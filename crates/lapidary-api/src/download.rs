@@ -1,14 +1,20 @@
 //! `GET /api/revisions/{id}/download?variant=original` — the ingested bytes, exactly as
 //! they arrived. `api` role only, per `DATA.md` §5.1.
 //!
-//! The one file in this crate allowed to name `SourceReader`, and `cargo xtask
-//! check-deploy` (rule 5, `xtask/src/deploy.rs`) fails on any other that does. That is
-//! not an exception to *the open path never touches a source file*: opening — the grid,
-//! the viewer, the detail card, the interactive path whose failure mode is parsing a
-//! STEP file to draw a thumbnail — still reads metadata and derivatives only. Handing a
-//! user the exact bytes they asked for, parsing nothing, is a different path, and it is
-//! the only way `CLAUDE.md`'s other rule (*`variant=original` returns byte-identical
-//! ingested bytes*) can be true at all. Spec §1.3 argues both halves.
+//! **Since M4 the bytes are the owner's own file, read where it is** — in their folders, in the
+//! inbox, or (for a part indexed before M4) in Lapidary's store — through `Roots`, which hands out
+//! only `LibraryReader`, a handle with no way to write. `cargo xtask check-deploy` keeps the
+//! writing handles out of this crate. That is not an exception to *the open path never touches a
+//! source file*: opening — the grid, the viewer, the detail card — still reads metadata and
+//! derivatives only. Handing a user the exact bytes they asked for, parsing nothing, is a
+//! different path, and it is the only way `CLAUDE.md`'s other rule (*`variant=original` returns
+//! byte-identical ingested bytes*) can be true at all.
+//!
+//! Byte-identical **as long as the file has not changed since it was indexed**. The owner may edit
+//! it in place at any time, so before a byte goes out the file's size and modification time are
+//! compared with the ones recorded at index, and a difference is refused with a sentence that says
+//! to scan again (409). The end-of-stream hash stays, for an edit that kept both. A revision whose
+//! file a later revision replaced answers 410: its figures are kept, its bytes are not.
 //!
 //! Four things this route refuses to do rather than do badly, and each answers with its
 //! own message because each has a different person who can act on it: it will not guess a
@@ -21,8 +27,8 @@
 //!
 //! # The body streams, and what that cost
 //!
-//! It used to buffer the whole file before writing a byte, because `SourceReader::get`
-//! returns a `Vec<u8>` and `read_blob` decoded into it from a second full buffer. That was
+//! It used to buffer the whole file before writing a byte, because the reader
+//! returned a `Vec<u8>` and `read_blob` decoded into it from a second full buffer. That was
 //! not merely wasteful at Phase 1 sizes: the largest STL in the owner's corpus is 380 MB,
 //! which decoded to 380 MB *plus* the ~185 MB compressed copy resident at the same time,
 //! inside an `api` container `deploy/compose.yaml` caps at 512 MB. One download of one
@@ -55,9 +61,9 @@ use axum::extract::rejection::{FormRejection, JsonRejection, QueryRejection};
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BlobHash, DerivativeKind, LibraryId, PartId, RevisionId};
+use lapidary_core::{BlobHash, DerivativeKind, FileRoot, LibraryId, PartId, RevisionId};
 use lapidary_db::{DbError, DownloadSource, PgParts};
-use lapidary_storage::{DerivativeStore, SourceReader, StorageError};
+use lapidary_storage::{DerivativeStore, Roots, StorageError};
 use lapidary_targets::{Format, Handover, Tool, bundle, negotiate};
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
@@ -98,6 +104,7 @@ pub async fn original(
     query: Result<Query<DownloadQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Response {
+    let roots = state.roots();
     let AppState {
         db,
         blob_root,
@@ -139,7 +146,7 @@ pub async fn original(
         },
         None => return missing_variant(),
     }
-    serve_original(&blob_root, &touches, source, &headers)
+    serve_original(&roots, &touches, source, &headers)
 }
 
 /// `GET /api/parts/{id}/file` — the part's **current** file, exactly as it arrived. One link per
@@ -154,12 +161,8 @@ pub async fn current_file(
     Path(part): Path<PartId>,
     headers: HeaderMap,
 ) -> Response {
-    let AppState {
-        db,
-        blob_root,
-        touches,
-        ..
-    } = state;
+    let roots = state.roots();
+    let AppState { db, touches, .. } = state;
     let parts = PgParts(db);
     let revision = match parts.latest_revision(part).await {
         Ok(Some(revision)) => revision,
@@ -167,7 +170,7 @@ pub async fn current_file(
         Err(err) => return internal_error(&err),
     };
     match parts.source_for_download(revision).await {
-        Ok(Some(source)) => serve_original(&blob_root, &touches, source, &headers),
+        Ok(Some(source)) => serve_original(&roots, &touches, source, &headers),
         Ok(None) => no_such_part_file(),
         Err(err) => internal_error(&err),
     }
@@ -186,47 +189,64 @@ fn no_such_part_file() -> Response {
 
 /// The ingested bytes of `source`, whole or the one range asked for.
 fn serve_original(
-    blob_root: &std::path::Path,
+    roots: &Roots,
     touches: &lapidary_db::Touches,
     source: DownloadSource,
     headers: &HeaderMap,
 ) -> Response {
-    // Spec §2.5.1. Since migration `0013` the level is recorded on the `file` row, by the
-    // same transaction that inserts it, from what `put_at` reported — so every row ingest
-    // writes has one, including `link_existing`'s, which used to inherit the shared `blob`
-    // row's and could name a level the file on disk was never written at. A NULL reaching
-    // here is a row from outside that path: nobody recorded how these bytes were written,
-    // reading them raw would serve something and hope, and refusing names the one thing an
-    // operator can go and look at.
+    // A file a later revision replaced where it was: Lapidary keeps no copy (M4). Answered
+    // from the row, before the disk is looked at, so an old revision is told it is gone rather
+    // than that the newer file there "changed".
+    if !source.on_disk {
+        return no_longer_on_disk();
+    }
+    // Spec §2.5.1: a NULL level is a row nobody recorded how its bytes were written.
     let Some(zstd_level) = source.zstd_level else {
         return unrecorded_level(&source.hash, source.storage_path.as_deref());
     };
+    // The pre-flight (M4): a file in the owner's folders or the inbox is checked against the
+    // size and modification time it was indexed with before a byte is sent. The end-of-stream
+    // hash below still catches an edit that kept both.
+    if let (Some(mtime_ns), Some(rel)) = (source.mtime_ns, source.storage_path.as_deref()) {
+        match roots.reader(source.root).stat_at(rel) {
+            Ok(now)
+                if now.mtime_ns == mtime_ns
+                    && i64::try_from(now.size).ok() == Some(source.size_bytes) => {}
+            Ok(_) => return changed_on_disk(source.root),
+            Err(StorageError::Io { source: io, .. })
+                if io.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return missing_from_folder(source.root, rel);
+            }
+            Err(err) => {
+                return unreadable(
+                    &source.hash,
+                    source.root,
+                    source.storage_path.as_deref(),
+                    &err,
+                );
+            }
+        }
+    }
 
-    // Opened per request from the root, as `blob.rs` opens its own store: the handle is a
-    // `PathBuf` and a decode flag, so holding one in `AppState` would buy nothing and put
-    // source-byte access in a struct every other route shares.
-    let store = SourceReader::open(blob_root);
-
-    // `storage_path` is null while `migrate_storage` is still draining a library — a live
-    // state for as long as that job takes, hours on a real corpus, and not an edge case to
-    // special-case away (migration `0009`, `CLAUDE.md`). `Some` names where the bytes
-    // actually sit and reads through `stream_at`; `None` means they are still at the old
-    // content-addressed path and reads exactly as this route always has. Either way the
-    // `zstd_level` above came off the same row, so both branches follow the same recorded
-    // compression rather than one of them re-deriving it from which branch it is — and
-    // both stream, so which one a part takes cannot decide whether the api container holds
-    // the whole file in memory.
-    //
     // Opening is where a missing or unreadable file is still caught synchronously, so that
-    // case is a clean 500 with a message rather than an empty 200 — only the *content*
-    // moved behind the stream, not the existence check.
-    let opened = match source.storage_path.as_deref() {
-        Some(rel) => store.stream_at(rel, Some(zstd_level)),
-        None => store.stream(&source.hash, Some(zstd_level)),
-    };
+    // case is a clean answer with a message rather than an empty 200.
+    let opened = roots.open(
+        source.root,
+        source.storage_path.as_deref(),
+        &source.hash,
+        Some(zstd_level),
+    );
     let reader = match opened {
         Ok(reader) => reader,
-        Err(err) => return unreadable(&source.hash, source.storage_path.as_deref(), &err),
+        Err(err) => {
+            return unreadable(
+                &source.hash,
+                source.root,
+                source.storage_path.as_deref(),
+                &err,
+            );
+        }
     };
     let etag = format!("\"{}\"", source.hash.to_hex());
     let size = u64::try_from(source.size_bytes).unwrap_or(0);
@@ -273,7 +293,7 @@ fn serve_original(
         )
             .into_response();
     }
-    let body = stream_verified(reader, source.hash);
+    let body = stream_verified(reader, source.hash, source.root);
     (
         [
             // Always, and never `model/stl`: a browser that renders the file inline is a
@@ -393,7 +413,11 @@ fn stream_range(mut reader: Box<dyn std::io::Read + Send>, start: u64, len: u64)
 /// The final hash is compared to the digest the blob is filed under, and a mismatch closes
 /// the body early. See this module's header for what that does and does not promise; the
 /// short read is deliberate, and it is why `Content-Length` above is not optional.
-fn stream_verified(mut reader: Box<dyn std::io::Read + Send>, expected: BlobHash) -> Body {
+fn stream_verified(
+    mut reader: Box<dyn std::io::Read + Send>,
+    expected: BlobHash,
+    root: FileRoot,
+) -> Body {
     // Four 64 KiB chunks in flight. Small enough that a stalled client costs a quarter of
     // a megabyte rather than a file, large enough that the channel is not the bottleneck.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
@@ -437,9 +461,16 @@ fn stream_verified(mut reader: Box<dyn std::io::Read + Send>, expected: BlobHash
                 served = %served_hex,
                 "stored bytes do not hash to the digest they are filed under; download truncated"
             );
-            let message = format!(
-                "The bytes stored for blob {expected_hex} hash to {served_hex}, so they are not the file that was ingested. The download was stopped rather than completed. Restore that blob from a backup, or re-ingest the source file to replace it."
-            );
+            let message = match root {
+                // A file edited in place in a way that kept its size and time.
+                FileRoot::Library | FileRoot::Inbox => format!(
+                    "{} (It hashes to {served_hex}, not {expected_hex}; the download was stopped rather than completed.)",
+                    changed(root)
+                ),
+                FileRoot::Store => format!(
+                    "The bytes stored for blob {expected_hex} hash to {served_hex}, so they are not the file that was ingested. The download was stopped rather than completed. Restore that blob from a backup, or re-ingest the source file to replace it."
+                ),
+            };
             let _ = tx.blocking_send(Err(std::io::Error::other(message)));
         }
     });
@@ -745,26 +776,94 @@ fn unrecorded_level(hash: &BlobHash, storage_path: Option<&str>) -> Response {
 /// that hash" is wrong advice for a part whose bytes were never written there at all, and
 /// sending an operator to look at `blobs/ab/cd/<hash>` for a part that lives at
 /// `libraries/…` wastes the one thing this message exists to save them.
-fn unreadable(hash: &BlobHash, storage_path: Option<&str>, err: &StorageError) -> Response {
+fn unreadable(
+    hash: &BlobHash,
+    root: FileRoot,
+    storage_path: Option<&str>,
+    err: &StorageError,
+) -> Response {
     let hex = hash.to_hex();
     tracing::error!(
         hash = %hex,
+        root = root.as_str(),
         storage_path = storage_path.unwrap_or("(content-addressed)"),
         error = %err,
-        "a referenced source blob could not be read"
+        "a referenced source file could not be read"
     );
-    let check = match storage_path {
-        Some(_) => "that this part's file is still present in its model directory",
-        None => "that the file for that hash is present",
+    let message = match (root, storage_path) {
+        (FileRoot::Library, Some(rel)) => format!(
+            "Could not read {rel} in your folders, so nothing was served. Check that the folder is mounted and readable, then try again."
+        ),
+        (FileRoot::Inbox, Some(rel)) => format!(
+            "Could not read {rel} in Lapidary's inbox, so nothing was served. Check that the inbox volume is mounted and readable, then try again."
+        ),
+        (_, Some(_)) => format!(
+            "Blob {hex} could not be read from the blob store, so nothing was served. Check that the blob volume is mounted and that this part's file is still present in its model directory."
+        ),
+        (_, None) => format!(
+            "Blob {hex} could not be read from the blob store, so nothing was served. Check that the blob volume is mounted and that the file for that hash is present."
+        ),
     };
     (
         StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "message": message })),
+    )
+        .into_response()
+}
+
+/// A revision whose file a later revision replaced where it was (M4). `410 Gone`: the row
+/// and its figures are still here, and the bytes are not anywhere Lapidary can reach.
+fn no_longer_on_disk() -> Response {
+    (
+        StatusCode::GONE,
         Json(serde_json::json!({
+            "reason": "noLongerOnDisk",
+            "message": "This revision's file is no longer on disk: a later revision replaced it in your folder, and Lapidary keeps no copy. Its figures are still in the history; download the current revision instead."
+        })),
+    )
+        .into_response()
+}
+
+/// The pre-flight's refusal (M4): the file's size or modification time is not what was indexed.
+fn changed_on_disk(root: FileRoot) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "reason": "changedOnDisk",
+            "message": changed(root),
+        })),
+    )
+        .into_response()
+}
+
+/// What to do about a changed file depends on where it is: a scan reads the owner's folders, and
+/// never the inbox, so a changed upload is uploaded again.
+fn changed(root: FileRoot) -> &'static str {
+    match root {
+        FileRoot::Inbox => {
+            "This file changed in Lapidary's inbox since it was indexed — upload or import it again."
+        }
+        FileRoot::Library | FileRoot::Store => CHANGED_ON_DISK,
+    }
+}
+
+/// The sentence a changed file is refused with, before a byte is sent.
+pub const CHANGED_ON_DISK: &str =
+    "This file changed in your folder since Lapidary last read it — scan again.";
+
+/// The pre-flight found nothing at the recorded path: moved, renamed or deleted in the folder.
+fn missing_from_folder(root: FileRoot, rel: &str) -> Response {
+    let (place, remedy) = match root {
+        FileRoot::Inbox => ("Lapidary's inbox", "upload or import it again"),
+        _ => ("your folders", "put it back, or scan again"),
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "reason": "missingFromFolder",
             "message": format!(
-                "Blob {hex} could not be read from the blob store, so nothing was served. \
-                 Check that the blob volume is mounted and {check} — a source file is \
-                 never removed while a part still references it."
-            )
+                "There is no file at {rel} in {place} any more: it was moved, renamed or deleted there since Lapidary last read it. To download it, {remedy}."
+            ),
         })),
     )
         .into_response()
@@ -918,7 +1017,7 @@ pub async fn bundle(
         "zip",
     );
     let length = planned.bytes;
-    let body = stream_bundle(state.blob_root.clone(), planned.entries, planned.manifest);
+    let body = stream_bundle(state.roots(), planned.entries, planned.manifest);
     (
         [
             (header::CONTENT_TYPE, "application/zip".to_owned()),
@@ -990,7 +1089,11 @@ async fn plan_bundle(
     let mut paths = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut manifest_parts = Vec::with_capacity(found.len());
-    for part in found {
+    for mut part in found {
+        // A revision whose file a later one replaced in place has no bytes left to carry (M4): the
+        // bundle holds the revisions still on disk, with their own labels and figures.
+        part.revisions
+            .retain(|row| row.source.as_ref().is_none_or(|source| source.on_disk));
         let labels: Vec<(RevisionId, String)> = part
             .revisions
             .iter()
@@ -1009,6 +1112,22 @@ async fn plan_bundle(
                     ),
                 ));
             };
+            if let (Some(mtime_ns), Some(rel)) = (source.mtime_ns, source.storage_path.as_deref()) {
+                let unchanged = state
+                    .roots()
+                    .reader(source.root)
+                    .stat_at(rel)
+                    .is_ok_and(|now| {
+                        now.mtime_ns == mtime_ns
+                            && i64::try_from(now.size).ok() == Some(source.size_bytes)
+                    });
+                if !unchanged {
+                    return Err(refuse(
+                        StatusCode::CONFLICT,
+                        format!("{} ({}): {}", part.name, rel, changed(source.root)),
+                    ));
+                }
+            }
             if source.zstd_level.is_none() {
                 return Err(refuse(
                     StatusCode::CONFLICT,
@@ -1125,11 +1244,7 @@ async fn plan_bundle(
 /// the ZIP, and hands the archive to the response through a bounded channel, as `stream_verified`
 /// does for one file. A file that will not open, will not read, or no longer hashes to its digest
 /// ends the body short of its `Content-Length`, rather than finishing a bundle with a wrong file.
-fn stream_bundle(
-    blob_root: std::path::PathBuf,
-    entries: Vec<BundleEntry>,
-    manifest: Vec<u8>,
-) -> Body {
+fn stream_bundle(roots: Roots, entries: Vec<BundleEntry>, manifest: Vec<u8>) -> Body {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
     tokio::task::spawn_blocking(move || {
         let stop = tx.clone();
@@ -1137,14 +1252,15 @@ fn stream_bundle(
             tracing::error!(%message, "a bundle stopped short");
             let _ = stop.blocking_send(Err(std::io::Error::other(message)));
         };
-        let store = SourceReader::open(&blob_root);
         let mut zip =
             bundle::StoreZip::new(std::io::BufWriter::with_capacity(64 * 1024, Channel(tx)));
         for entry in entries {
-            let opened = match entry.source.storage_path.as_deref() {
-                Some(rel) => store.stream_at(rel, entry.source.zstd_level),
-                None => store.stream(&entry.source.hash, entry.source.zstd_level),
-            };
+            let opened = roots.open(
+                entry.source.root,
+                entry.source.storage_path.as_deref(),
+                &entry.source.hash,
+                entry.source.zstd_level,
+            );
             let reader = match opened {
                 Ok(reader) => reader,
                 Err(err) => {

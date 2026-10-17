@@ -61,8 +61,12 @@ services:
       # verified against the hash the browser claimed. Deliberately not a subdirectory of
       # LAPIDARY_BLOB_ROOT — everything under that root is complete, and a half-sent file is not.
       LAPIDARY_UPLOAD_DIR: /var/lib/lapidary-uploads
-      # The folder the scan button reads, mounted read-only below.
+      # Your folders: what the scan button reads, mounted read-only below. Lapidary indexes each
+      # file where it is and never writes, renames or removes anything under it (M4).
       LAPIDARY_INGEST_DIR: /ingest
+      # Where an upload or a link import is written once before it is indexed like any other
+      # file. Outside /ingest — the server refuses to start with it inside your folders.
+      LAPIDARY_INBOX_DIR: /inbox
       # The bundled examples, copied into the image by deploy/Containerfile. Seeded once, on
       # the first start of a library nothing has ever run in — see `lapidary_ingest::seed`.
       # Unset it to start with an empty grid.
@@ -73,6 +77,9 @@ services:
       # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
       # absolute path, as .env.example recommends, and the paths appear.
       LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
+      # The same, for your folders and the inbox: what a card's "show in folder" path starts with.
+      LAPIDARY_HOST_INGEST_ROOT: ${LAPIDARY_INGEST_DIR:-../example/parts}
+      LAPIDARY_HOST_INBOX_ROOT: ${LAPIDARY_INBOX_DIR:-../inbox}
       # Importing a model from its Printables, Thingiverse or MyMiniFactory page (F3). `false` turns
       # it off — the Settings page says so and nothing contacts those sites — for an install that
       # must make no outbound request beyond a picture somebody pastes.
@@ -104,10 +111,15 @@ services:
       # `lapidary-blobs` named volume this file no longer declares. docs/DATA.md §1.1,
       # "Upgrading a store created before this layout", has the command.
       - ${LAPIDARY_STORAGE_ROOT:-../storage}:/var/lib/lapidary:z
-      # The folder of parts to scan, read-only: ingest hashes and copies bytes into the store,
-      # and must never be able to modify what it was pointed at. The default is this
+      # Your folders, read-only: a scan reads each file where it is and records its path, and
+      # nothing in Lapidary can write here — `:ro` is the backstop behind the code that never
+      # tries (`cargo xtask check-deploy` refuses this mount without it). The default is this
       # repository's `example/parts`; point LAPIDARY_INGEST_DIR at your own folder.
       - ${LAPIDARY_INGEST_DIR:-../example/parts}:/ingest:ro,z
+      # The inbox: uploads under `uploads/`, link and bundle imports under `imports/`, the seeded
+      # examples under `examples/`. Lapidary's to write, so a bind mount you can open, apart from
+      # your folders.
+      - ${LAPIDARY_INBOX_DIR:-../inbox}:/inbox:z
       # Partial uploads. A named volume and not part of the storage root, so a half-transferred
       # file is never inside a directory whose contract is that everything in it is complete.
       - lapidary-uploads:/var/lib/lapidary-uploads:Z

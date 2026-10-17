@@ -39,6 +39,40 @@ impl RevisionOrigin {
     }
 }
 
+/// Which directory a `file` row's `storage_path` is relative to (M4, migration `0062`).
+///
+/// - `Library`: the owner's own folders, under the ingest mount. Lapidary reads here and never
+///   writes, renames or removes anything — the mount is `:ro` as the backstop.
+/// - `Inbox`: where uploads, link imports and the seeded examples are written, once.
+/// - `Store`: Lapidary's own blob root. Every row from before M4 is one of these, and its bytes
+///   stay where they are — a path under the store, or `blobs/ab/cd/<hash>` when the path is NULL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FileRoot {
+    Library,
+    Inbox,
+    Store,
+}
+
+impl FileRoot {
+    /// The column's spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Library => "library",
+            Self::Inbox => "inbox",
+            Self::Store => "store",
+        }
+    }
+
+    /// The column read back. `None` is a word this build never writes.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Library, Self::Inbox, Self::Store]
+            .into_iter()
+            .find(|root| root.as_str() == value)
+    }
+}
+
 /// The grid row, in the shape the spec calls for: identity, part number, the part's own
 /// picture, approximate flag, storage figures, timestamps. Still narrow — the open path
 /// reads metadata and derivatives only, and never a source file. The storage
@@ -98,7 +132,7 @@ pub struct PartSummary {
     #[ts(type = "number | null")]
     pub stored_bytes: Option<u64>,
     /// Whether the stored bytes are a zstd frame — `blob.zstd_level` is `Some(level)`
-    /// with `level != 0`, the same predicate `SourceReader::get` decodes on.
+    /// with `level != 0`, the same predicate `LibraryReader` decodes on.
     ///
     /// An unrecorded level (`NULL`) reports `false`, not "unknown" — and not because the
     /// download would hand those bytes over raw. It would not: `download.rs` refuses a
@@ -150,11 +184,9 @@ pub fn path_escapes(source_path: &str) -> bool {
 
 /// The source format, lowercase and without a dot, taken from a source path.
 ///
-/// Two crates ask now. `lapidary-ingest` writes the answer into `file.format` and hands
-/// it to the kernel; `lapidary-api`'s upload route asks `Compression::for_source_format`
-/// whether the bytes are worth compressing. Nothing forces those two to agree — the level
-/// actually used is recorded on the `blob` row and read back from there — but one
-/// definition is cheaper than a second that only looks the same.
+/// Two crates ask. `lapidary-ingest` writes the answer into `file.format` and hands it to
+/// the parser; `lapidary-api`'s upload route refuses a drop of B-rep files by it before a
+/// byte moves. One definition is cheaper than a second that only looks the same.
 ///
 /// An extension the kernel has no parser for reaches `process` and comes back as a
 /// per-file `Permanent` failure naming the format; the scan admits only `stl`, `obj` and

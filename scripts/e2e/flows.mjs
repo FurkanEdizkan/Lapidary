@@ -1075,7 +1075,9 @@ const FLOWS = [
         const d = [...document.querySelectorAll('details')].find((e) => e.querySelector('summary')?.textContent.trim().startsWith(${JSON.stringify(T.storageSummary)}))
         return d.textContent
       })()`)
-      expect(/Sources/.test(body), `the storage panel body does not report sources: ${JSON.stringify(body.slice(0, 200))}`)
+      expect(/Models/.test(body), `the storage panel body does not report the models: ${JSON.stringify(body.slice(0, 200))}`)
+      // M4: a model's file is in the owner's folders, and the panel says so rather than claiming it.
+      expect(/in your folders/.test(body), `the storage panel does not say the models are in your folders: ${JSON.stringify(body.slice(0, 200))}`)
       // "Eviction is a different action with different wording and must never read as data loss."
       // These are the words that would break that rule, checked where a person would read them.
       const wrong = ['Delete cache', 'Delete derivatives', 'Erase cache', 'Delete the cache', 'Delete previews'].filter((w) => body.includes(w))

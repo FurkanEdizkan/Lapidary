@@ -23,6 +23,10 @@ fn state(pool: sqlx::PgPool) -> AppState {
         blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     }
 }
@@ -248,6 +252,8 @@ async fn a_part_page_names_the_file_on_disk_and_the_directory_holding_it(pool: s
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/vee-block-lp-3072-02/vee-block-lp-3072-02.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("valid uuid")),
             name: "Vee block, LP-3072-02",
             source_path: "vee-block-lp-3072-02.stl",

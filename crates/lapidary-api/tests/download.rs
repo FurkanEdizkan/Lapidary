@@ -1,30 +1,88 @@
 //! `GET /api/revisions/{id}/download?variant=original`.
 //!
-//! Every fixture here is written by `SourceStore::put` or `put_at` and recorded from the
-//! `StoredBlob` each returns — hash, sizes and level all four. Typing a level literal
-//! instead is how a test comes to describe bytes that were never written that way: the
-//! `blob` row would say 3 over a raw ZIP, the reader would try to decode it, and the
-//! failure would have nothing to do with the route. The db crate's own fixtures can afford
-//! that shorthand because nothing there reads bytes; this file cannot.
+//! Two kinds of fixture. Most of this file is about a part indexed **before M4**, whose file is in
+//! Lapidary's own store — at its hash, or at a path under the store, possibly a zstd frame — and
+//! still downloads byte-identical (`legacy` writes those exactly as the old store did). The tests at
+//! the end are about a file in the owner's folders, read where it is, and refused with a sentence
+//! when it changed there since it was indexed.
 //!
-//! The compressed leg and the `AsIs` leg are not a coverage pair. They take genuinely
-//! different paths through spec §2.5 — one decodes, one does not — and only the first can
-//! detect a reader that stopped decoding, which is the drift the byte-identity claim
-//! exists to catch.
-//!
-//! Two more fixtures, `seed` and `seed_at_path`, are not a coverage pair either, for the
-//! matching reason: `file.storage_path` is nullable and stays that way for as long as
-//! `migrate_storage` takes to drain a real corpus (migration `0009`), so `None` and `Some`
-//! are two live layouts, not a before-and-after. `seed`'s hash-addressed fixtures cover
-//! every part ingested before the previous task; `seed_at_path`'s folder-addressed ones
-//! cover every part ingested since.
+//! The compressed leg and the `AsIs` leg are not a coverage pair: only the first can detect a
+//! reader that stopped decoding, which is the drift the byte-identity claim exists to catch.
+
+/// The store as Lapidary wrote it before M4, for fixtures only: nothing writes this layout now.
+mod legacy {
+    use lapidary_core::BlobHash;
+    use std::path::Path;
+
+    pub struct Stored {
+        pub hash: BlobHash,
+        pub size_bytes: u64,
+        pub stored_bytes: u64,
+        pub zstd_level: i16,
+    }
+
+    #[derive(Clone, Copy)]
+    pub enum Compression {
+        Zstd,
+        AsIs,
+    }
+
+    impl Compression {
+        /// `DATA.md` §1.2 as it stood: 3MF as is, everything else at zstd 3.
+        pub fn for_source_format(format: &str) -> Self {
+            if format.eq_ignore_ascii_case("3mf") {
+                Compression::AsIs
+            } else {
+                Compression::Zstd
+            }
+        }
+    }
+
+    fn write(path: &Path, bytes: &[u8], compression: Compression) -> Stored {
+        let (payload, zstd_level) = match compression {
+            Compression::Zstd => (zstd::encode_all(bytes, 3).expect("compresses"), 3),
+            Compression::AsIs => (bytes.to_vec(), 0),
+        };
+        std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+        std::fs::write(path, &payload).expect("writes");
+        Stored {
+            hash: BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()),
+            size_bytes: bytes.len() as u64,
+            stored_bytes: payload.len() as u64,
+            zstd_level,
+        }
+    }
+
+    /// At `blobs/ab/cd/<hash>`.
+    pub fn put(root: &Path, bytes: &[u8], compression: Compression) -> Result<Stored, String> {
+        let hex = blake3::hash(bytes).to_hex();
+        Ok(write(
+            &root
+                .join("blobs")
+                .join(&hex[0..2])
+                .join(&hex[2..4])
+                .join(hex.as_str()),
+            bytes,
+            compression,
+        ))
+    }
+
+    /// At a path under the store.
+    pub fn put_at(
+        root: &Path,
+        rel: &str,
+        bytes: &[u8],
+        compression: Compression,
+    ) -> Result<Stored, String> {
+        Ok(write(&root.join(rel), bytes, compression))
+    }
+}
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId, RevisionId};
 use lapidary_db::{IngestRequest, PgIngest, PgParts, StoredBlobRow};
-use lapidary_storage::{Compression, SourceStore, WorkerRole};
 use std::path::{Path, PathBuf};
 use tower::ServiceExt;
 
@@ -50,7 +108,7 @@ fn measurements() -> MeshMeasurements {
 }
 
 /// A real ASCII STL — a fan of facets around a 62 mm cover — and real for one load-bearing
-/// reason: `Compression::for_source_format("stl")` compresses, so these bytes reach disk
+/// reason: `legacy::Compression::for_source_format("stl")` compresses, so these bytes reach disk
 /// as a zstd frame and come back only if the route decodes. A 3MF fixture would take the
 /// `AsIs` branch and pass whether the route decoded or not.
 ///
@@ -95,14 +153,15 @@ struct Seeded {
 /// `StoredBlob` the write returned, so the row cannot describe bytes that were stored
 /// some other way.
 async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes: &[u8]) -> Seeded {
-    let stored = SourceStore::open(root, &WorkerRole::assume())
-        .put(bytes, Compression::for_source_format(format))
+    let stored = legacy::put(root, bytes, legacy::Compression::for_source_format(format))
         .expect("stores the source file");
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name,
             source_path: name,
@@ -135,7 +194,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
 /// `seed`'s twin for the other layout: writes `bytes` at `rel` — a store-relative path
 /// under the model's own directory — rather than at its hash, and records a `file` row
 /// whose `storage_path` names it. This is what ingest has written since the previous task
-/// (`handler.rs`, always `Compression::AsIs`), and it is the state every part ingested
+/// (`handler.rs`, always `legacy::Compression::AsIs`), and it is the state every part ingested
 /// from now on is in, where `seed`'s `storage_path: None` is the state every part ingested
 /// before it is in. Both are live on the same corpus for as long as `migrate_storage`
 /// takes to drain (migration `0009`), so the route has to answer both.
@@ -147,14 +206,15 @@ async fn seed_at_path(
     format: &str,
     bytes: &[u8],
 ) -> Seeded {
-    let stored = SourceStore::open(root, &WorkerRole::assume())
-        .put_at(rel, bytes, Compression::AsIs)
+    let stored = legacy::put_at(root, rel, bytes, legacy::Compression::AsIs)
         .expect("stores the source file at its path");
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(rel),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name,
             source_path: name,
@@ -314,6 +374,10 @@ async fn a_compressed_source_comes_back_byte_identical(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -362,6 +426,10 @@ async fn a_3mf_stored_as_is_comes_back_byte_identical(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -411,6 +479,10 @@ async fn a_part_whose_bytes_have_migrated_downloads_from_its_folder_path(pool: s
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -445,8 +517,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
     let root = tempfile::tempdir().expect("temp dir");
     let bytes = ascii_stl();
     let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
-    let stored = SourceStore::open(root.path(), &WorkerRole::assume())
-        .put_at(rel, &bytes, Compression::Zstd)
+    let stored = legacy::put_at(root.path(), rel, &bytes, legacy::Compression::Zstd)
         .expect("stores the source file at its path, compressed");
     assert!(
         stored.stored_bytes < stored.size_bytes,
@@ -466,6 +537,8 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some(rel),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: TURKISH_NAME,
             source_path: TURKISH_NAME,
@@ -487,6 +560,10 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -524,6 +601,10 @@ async fn bytes_at_a_folder_path_that_do_not_hash_truncate_the_download(pool: sql
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -560,6 +641,10 @@ async fn a_turkish_name_is_percent_encoded_in_one_half_and_degraded_in_the_other
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -589,6 +674,10 @@ async fn an_unknown_variant_and_a_missing_one_are_refused_differently(pool: sqlx
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
 
@@ -632,6 +721,10 @@ async fn a_variant_with_nothing_after_the_equals_reads_as_absent(pool: sqlx::PgP
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -659,6 +752,10 @@ async fn a_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::PgPool)
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: touches.clone(),
     };
 
@@ -717,6 +814,10 @@ async fn a_blob_with_no_recorded_compression_level_is_refused_by_name(pool: sqlx
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: touches.clone(),
         },
         Role::Api,
@@ -752,12 +853,12 @@ async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx
     // `blob` row and a file on disk that disagree, which a crash between `write_blob`'s
     // rename and the transaction commit can leave behind. Decoding still succeeds — the
     // frame is valid — so only the re-hash can catch it.
-    let other = SourceStore::open(root.path(), &WorkerRole::assume())
-        .put(
-            b"solid LP-9911-00\nendsolid LP-9911-00\n",
-            Compression::Zstd,
-        )
-        .expect("stores other bytes");
+    let other = legacy::put(
+        root.path(),
+        b"solid LP-9911-00\nendsolid LP-9911-00\n",
+        legacy::Compression::Zstd,
+    )
+    .expect("stores other bytes");
     std::fs::copy(
         blob_file(root.path(), &other.hash),
         blob_file(root.path(), &seeded.hash),
@@ -769,6 +870,10 @@ async fn bytes_that_do_not_hash_to_their_digest_truncate_the_download(pool: sqlx
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: touches.clone(),
         },
         Role::Api,
@@ -845,6 +950,10 @@ async fn a_file_larger_than_the_stream_buffer_still_comes_back_byte_identical(po
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -882,6 +991,10 @@ async fn the_worker_role_does_not_serve_downloads(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Worker,
@@ -904,6 +1017,10 @@ async fn a_repeated_variant_is_refused_rather_than_resolved(pool: sqlx::PgPool) 
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
 
@@ -954,6 +1071,10 @@ async fn a_source_blob_missing_from_disk_is_its_own_500(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: touches.clone(),
         },
         Role::Api,
@@ -1010,6 +1131,10 @@ async fn a_path_addressed_source_file_missing_from_disk_says_where_to_look(pool:
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: touches.clone(),
         },
         Role::Api,
@@ -1058,6 +1183,10 @@ async fn a_rung_variant_is_refused_in_words_that_no_longer_offer_a_rung(pool: sq
                 blob_root: root.to_path_buf(),
                 upload_dir: PathBuf::from("/nonexistent-upload-dir"),
                 host_storage_root: None,
+                ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+                inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+                host_ingest_root: None,
+                host_inbox_root: None,
                 touches: Default::default(),
             },
             Role::Api,
@@ -1118,6 +1247,10 @@ async fn a_format_downloads_as_the_original_in_it_or_as_an_export_and_never_a_me
                 blob_root: root.to_path_buf(),
                 upload_dir: PathBuf::from("/nonexistent-upload-dir"),
                 host_storage_root: None,
+                ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+                inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+                host_ingest_root: None,
+                host_inbox_root: None,
                 touches: Default::default(),
             },
             Role::Api,
@@ -1236,6 +1369,10 @@ fn app_over(pool: &sqlx::PgPool, root: &Path) -> axum::Router {
             db: pool.clone(),
             blob_root: root.to_path_buf(),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
             upload_dir: PathBuf::from("/nonexistent-upload-dir"),
         },
@@ -1342,66 +1479,239 @@ async fn a_parts_file_link_serves_its_bytes_whole_and_by_range(pool: sqlx::PgPoo
     assert_eq!(body, bytes[..10]);
 }
 
+/// A file in the owner's folders, recorded where it is, as a scan records one: the path under the
+/// ingest mount, and the size and modification time of what was read.
+async fn seed_in_folders(pool: &sqlx::PgPool, folders: &Path, rel: &str, bytes: &[u8]) -> Seeded {
+    let file = folders.join(rel);
+    std::fs::create_dir_all(file.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(&file, bytes).expect("the owner's file");
+    let stat = lapidary_storage::LibraryReader::open(folders)
+        .stat_at(rel)
+        .expect("stats");
+    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            folder: None,
+            storage_path: Some(rel),
+            root: lapidary_core::FileRoot::Library,
+            mtime_ns: Some(stat.mtime_ns),
+            library: library(),
+            name: "cover-lp-3120-05",
+            source_path: rel,
+            blob: &StoredBlobRow {
+                hash,
+                size_bytes: bytes.len() as u64,
+                stored_bytes: bytes.len() as u64,
+                zstd_level: 0,
+            },
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
+        .await
+        .expect("records");
+    let revision = PgParts(pool.clone())
+        .latest_revision(part)
+        .await
+        .expect("query")
+        .expect("the ingested revision");
+    Seeded {
+        part,
+        revision,
+        hash,
+        size_bytes: bytes.len() as u64,
+        stored_bytes: bytes.len() as u64,
+    }
+}
+
+fn app_over_folders(pool: &sqlx::PgPool, folders: &Path) -> axum::Router {
+    router(
+        AppState {
+            db: pool.clone(),
+            blob_root: PathBuf::from("/nonexistent-blob-root"),
+            host_storage_root: None,
+            ingest_dir: folders.to_path_buf(),
+            inbox_dir: PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
+            touches: Default::default(),
+            upload_dir: PathBuf::from("/nonexistent-upload-dir"),
+        },
+        Role::Api,
+    )
+}
+
+const IN_FOLDERS: &str = "Covers/cover-lp-3120-05.stl";
+
+/// A file in the owner's folders downloads from where it is, byte for byte.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_parts_file_link_follows_its_newest_revision(pool: sqlx::PgPool) {
-    let root = tempfile::tempdir().expect("temp dir");
-    let first = ascii_stl();
-    let seeded = seed_at_path(
-        &pool,
-        root.path(),
-        COVER_PATH,
-        "cover-lp-3120-05",
-        "stl",
-        &first,
+async fn a_file_in_the_owners_folders_downloads_from_where_it_is(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let bytes = ascii_stl();
+    let seeded = seed_in_folders(&pool, folders.path(), IN_FOLDERS, &bytes).await;
+    let app = app_over_folders(&pool, folders.path());
+    let (status, _, body) = get(app.clone(), &file_uri(seeded.part)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+    let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, bytes);
+}
+
+/// (c) The owner edits the file in place after it was indexed: the download is refused before a
+/// byte is sent, with the sentence that says what to do, on both links — and a bundle is refused
+/// the same way.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_changed_in_its_folder_is_refused_with_the_sentence(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let bytes = ascii_stl();
+    let seeded = seed_in_folders(&pool, folders.path(), IN_FOLDERS, &bytes).await;
+    let mut edited = bytes.clone();
+    edited.extend_from_slice(b"solid extra\nendsolid extra\n");
+    std::fs::write(folders.path().join(IN_FOLDERS), &edited).expect("the owner edits it");
+
+    let app = app_over_folders(&pool, folders.path());
+    for uri in [
+        file_uri(seeded.part),
+        download_uri(seeded.revision, "?variant=original"),
+    ] {
+        // The streaming read, so a pre-flight that let the file through is caught here, by the
+        // status, and not by the end-of-stream hash that would cut the body short behind it.
+        let (status, _, body) = get_streaming(app.clone(), &uri).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "refused before a byte is sent: {uri}"
+        );
+        assert_eq!(
+            message(&body.expect("a whole refusal")),
+            "This file changed in your folder since Lapidary last read it — scan again."
+        );
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/libraries/{}/bundle/plan", library()))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "parts": [seeded.part] }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+/// The same bytes with a new modification time are a change the pre-flight sees, and the end hash
+/// is what would catch an edit that kept both: a file rewritten to the same length with its old
+/// time put back is cut short rather than served whole.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_edit_that_keeps_size_and_time_is_cut_short_by_the_hash(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let bytes = ascii_stl();
+    let seeded = seed_in_folders(&pool, folders.path(), IN_FOLDERS, &bytes).await;
+    let path = folders.path().join(IN_FOLDERS);
+    let modified = std::fs::metadata(&path)
+        .expect("stats")
+        .modified()
+        .expect("an mtime");
+    let mut same_length = bytes.clone();
+    same_length[0] = b'S';
+    std::fs::write(&path, &same_length).expect("edits in place");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("opens")
+        .set_modified(modified)
+        .expect("puts the time back");
+
+    let response = app_over_folders(&pool, folders.path())
+        .oneshot(
+            Request::builder()
+                .uri(file_uri(seeded.part))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the pre-flight cannot see this edit"
+    );
+    let read = axum::body::to_bytes(response.into_body(), 64 * 1024 * 1024).await;
+    let error = read.expect_err("the body ends short instead of finishing");
+    assert!(
+        format!("{error:?}").contains("changed in your folder"),
+        "{error:?}"
+    );
+}
+
+/// A file moved, renamed or deleted in the folder since it was indexed says so, and what to do.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_file_gone_from_its_folder_says_so(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let seeded = seed_in_folders(&pool, folders.path(), IN_FOLDERS, &ascii_stl()).await;
+    std::fs::remove_file(folders.path().join(IN_FOLDERS)).expect("the owner removes it");
+    let (status, _, body) = get(
+        app_over_folders(&pool, folders.path()),
+        &file_uri(seeded.part),
     )
     .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(message(&body).contains("scan again"), "{}", message(&body));
+}
 
-    // Revision 2, recorded the way ingest records one: the old file set aside, the new one where
-    // it was. Its blob row comes from writing the same bytes into a scratch store.
+/// The owner overwrote the file, and the scan recorded it as revision 2 where it is: the part's link
+/// gives the new bytes, and revision 1, whose bytes Lapidary never copied, answers 410.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_parts_file_link_follows_its_newest_revision(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let first = ascii_stl();
+    let seeded = seed_in_folders(&pool, folders.path(), IN_FOLDERS, &first).await;
+
     let mut second = first.clone();
     second.extend_from_slice(b"\nsolid revised\nendsolid revised\n");
-    let scratch = tempfile::tempdir().expect("temp dir");
-    let stored = SourceStore::open(scratch.path(), &WorkerRole::assume())
-        .put_at("scratch.stl", &second, Compression::AsIs)
-        .expect("stores");
+    std::fs::write(folders.path().join(IN_FOLDERS), &second).expect("the owner saves over it");
+    let stat = lapidary_storage::LibraryReader::open(folders.path())
+        .stat_at(IN_FOLDERS)
+        .expect("stats");
     let measured = measurements();
-    let root_path = root.path().to_path_buf();
-    let written = second.clone();
     lapidary_db::PgRevisions(pool.clone())
-        .record_revision(
-            lapidary_db::RevisionRequest {
-                part: seeded.part,
-                parent: seeded.revision,
-                origin: lapidary_core::RevisionOrigin::Upload,
-                blob: &StoredBlobRow {
-                    hash: stored.hash,
-                    size_bytes: stored.size_bytes,
-                    stored_bytes: stored.stored_bytes,
-                    zstd_level: stored.zstd_level,
-                },
-                measurements: &measured,
-                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                format: "stl",
+        .record_revision(lapidary_db::RevisionRequest {
+            part: seeded.part,
+            parent: seeded.revision,
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            root: lapidary_core::FileRoot::Library,
+            storage_path: IN_FOLDERS,
+            mtime_ns: Some(stat.mtime_ns),
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes(*blake3::hash(&second).as_bytes()),
+                size_bytes: second.len() as u64,
+                stored_bytes: second.len() as u64,
+                zstd_level: 0,
             },
-            move |current, aside| {
-                let aside = root_path.join(aside);
-                std::fs::create_dir_all(aside.parent().expect("a directory"))
-                    .map_err(|e| e.to_string())?;
-                std::fs::rename(root_path.join(current), &aside).map_err(|e| e.to_string())?;
-                std::fs::write(root_path.join(current), &written).map_err(|e| e.to_string())
-            },
-        )
+            measurements: &measured,
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
         .await
         .expect("revision 2");
 
-    let app = app_over(&pool, root.path());
+    let app = app_over_folders(&pool, folders.path());
     let (status, _, body) = get(app.clone(), &file_uri(seeded.part)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, second, "the same link now gives the new file");
-    // And the old one is still there, under its own revision.
     let (status, _, body) = get(app, &download_uri(seeded.revision, "?variant=original")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, first);
+    assert_eq!(status, StatusCode::GONE);
+    assert!(
+        message(&body).contains("no longer on disk"),
+        "{}",
+        message(&body)
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

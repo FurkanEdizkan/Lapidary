@@ -18,8 +18,10 @@
 //! `deploy/compose.yaml` defaults `LAPIDARY_INGEST_DIR` to this same directory, so a
 //! default first run would find these files anyway. But that variable is the *user's*, and
 //! an operator who pointed it at a 320 GB corpus must not have it scanned because they
-//! restarted the worker. So the examples are read from a path the image owns, and the
-//! user's mount is never touched by anything they did not ask for.
+//! restarted the worker. So the examples are copied once from a path the image owns into the
+//! inbox, under `examples/`, and indexed from there (M4) — a file row has to name a place that
+//! stays, and the image's own directory changes with every upgrade. The user's mount is never
+//! touched by anything they did not ask for.
 //!
 //! # Why "has this library ever had a job", and not "is it empty"
 //!
@@ -32,6 +34,7 @@ use crate::handler::WorkerHandler;
 use crate::scan::candidates;
 use lapidary_core::{LibraryId, Outcome};
 use lapidary_db::{PgJobs, PgPool};
+use lapidary_storage::InboxWriter;
 use std::path::Path;
 
 /// The library migration `0002_parts.sql` seeds, and the only one Phase 1 has: there is
@@ -51,7 +54,7 @@ const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 /// target to fill it with.
 ///
 /// Returns how many parts it added, which is zero on every run but the first.
-pub async fn seed_examples(db: PgPool, blob_root: &Path, examples: &Path) -> u32 {
+pub async fn seed_examples(db: PgPool, blob_root: &Path, inbox: &Path, examples: &Path) -> u32 {
     let library: LibraryId = match SEEDED_LIBRARY.parse() {
         Ok(library) => library,
         Err(err) => {
@@ -88,13 +91,28 @@ pub async fn seed_examples(db: PgPool, blob_root: &Path, examples: &Path) -> u32
     let handler = WorkerHandler {
         db,
         ingest_dir: examples.to_path_buf(),
+        inbox_dir: inbox.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
     let mut added = 0;
     for file in &files {
-        match handler.ingest_one(library, file).await {
+        let copied = std::fs::read(examples.join(file))
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                InboxWriter::open(inbox)
+                    .put(&format!("examples/{file}"), &bytes)
+                    .map_err(|e| e.to_string())
+            });
+        let placed = match copied {
+            Ok(placed) => placed,
+            Err(err) => {
+                tracing::warn!(file = %file, error = %err, "could not copy an example part into the inbox");
+                continue;
+            }
+        };
+        match handler.ingest_inbox(library, &placed.path, file).await {
             Ok(Outcome::Ingested) => added += 1,
             // Already held. Reachable when a previous seed was interrupted part way, and
             // it is the hash short-circuit doing exactly its job.

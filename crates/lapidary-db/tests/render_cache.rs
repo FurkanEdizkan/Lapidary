@@ -23,6 +23,8 @@ async fn part(pool: &sqlx::PgPool, name: &str, source: u8) -> PartId {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: LibraryId::from_uuid(SEEDED_LIBRARY.parse().expect("uuid")),
             name,
             source_path: name,

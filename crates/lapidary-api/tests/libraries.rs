@@ -15,6 +15,10 @@ fn state(pool: sqlx::PgPool) -> AppState {
         blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     }
 }
@@ -182,6 +186,8 @@ async fn the_count_belongs_to_the_library_that_holds_the_parts(pool: sqlx::PgPoo
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/vee-block/vee-block.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: lapidary_core::LibraryId::from_uuid(
                 "01931b6e-0000-7000-8000-000000000001"
                     .parse()

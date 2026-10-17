@@ -33,7 +33,7 @@ use crate::scan::MESH_EXTENSIONS;
 use lapidary_core::{DerivativeKind, LibraryId, Outcome, RevisionId};
 use lapidary_db::{PgBlobs, PgIngest, PgJobs, PgParts, StoredBlobRow};
 use lapidary_jobs::HandlerError;
-use lapidary_storage::{Compression, DerivativeStore, SourceStore, WorkerRole};
+use lapidary_storage::DerivativeStore;
 
 impl WorkerHandler {
     /// Queue a rebuild of every export an older kernel wrote. A worker runs this as it starts.
@@ -107,28 +107,43 @@ impl WorkerHandler {
             });
         };
 
-        // Two ways of naming the same file, and the row says which applies. A part
-        // ingested since the store became a folder tree carries the path its bytes are
-        // actually at; one from before that carries NULL and its bytes are still at
-        // `blobs/ab/cd/<hash>` until the `migrate_storage` job reaches them (migration
-        // `0009`). Reading the path when it is there is not an optimisation — nothing
-        // writes the content-addressed copy any more, so the fallback alone would fail on
-        // every part ingested from now on.
-        //
-        // The recorded `zstd_level`, never `for_source_format`, for the path-addressed
-        // read: that is `SourceReader::get`'s rule and it applies here for the same
-        // reason. The content-addressed fallback keeps the call it has always made, so
-        // rows written before `blob.zstd_level` was worth consulting read exactly as they
-        // did yesterday.
-        let source = SourceStore::open(&self.blob_root, &WorkerRole::assume());
-        let format = stored.format;
-        let bytes = match stored.storage_path.as_deref() {
-            Some(rel) => source.get_at(rel, stored.zstd_level),
-            None => source.get(&stored.hash, Compression::for_source_format(&format)),
+        // Where the row says the file is: the owner's folders, the inbox, or — for a row from
+        // before M4 — Lapidary's store, at a path or at its hash, decoded at its recorded level.
+        // A file a later revision replaced is not there to build from, and a file changed in
+        // place since it was indexed would build the wrong export: both are refused, the second
+        // by its hash.
+        if !stored.on_disk {
+            return Err(HandlerError::Permanent {
+                message: format!(
+                    "Revision {revision}'s file is no longer on disk: a later revision replaced it \
+                     in your folder, and Lapidary keeps no copy. Export the current revision instead."
+                ),
+            });
         }
-        .map_err(|e| HandlerError::Transient {
-            message: e.to_string(),
-        })?;
+        let format = stored.format;
+        let bytes = self
+            .roots()
+            .get(
+                stored.root,
+                stored.storage_path.as_deref(),
+                &stored.hash,
+                stored.zstd_level,
+            )
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })?;
+        if lapidary_core::BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes()) != stored.hash {
+            let remedy = match stored.root {
+                lapidary_core::FileRoot::Inbox => "Upload or import it again, then export.",
+                _ => "Scan again, then export.",
+            };
+            return Err(HandlerError::Permanent {
+                message: format!(
+                    "The file for revision {revision} changed since Lapidary last read it, so no \
+                     export was built from it. {remedy}"
+                ),
+            });
+        }
 
         crate::handler::refuse_b_rep(&format)?;
         let kernel_version = lapidary_cad::kernel_version(&format);

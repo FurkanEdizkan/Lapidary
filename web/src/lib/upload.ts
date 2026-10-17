@@ -46,23 +46,18 @@ export interface UploadProgress {
   bytesToSend: number
   /** Already indexed at this path with these bytes: nothing to send and nothing to do. */
   alreadyHere: number
-  /** In the store already, so only the rows are missing — the probe's larger win. */
-  bytesSkipped: number
 }
 
 /**
  * What the drop came to, once it is queued.
  *
- * The two savings figures ride back with the batch rather than being read off the last
- * progress tick, because the caller has no reason to keep that tick and would otherwise
- * report the number it happened to still be holding.
+ * The saving rides back with the batch rather than being read off the last progress tick,
+ * because the caller has no reason to keep that tick.
  */
 export interface UploadResult {
   accepted: ScanAccepted
   /** Files this library already indexed at that path: not sent, not committed. */
   alreadyHere: number
-  /** Bytes the store already held, so the rows were written without a transfer. */
-  bytesSkipped: number
 }
 
 /** A file the user picked, with the path it will be known by. */
@@ -152,7 +147,6 @@ export async function uploadFiles(
     bytesSent: 0,
     bytesToSend: 0,
     alreadyHere: 0,
-    bytesSkipped: 0,
   }
   const report = () => onProgress({ ...progress })
   report()
@@ -173,17 +167,15 @@ export async function uploadFiles(
   }))
   const plan = await probeUpload(library, manifest)
 
-  // The probe answers by path, so the three lists become one lookup rather than three
-  // scans of the drop.
+  // The probe answers by path, so the two lists become one lookup rather than two scans of
+  // the drop. Since M4 every file the library does not already hold is sent: it is written
+  // once into the inbox, and there is no stored copy elsewhere to reuse.
   const needBytes = new Set(plan.needBytes)
   const have = new Set(plan.have)
   const toSend = hashed.filter(({ picked }) => needBytes.has(picked.path))
   const toCommit = manifest.filter((file) => !have.has(file.path))
 
   progress.alreadyHere = plan.have.length
-  progress.bytesSkipped = hashed
-    .filter(({ picked }) => plan.needRows.includes(picked.path))
-    .reduce((total, { picked }) => total + picked.file.size, 0)
   progress.phase = 'transferring'
   progress.filesTotal = toSend.length
   progress.bytesToSend = toSend.reduce((total, { picked }) => total + picked.file.size, 0)
@@ -203,7 +195,6 @@ export async function uploadFiles(
   return {
     accepted: await commitUpload(library, toCommit),
     alreadyHere: progress.alreadyHere,
-    bytesSkipped: progress.bytesSkipped,
   }
 }
 

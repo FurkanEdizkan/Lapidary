@@ -19,9 +19,9 @@ keeping.
 
 A library ingests STL, 3MF and OBJ from a mounted directory or a browser drop, through a
 crash-resumable job queue, and shows a paged grid of cards. Each card carries the part's
-own picture, or names its format when nobody has given it one. Parts live in a folder tree
-mirrored on disk — one directory per model, its file under its own name with a
-`metadata.json` beside it — under categories you can create and drag models between. Full
+own picture, or names its format when nobody has given it one. Your folders are indexed
+where they are — nothing is copied, renamed or written beside your files — and a part's
+category is the library's own grouping, which you can create and drag models between. Full
 text and part-number search, format and category facets, saved filters, a quick-look panel,
 a file history for every part, and a dashboard. Removing a part is reversible; purging it is a
 separate, explicit action.

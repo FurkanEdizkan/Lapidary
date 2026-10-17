@@ -47,6 +47,8 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bearing block, 608ZZ",
             source_path: "bearing-block-608zz.stl",
@@ -83,6 +85,8 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -112,6 +116,8 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -151,6 +157,8 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Spacer, LP-2001-00",
             source_path: "spacer-lp-2001-00.stl",
@@ -192,6 +200,8 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Vee block, LP-3072-02",
             source_path: "vee-block-lp-3072-02.stl",
@@ -283,6 +293,8 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
         origin: lapidary_core::RevisionOrigin::Ingest,
         folder: None,
         storage_path: None,
+        root: lapidary_core::FileRoot::Store,
+        mtime_ns: None,
         library: library(),
         name,
         source_path: name,
@@ -324,6 +336,8 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
                 origin: lapidary_core::RevisionOrigin::Ingest,
                 folder: None,
                 storage_path: None,
+                root: lapidary_core::FileRoot::Store,
+                mtime_ns: None,
                 library: library(),
                 name,
                 source_path: name,
@@ -376,6 +390,8 @@ async fn a_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -411,6 +427,8 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -463,6 +481,8 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -507,6 +527,8 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -551,6 +573,8 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -599,6 +623,8 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Implausible mesh",
             source_path: "implausible-mesh.stl",
@@ -636,6 +662,8 @@ async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -776,6 +804,8 @@ async fn seed_part(ingest: &PgIngest, library: LibraryId, name: &str, blob: u8) 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library,
             name,
             source_path: name,
@@ -798,6 +828,8 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -835,7 +867,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
 #[sqlx::test(migrations = "./migrations")]
 async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
     // Two source blobs that differ the way the ingest policy makes them differ: an STL
-    // goes through zstd (`Compression::for_source_format`), a 3MF is already a zip and
+    // goes through zstd (the old per-format compression policy), a 3MF is already a zip and
     // is stored `AsIs`. Written out here rather than through `blob_row`, because the
     // whole assertion is that these two rows read back differently — a fixture pair
     // that happened to carry the same sizes would pass whatever the query reported.
@@ -863,6 +895,8 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -878,6 +912,8 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",
@@ -960,11 +996,11 @@ async fn the_card_and_the_download_name_the_same_source_file(pool: sqlx::PgPool)
     // the whole assertion, so it is written down instead of inferred from insert order.
     sqlx::query(
         "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, stored_bytes, \
-         zstd_level, created_at) \
+         zstd_level, created_at, root) \
          VALUES (gen_random_uuid(), $1, 'source', 'stl', $2, 512000, 218640, 3, \
-                 now() + interval '1 minute'), \
+                 now() + interval '1 minute', 'store'), \
          (gen_random_uuid(), $1, 'render', 'png', $3, 777, 777, 0, \
-                 now() + interval '2 minutes')",
+                 now() + interval '2 minutes', 'store')",
     )
     .bind(revision.as_uuid())
     .bind(reupload.to_hex())
@@ -1019,6 +1055,8 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -1053,6 +1091,8 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1134,6 +1174,8 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
             // Null: the bytes are still at `blobs/ab/cd/<hash>`, compressed at 3, and
             // `migrate_storage` has not reached them.
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cliff face, LP-7712-04",
             source_path: "terrain/cliff-face-lp-7712-04.stl",
@@ -1158,6 +1200,8 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/rocks/cliff-face-lp-7712-04"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cliff face, LP-7712-04 (rocks pack)",
             source_path: "rocks/cliff-face-lp-7712-04.stl",
@@ -1286,6 +1330,8 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1332,6 +1378,8 @@ async fn upserting_an_export_twice_leaves_one_row_and_moves_the_reference(pool: 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
@@ -1487,6 +1535,8 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/Terrain/cliff/cliff.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "cliff",
             source_path: "Terrain/cliff.stl",
@@ -1502,6 +1552,8 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/Bases/cliff/cliff.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "cliff",
             source_path: "Bases/cliff.stl",
@@ -1549,6 +1601,8 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -1577,6 +1631,8 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03 (spare)",
             source_path: "bracket-lp-1042-03-spare.stl",
@@ -1594,6 +1650,8 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: other,
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",
@@ -1663,8 +1721,8 @@ async fn a_file_row_of_another_role_is_not_part_of_the_source_total(pool: sqlx::
     .await
     .expect("a blob for the export");
     sqlx::query(
-        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at) \
-         VALUES (gen_random_uuid(), $1, 'export', '3mf', $2, 8642, now())",
+        "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes, created_at, root) \
+         VALUES (gen_random_uuid(), $1, 'export', '3mf', $2, 8642, now(), 'store')",
     )
     .bind(revision.as_uuid())
     .bind(export.to_hex())
@@ -1765,14 +1823,7 @@ async fn deleting_a_part_that_has_been_moved_takes_its_move_history_with_it(pool
         .expect("a category to move into");
 
     parts
-        .move_to_folder(
-            id,
-            None,
-            Some(terrain),
-            "libraries/default/vee-block-lp-3072-02",
-            "libraries/default/Fixtures/vee-block-lp-3072-02",
-            || Ok(()),
-        )
+        .move_to_folder(id, None, Some(terrain))
         .await
         .expect("the move is recorded");
     assert_eq!(
@@ -1904,6 +1955,8 @@ async fn the_instance_total_counts_a_shared_derivative_once_where_two_libraries_
                 origin: lapidary_core::RevisionOrigin::Ingest,
                 folder: None,
                 storage_path: None,
+                root: lapidary_core::FileRoot::Store,
+                mtime_ns: None,
                 library,
                 name,
                 source_path: source,
@@ -1984,19 +2037,13 @@ async fn deleting_a_part_queues_nothing_for_removal_and_leaves_no_row_behind(poo
         after.quarantined_bytes, before.quarantined_bytes,
         "and none of its bytes started a removal clock"
     );
-    let (quarantined_files, quarantined_blob): (i64, bool) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM quarantined_file), \
-                (SELECT quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1)",
-    )
-    .bind(blob_row(0xb4).hash.to_hex())
-    .fetch_one(&pool)
-    .await
-    .expect("reads the quarantine");
-    assert_eq!(
-        (quarantined_files, quarantined_blob),
-        (0, false),
-        "no model file row and no source blob is queued for the reaper"
-    );
+    let quarantined_blob: bool =
+        sqlx::query_scalar("SELECT quarantined_at IS NOT NULL FROM blob WHERE blake3 = $1")
+            .bind(blob_row(0xb4).hash.to_hex())
+            .fetch_one(&pool)
+            .await
+            .expect("reads the quarantine");
+    assert!(!quarantined_blob, "no source blob is queued for the reaper");
     let left: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM part WHERE id = $1) \
               + (SELECT count(*) FROM revision WHERE part_id = $1) \
@@ -2279,6 +2326,8 @@ async fn seed_pathed(pool: &sqlx::PgPool, blob: u8, name: &str, source_path: &st
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name,
             source_path,
@@ -2386,6 +2435,8 @@ async fn seed_with_format(ingest: &PgIngest, name: &str, blob: u8, format: &str)
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name,
             source_path: name,
@@ -2486,6 +2537,8 @@ async fn seed_measured(
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name,
             source_path: name,
@@ -2914,6 +2967,8 @@ async fn a_filed_source_is_read_at_its_own_level_not_the_staged_copys(pool: sqlx
     let part = PgIngest(pool.clone())
         .link_existing(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             folder: None,
             storage_path: Some(
                 "libraries/default/flange-dn40-lp-3310-02/flange-dn40-lp-3310-02.stl",
@@ -3026,6 +3081,8 @@ async fn a_cards_picture_is_the_parts_first_image_with_its_framing(pool: sqlx::P
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Planetary carrier, LP-3480-02",
             source_path: "planetary-carrier-lp-3480-02.3mf",

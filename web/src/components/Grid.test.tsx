@@ -66,7 +66,6 @@ function Harness({ initial = [FLANGE, GEAR] }: { initial?: PartCard[] }) {
   return (
     <Grid
       parts={parts}
-      hostRoot={null}
       density="comfortable"
       layout="detail"
       selecting={false}

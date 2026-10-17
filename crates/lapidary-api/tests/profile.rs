@@ -12,6 +12,10 @@ async fn send(pool: &sqlx::PgPool, method: &str, body: Option<Value>) -> (Status
         blob_root: "/nonexistent-blob-root".into(),
         upload_dir: "/nonexistent-upload-dir".into(),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
     let mut request = Request::builder().method(method).uri("/api/profile");

@@ -1,9 +1,7 @@
 //! `GET /api/blob/{blake3}` — derivative bytes by hash. `api` role only.
 //!
-//! Serves derivatives, never source files. That is structural rather than a check here:
-//! opening the source half of the blob store demands a `WorkerRole` proof this crate
-//! cannot construct, and `cargo xtask check-deploy` fails if this crate so much as names
-//! that type -- which is why the sentence you are reading does not.
+//! Serves derivatives, never source files: it opens only `DerivativeStore`, the
+//! content-addressed half of Lapidary's own store. A source file is the download route's.
 //!
 //! Knowing a hash is not permission to read it. `PgBlobs::derivative_is_reachable`
 //! carries that rule and its reasoning; this module's job is to make both failure modes

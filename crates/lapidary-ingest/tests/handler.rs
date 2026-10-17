@@ -1,6 +1,5 @@
 //! The handler, exercised the way the worker exercises it.
 
-use lapidary_core::manifest::ModelManifest;
 use lapidary_core::{
     BatchId, BlobHash, DerivativeKind, JobId, JobPayload, LibraryId, MeshMeasurements, Outcome,
     RevisionId,
@@ -54,6 +53,7 @@ fn handler_over(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> WorkerHan
         db: pool.clone(),
         ingest_dir: ingest_dir.to_path_buf(),
         blob_root: blob_root.to_path_buf(),
+        inbox_dir: blob_root.to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     }
@@ -179,6 +179,7 @@ async fn a_real_stl_ingests_with_its_real_measurements(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        inbox_dir: blob_root.path().to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
@@ -207,265 +208,6 @@ async fn a_real_stl_ingests_with_its_real_measurements(pool: PgPool) {
     assert!(watertight);
 }
 
-/// A `JobRow` shaped exactly as `lapidary-api`'s upload commit writes one: the kind is
-/// the column, and the payload names bytes already in the store rather than a file on the
-/// ingest mount.
-fn blob_job(hash: BlobHash, source_path: &str) -> JobRow {
-    let payload = JobPayload::IngestBlob {
-        blake3: hash,
-        source_path: source_path.to_owned(),
-    };
-    JobRow {
-        id: JobId::new(),
-        batch_id: BatchId::new(),
-        library_id: seeded(),
-        kind: payload.kind().to_owned(),
-        payload: payload.to_json(),
-        attempts: 1,
-        max_attempts: 3,
-    }
-}
-
-/// The api's half of an upload, without the api: verify and store the bytes, then record
-/// the `blob` row with a zero count. Both halves, because the worker arm under test reads
-/// the level off that row and would otherwise decode a zstd frame as an STL.
-async fn upload_into(pool: &PgPool, blob_root: &Path, bytes: &[u8]) -> BlobHash {
-    let staging = tempfile::tempdir().expect("temp dir");
-    let staged = staging.path().join("upload.part");
-    std::fs::write(&staged, bytes).expect("stages the upload");
-    let hash = BlobHash::from_bytes(*blake3::hash(bytes).as_bytes());
-    let stored = lapidary_storage::SourceWriter::open(blob_root)
-        .put_file(&staged, &hash, lapidary_storage::Compression::Zstd)
-        .expect("stores");
-    lapidary_db::PgBlobs(pool.clone())
-        .record_unreferenced(&StoredBlobRow {
-            hash: stored.hash,
-            size_bytes: stored.size_bytes,
-            stored_bytes: stored.stored_bytes,
-            zstd_level: stored.zstd_level,
-        })
-        .await
-        .expect("records the blob");
-    hash
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_uploaded_blob_ingests_from_the_store_with_no_ingest_mount(pool: PgPool) {
-    // The other end of the upload route. The api wrote these bytes and this job is all
-    // that connects them to a part -- and `ingest_dir` deliberately points at nothing,
-    // because an upload must not need the mount at all.
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
-    let handler = WorkerHandler {
-        db: pool.clone(),
-        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
-        blob_root: blob_root.path().to_path_buf(),
-        pause: None,
-        sites: lapidary_sites::Sites::public(),
-    };
-
-    let outcome = handler
-        .handle(&blob_job(hash, "brackets/steel/LP-1042-03.stl"))
-        .await
-        .expect("ingests");
-    assert_eq!(outcome, Outcome::Ingested);
-
-    // The path the browser reported is the part's identity, and the stem is what a
-    // person reads -- the same two facts a scanned file lands with, which is what makes
-    // an uploaded folder and a scanned folder the same thing here.
-    let (name, source_path, tri): (String, String, i32) = sqlx::query_as(
-        "SELECT p.name, p.source_path, r.triangle_count \
-         FROM part p JOIN revision r ON r.part_id = p.id \
-         WHERE p.library_id = $1",
-    )
-    .bind(seeded().as_uuid())
-    .fetch_one(&pool)
-    .await
-    .expect("the part landed");
-    assert_eq!(name, "LP-1042-03");
-    assert_eq!(source_path, "brackets/steel/LP-1042-03.stl");
-    assert!(tri > 0, "the kernel meshed the bytes it read back out");
-
-    // The blob's row was the api's, and the ingest linked to it rather than writing a
-    // second one -- `link_existing`, reached through the existing `exists` question.
-    let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE blake3 = $1")
-        .bind(hash.to_hex())
-        .fetch_one(&pool)
-        .await
-        .expect("query");
-    assert_eq!(blobs, 1);
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_uploaded_blob_that_is_no_longer_in_the_store_fails_permanently(pool: PgPool) {
-    // Nothing wrote the bytes or the row, so the level needed to decode them does not
-    // exist. Permanent: the row is written in the same request that writes the bytes, so
-    // its absence is not a race that resolves, and three retries would say the same thing
-    // three times.
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = WorkerHandler {
-        db: pool.clone(),
-        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
-        blob_root: blob_root.path().to_path_buf(),
-        pause: None,
-        sites: lapidary_sites::Sites::public(),
-    };
-    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
-
-    let err = handler
-        .handle(&blob_job(hash, "brackets/LP-1042-03.stl"))
-        .await
-        .expect_err("there is nothing to ingest");
-    assert!(
-        matches!(err, HandlerError::Permanent { .. }),
-        "expected a permanent failure, got: {err:?}"
-    );
-}
-
-/// Where the api stages an upload's bytes: at their hash in `blobs/`. A scan never writes
-/// there — its file's only copy is the one in the model directory.
-fn staged_copy_of(blob_root: &Path, hash: &BlobHash) -> PathBuf {
-    let hex = hash.to_hex();
-    blob_root
-        .join("blobs")
-        .join(&hex[0..2])
-        .join(&hex[2..4])
-        .join(&hex)
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_upload_of_bytes_a_scan_already_filed_reads_them_from_that_part_directory(pool: PgPool) {
-    // Re-uploading a file the library already has, at another path. The probe calls the
-    // bytes known, so the browser sends none and the commit stages nothing — and since
-    // the store became a folder tree a scanned file's only copy is the one in its model
-    // directory. A live stack failed this job three times and gave up, with a message
-    // blaming cache eviction, on the most ordinary re-upload there is.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    stage(ingest_dir.path(), "a/LP-1042-03.stl", BRACKET_FIXTURE);
-    let handler = WorkerHandler {
-        db: pool.clone(),
-        ingest_dir: ingest_dir.path().to_path_buf(),
-        blob_root: blob_root.path().to_path_buf(),
-        pause: None,
-        sites: lapidary_sites::Sites::public(),
-    };
-    let scanned = handler
-        .handle(&job_for("a/LP-1042-03.stl"))
-        .await
-        .expect("scans");
-    assert_eq!(scanned, Outcome::Ingested);
-    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
-    assert!(
-        !staged_copy_of(blob_root.path(), &hash).exists(),
-        "the premise: a scan files its bytes by path only, so there is no hash-addressed copy to read"
-    );
-
-    let outcome = handler
-        .handle(&blob_job(hash, "b/LP-1042-03.stl"))
-        .await
-        .expect("ingests from the copy the scan filed");
-    assert_eq!(outcome, Outcome::Ingested);
-
-    let filed: Vec<(String, String)> = sqlx::query_as(
-        "SELECT p.source_path, f.storage_path FROM part p \
-         JOIN revision r ON r.part_id = p.id \
-         JOIN file f ON f.revision_id = r.id AND f.role = 'source' \
-         WHERE p.library_id = $1 ORDER BY p.source_path",
-    )
-    .bind(seeded().as_uuid())
-    .fetch_all(&pool)
-    .await
-    .expect("query");
-    assert_eq!(filed.len(), 2, "two paths are two parts: {filed:?}");
-    assert_eq!(filed[1].0, "b/LP-1042-03.stl");
-    assert_eq!(
-        std::fs::read(blob_root.path().join(&filed[1].1)).expect("the upload has its own file"),
-        BRACKET_FIXTURE,
-        "the second directory holds the same bytes, not a reference to the first"
-    );
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_upload_whose_only_filed_copy_was_edited_fails_permanently_and_indexes_nothing(
-    pool: PgPool,
-) {
-    // The filed copy sits in a folder the owner opens in a file manager, so its name is
-    // not proof of its contents. Indexing edited bytes under the hash the job names would
-    // record a part whose file is not the file its hash says — the one thing content
-    // addressing exists to rule out. Permanent: another attempt reads the same file.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    stage(ingest_dir.path(), "a/LP-1042-03.stl", BRACKET_FIXTURE);
-    let handler = WorkerHandler {
-        db: pool.clone(),
-        ingest_dir: ingest_dir.path().to_path_buf(),
-        blob_root: blob_root.path().to_path_buf(),
-        pause: None,
-        sites: lapidary_sites::Sites::public(),
-    };
-    handler
-        .handle(&job_for("a/LP-1042-03.stl"))
-        .await
-        .expect("scans");
-    let hash = BlobHash::from_bytes(*blake3::hash(BRACKET_FIXTURE).as_bytes());
-    let storage_path: String =
-        sqlx::query_scalar("SELECT storage_path FROM file WHERE blake3 = $1 AND role = 'source'")
-            .bind(hash.to_hex())
-            .fetch_one(&pool)
-            .await
-            .expect("the scan filed it");
-    std::fs::write(
-        blob_root.path().join(&storage_path),
-        b"solid LP-1042-03\nendsolid LP-1042-03\n",
-    )
-    .expect("the owner edits the file in place");
-
-    let err = handler
-        .handle(&blob_job(hash, "b/LP-1042-03.stl"))
-        .await
-        .expect_err("no stored copy still matches the hash");
-    match &err {
-        HandlerError::Permanent { message } => assert!(
-            message.contains("b/LP-1042-03.stl"),
-            "must name the file it could not add, got: {message}"
-        ),
-        other => panic!("expected a permanent failure, got: {other:?}"),
-    }
-    let parts: i64 = sqlx::query_scalar("SELECT count(*) FROM part WHERE library_id = $1")
-        .bind(seeded().as_uuid())
-        .fetch_one(&pool)
-        .await
-        .expect("query");
-    assert_eq!(parts, 1, "nothing was indexed from the edited bytes");
-}
-
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_uploaded_blob_at_an_escaping_path_is_refused(pool: PgPool) {
-    // The path never reaches a filesystem on this arm -- it becomes `part.source_path`,
-    // and from there a Content-Disposition filename. The api refuses it first; this is
-    // the guard on the door rather than on the caller, so a job enqueued any other way
-    // meets it too.
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
-    let handler = WorkerHandler {
-        db: pool.clone(),
-        ingest_dir: PathBuf::from("/nonexistent-ingest-dir"),
-        blob_root: blob_root.path().to_path_buf(),
-        pause: None,
-        sites: lapidary_sites::Sites::public(),
-    };
-
-    let err = handler
-        .handle(&blob_job(hash, "../../etc/passwd"))
-        .await
-        .expect_err("an escaping path is refused");
-    assert!(
-        matches!(err, HandlerError::Permanent { .. }),
-        "expected a permanent failure, got: {err:?}"
-    );
-}
-
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -480,6 +222,7 @@ async fn the_same_file_twice_is_skipped_the_second_time(pool: PgPool) {
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        inbox_dir: blob_root.path().to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
@@ -511,6 +254,7 @@ async fn a_truncated_stl_fails_permanently_so_it_is_never_retried(pool: PgPool) 
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        inbox_dir: blob_root.path().to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
@@ -543,6 +287,7 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        inbox_dir: blob_root.path().to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
@@ -550,6 +295,7 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         db: pool.clone(),
         ingest_dir: ingest_dir.path().to_path_buf(),
         blob_root: blob_root.path().to_path_buf(),
+        inbox_dir: blob_root.path().to_path_buf().join("inbox"),
         pause: None,
         sites: lapidary_sites::Sites::public(),
     };
@@ -571,71 +317,17 @@ async fn losing_the_race_for_a_file_is_a_skip_rather_than_a_failure(pool: PgPool
         .expect("counts");
     assert_eq!(parts, 1, "the race must not produce two parts");
 
-    // The half this test did not check until a review restored the bug and watched it stay
-    // green: the LOSER must not reap. The outcome and the row count cannot see a reap at
-    // all, so this crosses to the filesystem.
-    //
-    // For the source file the two workers usually do NOT collide, and that is worth saying
-    // plainly because it is easy to assume otherwise: `model_dir_for` disambiguates, so a
-    // loser that resolves its directory after the winner has written one takes
-    // `bracket-lp-1042-03_<hash6>/` and reaps only its own. Measured over 20 runs against a
-    // restored bug, the source path never collided. What this assertion pins is therefore
-    // the weaker but still real claim that the winner's file is intact and unaltered; the
-    // rungs below are where the collision is deterministic.
-    let (storage_path, blake3): (Option<String>, String) =
-        sqlx::query_as("SELECT storage_path, blake3 FROM file WHERE role = 'source'")
+    // Nothing was written by either: the winner's row names the file where it is.
+    let (storage_path, root): (Option<String>, String) =
+        sqlx::query_as("SELECT storage_path, root FROM file WHERE role = 'source'")
             .fetch_one(&pool)
             .await
             .expect("the winner's file row");
-    let storage_path = storage_path.expect("the winner recorded where its bytes went");
-    let on_disk = std::fs::read(blob_root.path().join(&storage_path))
-        .unwrap_or_else(|e| panic!("the winner's bytes must still be at {storage_path}: {e}"));
     assert_eq!(
-        BlobHash::from_bytes(*blake3::hash(&on_disk).as_bytes()).to_hex(),
-        blake3,
-        "the bytes on disk must still be the bytes the winning row recorded"
+        (storage_path.as_deref(), root.as_str()),
+        (Some(BRACKET), "library")
     );
-
-    // The rungs are where the loser's reap bites deterministically. Both workers meshed
-    // the same file, so both produced the same rung bytes and both saw `blobs.exists`
-    // answer false for them -- the loser therefore holds every one of the winner's rungs
-    // in its own reapable list. Reaping them on the way to `Skipped` leaves the winner's
-    // `derivative` rows pointing at bytes that are no longer there, and every assertion
-    // above this one still passes while it happens.
-    // The winner's **source** blob, since R3: ingest writes no derivative, so the bytes a
-    // losing worker could wrongly reap are the file both jobs read. The rule and the risk are
-    // unchanged — only bytes this job introduced may be reaped — and `blobs/` is where a
-    // content-addressed copy would be if one were written.
-    let rungs: Vec<String> = sqlx::query_scalar("SELECT blake3 FROM blob")
-        .fetch_all(&pool)
-        .await
-        .expect("the winner's blobs");
-    // Verified by restoring the bug: with the guard flipped to an unconditional reap this
-    // goes red on the runs where the two handlers genuinely overlap, and stays green on the
-    // runs where the scheduler serialises them -- in which case the second job
-    // short-circuits at `library_holds` and never writes anything to reap. A review
-    // measured that at 2 catches in 20 runs, so this is a corroborating check and not the
-    // guard: `only_a_lost_race_for_the_same_path_is_a_skip_rather_than_an_error` in
-    // `handler.rs` pins the branch condition itself, deterministically and without a
-    // scheduler. Forcing the overlap here would mean a barrier in the pipeline, which is a
-    // larger change than the thing it would pin.
-    assert!(!rungs.is_empty(), "the ingest wrote at least one blob row");
-    for hash in rungs {
-        let filed: Vec<String> = sqlx::query_scalar(
-            "SELECT storage_path FROM file WHERE blake3 = $1 AND storage_path IS NOT NULL",
-        )
-        .bind(&hash)
-        .fetch_all(&pool)
-        .await
-        .expect("where the row says the bytes are");
-        for rel in filed {
-            assert!(
-                blob_root.path().join(&rel).exists(),
-                "a file row points at {rel}, which is not on disk: the losing worker \
-                 reaped bytes the winning row still serves"
-            );
-        }
-    }
+    assert!(all_files(blob_root.path()).is_empty());
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
@@ -674,6 +366,8 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: seeded(),
             name: "notes",
             // Must be the path the job below carries, not the part name: since slice 6a
@@ -745,14 +439,9 @@ async fn a_second_library_gets_its_own_part_for_bytes_another_library_holds(pool
         0,
         "and no content-addressed copy: ingest writes no derivative at all"
     );
-    let copies: Vec<PathBuf> = all_files(&blob_root.path().join("libraries"))
-        .into_iter()
-        .filter(|f| f.ends_with(BRACKET))
-        .collect();
-    assert_eq!(
-        copies.len(),
-        2,
-        "each library holds its own copy of the file, under its own name: {copies:?}"
+    assert!(
+        all_files(blob_root.path()).is_empty(),
+        "and no copy for either: both libraries read the one file where it is"
     );
 
     // A third run against either library is a genuine re-scan and does nothing.
@@ -795,15 +484,13 @@ async fn two_differently_named_files_with_identical_bytes_are_two_parts_sharing_
     assert_eq!(part_count(&pool).await, 2);
     assert_eq!(blob_rows(&pool).await, 1);
     assert_eq!(ref_count(&pool).await, 2);
-    // One blob row, and nothing content-addressed on disk: ingest writes no derivative, and
-    // a source file lives in its model's own directory. Two source files, because two models
-    // are two directories.
-    assert_eq!(all_files(&blob_root.path().join("blobs")).len(), 0);
-    assert_eq!(all_files(&blob_root.path().join("libraries")).len(), 4);
+    // One blob row, and nothing on disk of Lapidary's: each part reads its own file where
+    // it is in the folder.
+    assert!(all_files(blob_root.path()).is_empty());
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_failure_after_the_blob_write_leaves_no_orphan_blob_on_disk(pool: PgPool) {
+async fn a_failed_write_leaves_nothing_on_disk(pool: PgPool) {
     // Moved from tests/scan.rs. The Node prototype wrote its blob and then failed the
     // insert with no cleanup -- docs/prototype-notes.md records it -- so this guards a
     // bug that actually shipped rather than a hypothetical one.
@@ -826,26 +513,9 @@ async fn a_failure_after_the_blob_write_leaves_no_orphan_blob_on_disk(pool: PgPo
         .await
         .expect_err("a file row the schema refuses cannot be written");
 
-    // The mutation this pins: delete `reap_source`, or the `reap` beside it, from the
-    // failure arm and a file survives on disk, failing one of the assertions below. The
-    // returned error looks identical either way, which is why this checks the filesystem,
-    // not the message.
+    // Nothing was written before the transaction, so a failed one leaves nothing anywhere.
     let orphans = all_files(blob_root.path());
-    assert!(
-        orphans.is_empty(),
-        "expected no orphaned source file, rung or directory under {}, found {orphans:?}",
-        blob_root.path().display()
-    );
-    // The empty directory goes too: `model_dir_for` reads "this directory exists" as "this
-    // name is taken", so one left behind would make the retry of this same file store the
-    // model under a disambiguated name it never earned.
-    assert!(
-        !blob_root
-            .path()
-            .join("libraries/default/bracket-lp-1042-03")
-            .exists(),
-        "the model directory must not survive the transaction that failed inside it"
-    );
+    assert!(orphans.is_empty(), "found {orphans:?}");
     assert_eq!(part_count(&pool).await, 0);
 }
 
@@ -869,10 +539,9 @@ async fn a_failed_link_to_existing_bytes_leaves_the_first_parts_blobs_alone(pool
         Outcome::Ingested
     );
     let after_first = all_files(blob_root.path());
-    assert_eq!(
-        after_first.len(),
-        2,
-        "the first model's file and its manifest, and no derivative: {after_first:?}"
+    assert!(
+        after_first.is_empty(),
+        "nothing is written for a part: {after_first:?}"
     );
 
     // Same bytes, so `blobs.exists` sends this down link_existing; a constraint only the
@@ -1126,14 +795,10 @@ async fn a_real_3mf_is_parsed_and_its_export_records_the_3mf_parser(pool: PgPool
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_source_file_is_stored_as_itself_whatever_its_format(pool: PgPool) {
-    // This test used to assert DATA.md §1.2's table -- a 3MF stored as-is, an STL
-    // compressed at zstd -3 -- against `blobs/ab/cd/<hash>`. Half of that is now the wrong
-    // question. The store is a folder the owner opens in a file manager (spec §0), and a
-    // zstd frame named `bracket-lp-1042-03.stl` is not a file they can open, so ingest
-    // writes every source as itself. The compression policy is not deleted, it moved: the
-    // recorded `zstd_level` is what every reader follows, so §1.3's opt-out and
-    // sub-project 4's cold tiering can turn it back on per file without a reader changing.
+async fn a_source_file_is_recorded_as_itself_whatever_its_format(pool: PgPool) {
+    // Every source is the owner's own file, read where it is (M4): nothing compresses it, and
+    // its row records no compression. A `zstd_level` other than 0 is only ever a pre-M4 store
+    // row, which every reader still follows.
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(CARRIER), CARRIER_FIXTURE).expect("write fixture");
@@ -1174,9 +839,9 @@ async fn a_source_file_is_stored_as_itself_whatever_its_format(pool: PgPool) {
             BRACKET_FIXTURE
         };
         assert_eq!(
-            std::fs::read(blob_root.path().join(&path)).expect("the file is at that path"),
+            std::fs::read(ingest_dir.path().join(&path)).expect("the file is at that path"),
             fixture,
-            "the file in the folder is byte-identical to the one ingested ({path})"
+            "the row names the file in the owner's folder, byte-identical ({path})"
         );
     }
 }
@@ -1272,7 +937,7 @@ async fn an_ingest_writes_no_derivative_and_the_part_is_still_in_the_grid(pool: 
 /// A derive job re-reads the **source blob** for the revision it names, not the ingest mount —
 /// which is the only copy still guaranteed to exist once the mount the file arrived on is gone.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_derive_job_reads_the_source_blob_and_reports_rendered(pool: PgPool) {
+async fn a_derive_job_reads_the_file_where_it_is_and_reports_rendered(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     std::fs::write(ingest_dir.path().join(BRACKET), BRACKET_FIXTURE).expect("write fixture");
@@ -1280,13 +945,12 @@ async fn a_derive_job_reads_the_source_blob_and_reports_rendered(pool: PgPool) {
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
     assert!(derivatives(&pool).await.is_empty(), "nothing at ingest");
 
-    std::fs::remove_file(ingest_dir.path().join(BRACKET)).expect("removes the ingested file");
     let revision = only_revision(&pool).await;
     assert_eq!(
         handler
             .handle(&derive_job(revision, DerivativeKind::ExportStl))
             .await
-            .expect("derives the export from the stored source"),
+            .expect("derives the export from the file where it is"),
         Outcome::Rendered
     );
 
@@ -2001,11 +1665,7 @@ async fn one_filename_in_two_folders_is_two_parts_sharing_one_blob(pool: PgPool)
 /// the file a deleted part came from, scanned again, is simply a file this library does not have:
 /// it is ingested as a new part.
 ///
-/// **The edge case M4 resolves, pinned until then.** The delete left the old model directory on
-/// disk, untouched, and `model_dir_for` disambiguates against a directory that exists — so the new
-/// part is filed beside it under a longer name, a second copy, and the old directory keeps a
-/// `metadata.json` naming a part that no longer exists. Nothing is overwritten. M4 reads the
-/// library's folders in place, which ends the copy.
+/// Since M4 the new part names the very file the deleted one did, where it is: no copy is made.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_re_scan_re_ingests_a_deleted_part_as_a_new_one(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -2030,9 +1690,9 @@ async fn a_re_scan_re_ingests_a_deleted_part_as_a_new_one(pool: PgPool) {
             .await
             .expect("delete"),
     );
-    assert!(
-        blob_root.path().join(&path).exists(),
-        "delete never touches the model file"
+    assert_eq!(
+        std::fs::read(ingest_dir.path().join(&path)).expect("delete never touches the file"),
+        BRACKET_FIXTURE
     );
 
     assert_eq!(
@@ -2051,109 +1711,79 @@ async fn a_re_scan_re_ingests_a_deleted_part_as_a_new_one(pool: PgPool) {
     .await
     .expect("exactly one part again");
     assert_ne!(again, first, "a new part, not the deleted one brought back");
-    assert_ne!(
-        again_path, path,
-        "filed beside the directory the delete left"
+    assert_eq!(again_path, path, "the same file, where it is");
+    assert!(
+        all_files(blob_root.path()).is_empty(),
+        "and no copy anywhere"
     );
-    for kept in [&path, &again_path] {
-        assert_eq!(
-            std::fs::read(blob_root.path().join(kept)).expect("both files are on disk"),
-            BRACKET_FIXTURE
-        );
-    }
     assert_eq!(part_count(&pool).await, 1);
 }
 
 // ---------------------------------------------------------------------------------------
-// The model directory: one folder per model, holding its file and its metadata.
+// M4: the owner's folders, read where they are. Nothing under them is written.
 // ---------------------------------------------------------------------------------------
 
-/// The seeded library is named `Default`, and its directory is that slugged and
-/// lowercased. Every path below hangs off this, exactly as the layout in spec §1 does.
-const LIBRARY_DIR: &str = "libraries/default";
-
-/// The manifest beside a model's file, parsed back into the type that wrote it. Parsing
-/// rather than reading strings out of the JSON is the point: `metadata.json` is what
-/// re-adoption rebuilds rows from, so what matters is that it round-trips into a
-/// `ModelManifest`, not that it contains some expected substrings.
-fn manifest_in(dir: &Path) -> ModelManifest {
-    let bytes = std::fs::read(dir.join("metadata.json"))
-        .unwrap_or_else(|e| panic!("no metadata.json in {}: {e}", dir.display()));
-    serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("metadata.json in {} does not parse: {e}", dir.display()))
+/// Every file and directory under `root`, with its size, modification time and, for a file, its
+/// bytes' BLAKE3 — what "nothing under the folder changed" is checked against. The shell form of
+/// the same check is the rig's `find "$INGEST" -printf '%P %s %T@\n' | sort | sha256sum`.
+fn snapshot(root: &Path) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(dir) = queue.pop() {
+        for entry in std::fs::read_dir(&dir).expect("reads a directory") {
+            let path = entry.expect("an entry").path();
+            let meta = std::fs::symlink_metadata(&path).expect("stats");
+            let rel = path
+                .strip_prefix(root)
+                .expect("under root")
+                .display()
+                .to_string();
+            let mtime = meta.modified().expect("an mtime");
+            if meta.is_dir() {
+                seen.push(format!("{rel}/ {mtime:?}"));
+                queue.push(path);
+            } else {
+                let hash = blake3::hash(&std::fs::read(&path).expect("reads"));
+                seen.push(format!("{rel} {} {mtime:?} {hash}", meta.len()));
+            }
+        }
+    }
+    seen.sort();
+    seen
 }
 
-/// A custom field's value lives on the part's row, and `metadata.json` mirrors the rows: `describe_part`
-/// writes it again, so the model's directory holds the value re-adoption would otherwise lose.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn describing_a_part_writes_its_custom_values_into_metadata_json(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-    let part: Uuid = sqlx::query_scalar("SELECT id FROM part")
-        .fetch_one(&pool)
-        .await
-        .expect("the part");
-    sqlx::query(
-        "UPDATE part SET metadata_json = jsonb_set(metadata_json, '{custom}', '{\"supplier\": \"Misumi\"}')",
+/// The source file row of the part at `source_path`: its root, path, modification time and
+/// whether it is still on disk, newest revision first.
+async fn file_rows(
+    pool: &PgPool,
+    source_path: &str,
+) -> Vec<(String, Option<String>, Option<i64>, bool)> {
+    sqlx::query_as(
+        "SELECT f.root, f.storage_path, f.mtime_ns, f.on_disk FROM file f \
+         JOIN revision r ON r.id = f.revision_id JOIN part p ON p.id = r.part_id \
+         WHERE p.source_path = $1 ORDER BY r.created_at DESC, r.id DESC",
     )
-    .execute(&pool)
+    .bind(source_path)
+    .fetch_all(pool)
     .await
-    .expect("a value set");
-    let dir = blob_root
-        .path()
-        .join(LIBRARY_DIR)
-        .join("bracket-lp-1042-03");
-    assert_eq!(
-        manifest_in(&dir).part.metadata.get("custom"),
-        None,
-        "not yet"
-    );
-
-    let payload = JobPayload::DescribePart {
-        part: lapidary_core::PartId::from_uuid(part),
-    };
-    let job = JobRow {
-        id: JobId::new(),
-        batch_id: BatchId::new(),
-        library_id: seeded(),
-        kind: payload.kind().to_owned(),
-        payload: payload.to_json(),
-        attempts: 1,
-        max_attempts: 3,
-    };
-    assert_eq!(
-        handler.handle(&job).await.expect("describes"),
-        Outcome::Described
-    );
-    assert_eq!(
-        manifest_in(&dir).part.metadata["custom"],
-        serde_json::json!({ "supplier": "Misumi" })
-    );
-
-    let elsewhere = JobRow {
-        library_id: LibraryId::from_uuid(Uuid::now_v7()),
-        ..job
-    };
-    assert!(
-        matches!(
-            handler.handle(&elsewhere).await,
-            Err(HandlerError::Permanent { .. })
-        ),
-        "another library's job describes nothing of this one's"
-    );
+    .expect("the part's file rows")
 }
 
+fn mtime_ns(path: &Path) -> i64 {
+    let since = std::fs::metadata(path)
+        .expect("stats")
+        .modified()
+        .expect("an mtime")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch");
+    i64::try_from(since.as_nanos()).expect("fits")
+}
+
+/// A nested file is recorded where it is — its path under the folder, with the time it was read
+/// at — its category mirrors the folders it sits in, and nothing is written anywhere: not beside
+/// it, not into the store.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
-    // The shape the owner asked for: one directory per model, holding its file under its
-    // own name and its metadata beside it, reachable by opening the storage folder in a
-    // file manager.
+async fn a_nested_file_is_recorded_where_it_is_and_nothing_is_written(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     stage(
@@ -2161,6 +1791,7 @@ async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
         "Terrain/Rocks/cliff.stl",
         BRACKET_FIXTURE,
     );
+    let before = snapshot(ingest_dir.path());
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
 
     assert_eq!(
@@ -2171,44 +1802,25 @@ async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
         Outcome::Ingested
     );
 
-    let dir = blob_root
-        .path()
-        .join(LIBRARY_DIR)
-        .join("Terrain/Rocks/cliff");
     assert_eq!(
-        std::fs::read(dir.join("cliff.stl")).expect("the source sits under its own name"),
-        BRACKET_FIXTURE,
-        "byte-identical: nothing converts, compresses or renames what was ingested"
+        file_rows(&pool, "Terrain/Rocks/cliff.stl").await,
+        [(
+            "library".to_owned(),
+            Some("Terrain/Rocks/cliff.stl".to_owned()),
+            Some(mtime_ns(&ingest_dir.path().join("Terrain/Rocks/cliff.stl"))),
+            true
+        )]
     );
-
-    let manifest = manifest_in(&dir);
-    assert_eq!(manifest.schema, ModelManifest::SCHEMA);
     assert_eq!(
-        manifest.part.source_path, "Terrain/Rocks/cliff.stl",
-        "the ingest identity key, not the storage path — spec §3 keeps the two distinct"
+        snapshot(ingest_dir.path()),
+        before,
+        "nothing under the folder changed"
     );
-    assert_eq!(manifest.part.name, "cliff");
-    assert_eq!(manifest.revisions[0].files[0].file_name, "cliff.stl");
-    assert_eq!(manifest.revisions[0].files[0].format, "stl");
-    assert_eq!(
-        manifest.revisions[0].triangle_count,
-        Some(20),
-        "the fixture's real triangle count, so the manifest carries measurements and not \
-         a shell"
+    assert!(
+        all_files(blob_root.path()).is_empty(),
+        "and nothing went into the store: {:?}",
+        all_files(blob_root.path())
     );
-    assert_eq!(manifest.revisions[0].units.as_deref(), Some("mm"));
-
-    // The ids in the manifest are the ids in the database. This is the whole of
-    // re-adoption: delete the rows and the directory still says which part it was.
-    let (part_id, revision_id): (Uuid, Uuid) =
-        sqlx::query_as("SELECT p.id, r.id FROM part p JOIN revision r ON r.part_id = p.id")
-            .fetch_one(&pool)
-            .await
-            .expect("the part and its revision");
-    assert_eq!(manifest.part.id.as_uuid(), part_id);
-    assert_eq!(manifest.revisions[0].id.as_uuid(), revision_id);
-
-    // And the category tree mirrors the directories the file sat in.
     let (folder, parent): (String, String) = sqlx::query_as(
         "SELECT child.name, parent.name FROM part p \
          JOIN folder child ON child.id = p.folder_id \
@@ -2220,206 +1832,253 @@ async fn ingesting_a_nested_file_writes_a_model_directory(pool: PgPool) {
     assert_eq!((folder.as_str(), parent.as_str()), ("Rocks", "Terrain"));
 }
 
+/// (a) The whole of a scan — the walk, every file's ingest, a re-scan, and the owner changing a
+/// file so the next scan records revision 2 — writes nothing under the folder. The only change in
+/// the snapshot is the one the owner made.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_recorded_storage_path_is_where_the_bytes_actually_are(pool: PgPool) {
-    // `file.storage_path` is what every later reader resolves bytes through — the download
-    // route, the derive job, the move. A path that does not name the file on disk is a
-    // grid full of parts nobody can open, and it looks exactly like a working ingest from
-    // the database side, so the assertion has to cross to the filesystem.
+async fn a_scan_its_ingests_and_a_revision_write_nothing_under_the_folders(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     stage(
         ingest_dir.path(),
-        "Terrain/Rocks/cliff.stl",
+        "Brackets/bracket-lp-1042-03.stl",
         BRACKET_FIXTURE,
     );
+    stage(
+        ingest_dir.path(),
+        "Gears/spur-gear-m2-20t-lp-5140-00.stl",
+        GEAR_FIXTURE,
+    );
+    stage(
+        ingest_dir.path(),
+        "Gears/README.txt",
+        b"Spur gears, module 2.",
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let before = snapshot(ingest_dir.path());
+
+    let paths = scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await;
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    for path in &paths {
+        assert_eq!(
+            handler.handle(&job_for(path)).await.expect("ingests"),
+            Outcome::Ingested
+        );
+        assert_eq!(
+            handler.handle(&job_for(path)).await.expect("re-scans"),
+            Outcome::Skipped
+        );
+    }
+    assert_eq!(snapshot(ingest_dir.path()), before, "a scan wrote nothing");
+
+    // The owner saves a new version over the gear, in place.
+    let gear = "Gears/spur-gear-m2-20t-lp-5140-00.stl";
+    std::fs::write(ingest_dir.path().join(gear), BRACKET_FIXTURE).expect("the owner's edit");
+    let edited = snapshot(ingest_dir.path());
+    assert_eq!(
+        handler.handle(&job_for(gear)).await.expect("revises"),
+        Outcome::Revised
+    );
+    assert_eq!(
+        snapshot(ingest_dir.path()),
+        edited,
+        "a revision wrote nothing either"
+    );
+
+    let rows = file_rows(&pool, gear).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[0].1.as_deref(), rows[0].3), (Some(gear), true));
+    assert_eq!(
+        (rows[1].1.as_deref(), rows[1].3),
+        (Some(gear), false),
+        "the first revision's bytes were overwritten by the owner and are no longer on disk"
+    );
+    assert!(
+        all_files(blob_root.path()).is_empty(),
+        "and nothing went into the store"
+    );
+}
+
+/// A `touch`, or the same bytes copied over the file, is a re-scan — and the recorded time follows
+/// the file, so its download is not refused as "changed" with no scan able to clear it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_touched_file_is_skipped_and_its_recorded_time_follows_it(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+
+    let path = ingest_dir.path().join(BRACKET);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3_600);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("opens")
+        .set_modified(later)
+        .expect("touches");
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("re-scans"),
+        Outcome::Skipped
+    );
+    assert_eq!(file_rows(&pool, BRACKET).await[0].2, Some(mtime_ns(&path)));
+}
+
+/// A library with its own folder scans only there, and its parts are named relative to it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_library_with_its_own_folder_reads_only_there(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "Workshop/Jigs/drill-guide-lp-6010-01.stl",
+        BRACKET_FIXTURE,
+    );
+    stage(ingest_dir.path(), "Elsewhere/spur-gear.stl", GEAR_FIXTURE);
+    let workshop = PgParts(pool.clone())
+        .create_library("Workshop", "Workshop")
+        .await
+        .expect("a library with its own folder");
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let (batch, _) = jobs
+        .enqueue(workshop, &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues the scan");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     handler
-        .handle(&job_for("Terrain/Rocks/cliff.stl"))
+        .handle(&scan_job(batch, workshop))
+        .await
+        .expect("scans");
+    assert_eq!(
+        ingest_paths_in(&pool, batch).await,
+        ["Jigs/drill-guide-lp-6010-01.stl"]
+    );
+    handler
+        .handle(&job_for_library(
+            workshop,
+            "Jigs/drill-guide-lp-6010-01.stl",
+        ))
         .await
         .expect("ingests");
-
-    let storage_path: Option<String> =
-        sqlx::query_scalar("SELECT storage_path FROM file WHERE role = 'source'")
-            .fetch_one(&pool)
-            .await
-            .expect("reads");
-    let storage_path = storage_path.expect("an ingested file records where it was written");
     assert_eq!(
-        storage_path,
-        format!("{LIBRARY_DIR}/Terrain/Rocks/cliff/cliff.stl")
-    );
-    assert_eq!(
-        std::fs::read(blob_root.path().join(&storage_path))
-            .expect("the recorded path names a real file"),
-        BRACKET_FIXTURE
-    );
-
-    // And nothing was left at the content-addressed path: source dedup is gone, and a
-    // second copy under `blobs/` would be 23 GB of it on the owner's corpus.
-    let hash: String = sqlx::query_scalar("SELECT blake3 FROM file WHERE role = 'source'")
-        .fetch_one(&pool)
-        .await
-        .expect("reads");
-    assert!(
-        !blob_root
-            .path()
-            .join(format!("blobs/{}/{}/{hash}", &hash[0..2], &hash[2..4]))
-            .exists(),
-        "the source must not also be written to the content-addressed path"
+        file_rows(&pool, "Jigs/drill-guide-lp-6010-01.stl").await[0]
+            .1
+            .as_deref(),
+        Some("Workshop/Jigs/drill-guide-lp-6010-01.stl"),
+        "where it is under the mount; the part is named relative to its library"
     );
 }
 
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn two_models_with_one_name_get_two_directories(pool: PgPool) {
-    // 6a decided two parts called `cliff` are the truth. Two directories called `cliff/`
-    // are impossible, so the second gets a deterministic suffix -- but only when they
-    // land in the same category. In different ones there is no collision to resolve, and
-    // suffixing anyway would put a hash in a name a person reads for no reason at all.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    stage(ingest_dir.path(), "Terrain/cliff.stl", BRACKET_FIXTURE);
-    stage(ingest_dir.path(), "Bases/cliff.stl", GEAR_FIXTURE);
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-
-    handler
-        .handle(&job_for("Terrain/cliff.stl"))
-        .await
-        .expect("a");
-    handler
-        .handle(&job_for("Bases/cliff.stl"))
-        .await
-        .expect("b");
-
-    let terrain = blob_root.path().join(LIBRARY_DIR).join("Terrain/cliff");
-    let bases = blob_root.path().join(LIBRARY_DIR).join("Bases/cliff");
-    assert_eq!(
-        std::fs::read(terrain.join("cliff.stl")).expect("the terrain cliff"),
-        BRACKET_FIXTURE
-    );
-    assert_eq!(
-        std::fs::read(bases.join("cliff.stl")).expect("the base cliff"),
-        GEAR_FIXTURE,
-        "each directory holds its own model's bytes, not the other's"
-    );
-    assert_eq!(manifest_in(&terrain).part.source_path, "Terrain/cliff.stl");
-    assert_eq!(manifest_in(&bases).part.source_path, "Bases/cliff.stl");
-
-    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM part ORDER BY source_path")
-        .fetch_all(&pool)
-        .await
-        .expect("reads");
-    assert_eq!(
-        names,
-        vec!["cliff", "cliff"],
-        "one name, two parts — 6a's decision stands"
-    );
+fn inbox_job(path: &str, source_path: &str) -> JobRow {
+    let payload = JobPayload::IngestInbox {
+        path: path.to_owned(),
+        source_path: source_path.to_owned(),
+    };
+    JobRow {
+        id: JobId::new(),
+        batch_id: BatchId::new(),
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    }
 }
 
+/// (e) An upload the api placed in the inbox is indexed from there, as the part the browser named,
+/// and a later upload of the same part under another inbox name is its next revision — with the
+/// earlier file still on disk, because nothing replaced it.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_second_model_of_the_same_name_in_one_category_takes_a_suffix(pool: PgPool) {
-    // The collision that cannot be talked out of: one category, two models called `cliff`
-    // -- the same model exported twice, which is ordinary in a parts library. The second
-    // takes `_` plus six hex of its own hash (spec §2), and both directories are real,
-    // each describing itself.
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
+async fn an_upload_in_the_inbox_is_indexed_from_there(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
+    let inbox = blob_root.path().join("inbox");
     stage(
-        ingest_dir.path(),
-        "Terrain/Rocks/cliff.stl",
+        &inbox,
+        "uploads/brackets/bracket-lp-1042-03.stl",
         BRACKET_FIXTURE,
     );
     stage(
-        ingest_dir.path(),
-        "Terrain/Rocks/cliff.3mf",
-        CARRIER_FIXTURE,
+        &inbox,
+        "uploads/brackets/bracket-lp-1042-03 (2).stl",
+        GEAR_FIXTURE,
     );
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let handler = handler_over(
+        &pool,
+        Path::new("/nonexistent-ingest-dir"),
+        blob_root.path(),
+    );
 
-    handler
-        .handle(&job_for("Terrain/Rocks/cliff.stl"))
-        .await
-        .expect("the stl");
-    handler
-        .handle(&job_for("Terrain/Rocks/cliff.3mf"))
-        .await
-        .expect("the 3mf");
-
-    let category = blob_root.path().join(LIBRARY_DIR).join("Terrain/Rocks");
-    let mut dirs: Vec<String> = std::fs::read_dir(&category)
-        .expect("the category directory")
-        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-        .collect();
-    dirs.sort();
-    assert_eq!(dirs.len(), 2, "two models, two directories: {dirs:?}");
-    assert_eq!(dirs[0], "cliff", "the first keeps the plain name");
-
-    let suffixed = &dirs[1];
-    let hash: String = sqlx::query_scalar(
-        "SELECT f.blake3 FROM file f JOIN revision r ON r.id = f.revision_id \
-         JOIN part p ON p.id = r.part_id WHERE p.source_path = 'Terrain/Rocks/cliff.3mf'",
+    assert_eq!(
+        handler
+            .handle(&inbox_job(
+                "uploads/brackets/bracket-lp-1042-03.stl",
+                "brackets/bracket-lp-1042-03.stl"
+            ))
+            .await
+            .expect("indexes"),
+        Outcome::Ingested
+    );
+    assert_eq!(
+        handler
+            .handle(&inbox_job(
+                "uploads/brackets/bracket-lp-1042-03 (2).stl",
+                "brackets/bracket-lp-1042-03.stl"
+            ))
+            .await
+            .expect("revises"),
+        Outcome::Revised
+    );
+    let rows = file_rows(&pool, "brackets/bracket-lp-1042-03.stl").await;
+    assert_eq!(
+        rows.iter()
+            .map(|(root, path, _, on_disk)| (root.as_str(), path.as_deref(), *on_disk))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "inbox",
+                Some("uploads/brackets/bracket-lp-1042-03 (2).stl"),
+                true
+            ),
+            (
+                "inbox",
+                Some("uploads/brackets/bracket-lp-1042-03.stl"),
+                true
+            ),
+        ]
+    );
+    let origin: String = sqlx::query_scalar(
+        "SELECT r.origin FROM revision r JOIN part p ON p.id = r.part_id ORDER BY r.created_at LIMIT 1",
     )
     .fetch_one(&pool)
     .await
     .expect("reads");
-    assert_eq!(
-        *suffixed,
-        format!("cliff_{}", &hash[..6]),
-        "the suffix is six hex of the source hash, so a re-ingest lands on the same name"
-    );
+    assert_eq!(origin, "upload");
 
-    // Both describe themselves, and each names its own file.
-    assert_eq!(
-        manifest_in(&category.join("cliff")).revisions[0].files[0].file_name,
-        "cliff.stl"
-    );
-    let second = manifest_in(&category.join(suffixed));
-    assert_eq!(second.revisions[0].files[0].file_name, "cliff.3mf");
-    assert_eq!(second.part.source_path, "Terrain/Rocks/cliff.3mf");
-    assert_eq!(
-        second.part.name, "cliff",
-        "the directory name is cosmetic; the part is still called what it is called"
-    );
-    assert!(
-        category.join(suffixed).join("cliff.3mf").exists(),
-        "the file itself sits in the suffixed directory"
-    );
+    match handler
+        .handle(&inbox_job("../outside.stl", "outside.stl"))
+        .await
+    {
+        Err(HandlerError::Permanent { .. }) => {}
+        other => panic!("an inbox path that escapes is refused for good, got {other:?}"),
+    }
 }
 
+/// A scan whose library names a folder that escapes the mount, by a hand edit past the api's
+/// refusal, is refused rather than walked.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_rescan_after_a_move_creates_no_folder_and_no_directory(pool: PgPool) {
-    // Spec §6: categories are created only for files that actually ingest, which is why
-    // `model_dir_for` runs after the `library_holds` short-circuit and not during the
-    // walk. Deleting the category rows and the directory stands in for the move task 9
-    // will perform: a re-scan must not put them back.
+async fn a_library_folder_that_escapes_the_mount_is_refused(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
-    stage(
-        ingest_dir.path(),
-        "Terrain/Rocks/cliff.stl",
-        BRACKET_FIXTURE,
-    );
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    handler
-        .handle(&job_for("Terrain/Rocks/cliff.stl"))
+    sqlx::query("UPDATE library SET root = '../etc' WHERE id = $1")
+        .bind(seeded().as_uuid())
+        .execute(&pool)
         .await
-        .expect("ingests");
-
-    std::fs::remove_dir_all(blob_root.path().join(LIBRARY_DIR).join("Terrain"))
-        .expect("the model moves away");
-
-    assert_eq!(
-        handler
-            .handle(&job_for("Terrain/Rocks/cliff.stl"))
-            .await
-            .expect("re-scans"),
-        Outcome::Skipped,
-        "same library, same path, same bytes — the short-circuit settles it"
-    );
-    assert!(
-        !blob_root.path().join(LIBRARY_DIR).join("Terrain").exists(),
-        "a re-scan must not re-create a directory the user emptied"
-    );
+        .expect("a hand edit");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    match handler.handle(&scan_job(BatchId::new(), seeded())).await {
+        Err(HandlerError::Permanent { .. }) => {}
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A binary STL of one degenerate triangle: three vertices at the same point.
@@ -2764,7 +2423,6 @@ async fn a_changed_file_becomes_revision_two_beside_the_first(pool: PgPool) {
     let rows = revision_rows(&pool).await;
     assert_eq!(rows.len(), 2, "two revisions of the one part: {rows:?}");
     assert_eq!(part_count(&pool).await, 1, "and still one part");
-    let (top_dir, _) = rows[1].4.rsplit_once('/').expect("a model directory");
     assert_eq!(
         rows[0],
         (
@@ -2772,9 +2430,9 @@ async fn a_changed_file_becomes_revision_two_beside_the_first(pool: PgPool) {
             None,
             "ingest".to_owned(),
             hex_of(BRACKET_FIXTURE),
-            format!("{top_dir}/revisions/1/{BRACKET}"),
+            BRACKET.to_owned(),
         ),
-        "revision 1 keeps its bytes, set aside under revisions/1"
+        "revision 1 keeps its figures and its hash, at the path it was read from"
     );
     assert_eq!(
         rows[1],
@@ -2783,27 +2441,23 @@ async fn a_changed_file_becomes_revision_two_beside_the_first(pool: PgPool) {
             Some("1".to_owned()),
             "ingest".to_owned(),
             hex_of(SPACER_FIXTURE),
-            format!("{top_dir}/{BRACKET}"),
+            BRACKET.to_owned(),
         ),
         "revision 2 is on top, at the path the owner already knew"
     );
-
-    for (_, _, _, hash, path) in &rows {
-        let bytes = std::fs::read(blob_root.path().join(path))
-            .unwrap_or_else(|e| panic!("{path} is not on disk: {e}"));
-        assert_eq!(&hex_of(&bytes), hash, "{path} holds its row's bytes");
-    }
-
-    let manifest = manifest_in(&blob_root.path().join(top_dir));
-    let labels: Vec<&str> = manifest
-        .revisions
-        .iter()
-        .map(|revision| revision.rev_label.as_str())
+    let on_disk: Vec<bool> = file_rows(&pool, BRACKET)
+        .await
+        .into_iter()
+        .map(|row| row.3)
         .collect();
-    assert_eq!(labels, ["1", "2"], "metadata.json lists both, oldest first");
     assert_eq!(
-        manifest.revisions[1].files[0].blake3.to_hex(),
-        hex_of(SPACER_FIXTURE)
+        on_disk,
+        [true, false],
+        "the owner overwrote revision 1's bytes, and Lapidary kept no copy"
+    );
+    assert!(
+        all_files(blob_root.path()).is_empty(),
+        "nothing was set aside anywhere"
     );
 }
 
@@ -2850,79 +2504,6 @@ async fn going_back_to_an_older_revisions_bytes_is_a_new_revision(pool: PgPool) 
         .collect();
     assert_eq!(labels, [("1", None), ("2", Some("1")), ("3", Some("2"))]);
     assert_eq!(rows[2].3, hex_of(BRACKET_FIXTURE));
-    for (_, _, _, hash, path) in &rows {
-        let bytes = std::fs::read(blob_root.path().join(path))
-            .unwrap_or_else(|e| panic!("{path} is not on disk: {e}"));
-        assert_eq!(&hex_of(&bytes), hash, "{path} holds its row's bytes");
-    }
-}
-
-/// The model directory a race gives the file: the plain name is taken, so it takes the
-/// disambiguated one, and `bytes` are already written there.
-fn taken_path(blob_root: &Path, bytes: &[u8]) -> PathBuf {
-    let library = blob_root.join(LIBRARY_DIR);
-    std::fs::create_dir_all(library.join("bracket-lp-1042-03")).expect("the plain name, taken");
-    let taken = library
-        .join(format!(
-            "bracket-lp-1042-03_{}",
-            &hex_of(BRACKET_FIXTURE)[..6]
-        ))
-        .join(BRACKET);
-    stage(
-        blob_root,
-        taken
-            .strip_prefix(blob_root)
-            .expect("under the root")
-            .to_str()
-            .expect("utf-8"),
-        bytes,
-    );
-    taken
-}
-
-/// A new part's file never lands on another's (Phase 4 slice 1 spec §3.3): other bytes already
-/// at its path are left exactly as they are, and the job is decided again.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_new_file_never_replaces_other_bytes_already_at_its_path(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    let taken = taken_path(blob_root.path(), GEAR_FIXTURE);
-
-    let error = handler
-        .handle(&job_for(BRACKET))
-        .await
-        .expect_err("another job's bytes are at this path");
-    assert!(matches!(error, HandlerError::Transient { .. }), "{error:?}");
-    assert_eq!(
-        std::fs::read(&taken).expect("the other job's file"),
-        GEAR_FIXTURE,
-        "the bytes already there are left as they are"
-    );
-    assert_eq!(part_count(&pool).await, 0);
-}
-
-/// The same bytes already at that path are this file, left by an attempt that stopped before its
-/// row. They ingest as written, rather than failing every attempt after the first.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn the_same_bytes_already_at_its_path_ingest_as_written(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    let taken = taken_path(blob_root.path(), BRACKET_FIXTURE);
-
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-    let rows = revision_rows(&pool).await;
-    assert_eq!(
-        blob_root.path().join(&rows[0].4),
-        taken,
-        "the row names the file already there"
-    );
 }
 
 /// The two handles [`Pause`] wants, and a release that cannot hang the suite.
@@ -2948,9 +2529,8 @@ fn held() -> (Pause, impl std::future::Future<Output = ()>) {
 }
 
 /// Two jobs, different bytes, one new path (slice 1 spec §3.3). The loser read no part there, and
-/// the winner files one while the loser is in the kernel. The loser is decided again rather than
-/// skipped, and its retry reads the winner's part and becomes its next revision. Neither file
-/// replaces the other, and the loser leaves no copy behind.
+/// the winner records one while the loser is in the kernel. The loser is decided again rather than
+/// skipped, and its retry reads the winner's part and becomes its next revision.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
@@ -2979,11 +2559,6 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
     });
     let lost = lost.expect_err("the loser is not skipped");
     assert!(matches!(lost, HandlerError::Transient { .. }), "{lost:?}");
-    let copies: Vec<PathBuf> = all_files(blob_root.path())
-        .into_iter()
-        .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes == GEAR_FIXTURE))
-        .collect();
-    assert!(copies.is_empty(), "the loser left its bytes at {copies:?}");
 
     let retry = handler_over(&pool, loser_dir.path(), blob_root.path());
     assert_eq!(
@@ -2991,18 +2566,18 @@ async fn a_job_that_loses_a_new_path_to_other_bytes_is_decided_again(pool: PgPoo
         Outcome::Revised
     );
 
-    for (label, _, _, hash, path) in revision_rows(&pool).await {
-        let bytes = std::fs::read(blob_root.path().join(&path))
-            .unwrap_or_else(|e| panic!("revision {label} at {path} is not on disk: {e}"));
-        assert_eq!(hex_of(&bytes), hash, "{path} holds its own row's bytes");
-    }
+    let hashes: Vec<String> = revision_rows(&pool)
+        .await
+        .into_iter()
+        .map(|row| row.3)
+        .collect();
+    assert_eq!(hashes, [hex_of(BRACKET_FIXTURE), hex_of(GEAR_FIXTURE)]);
 }
 
-/// Two jobs, the same bytes, one new path. The loser's directory came second, so it wrote its own
-/// copy under the disambiguated name before its insert lost. That copy is no part's, and it goes;
-/// the winner's file stays.
+/// Two jobs, the same bytes, one new path: the loser's insert loses to the winner's, and it is the
+/// same file, so it settles as skipped.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPool) {
+async fn a_job_that_loses_a_new_path_to_the_same_bytes_is_skipped(pool: PgPool) {
     let blob_root = tempfile::tempdir().expect("temp dir");
     let winner_dir = tempfile::tempdir().expect("temp dir");
     let loser_dir = tempfile::tempdir().expect("temp dir");
@@ -3028,23 +2603,15 @@ async fn a_job_that_loses_a_new_path_to_the_same_bytes_leaves_no_copy(pool: PgPo
     });
     assert_eq!(lost.expect("the loser settles"), Outcome::Skipped);
 
-    let copy = blob_root.path().join(LIBRARY_DIR).join(format!(
-        "bracket-lp-1042-03_{}",
-        &hex_of(BRACKET_FIXTURE)[..6]
-    ));
+    assert_eq!(revision_rows(&pool).await.len(), 1);
     assert!(
-        !copy.exists(),
-        "the loser's copy at {} is left",
-        copy.display()
+        all_files(blob_root.path()).is_empty(),
+        "nothing was written by either"
     );
-    let rows = revision_rows(&pool).await;
-    assert_eq!(rows.len(), 1);
-    let bytes = std::fs::read(blob_root.path().join(&rows[0].4)).expect("the winner's file");
-    assert_eq!(hex_of(&bytes), rows[0].3);
 }
 
-/// Delete never touches a file: every revision's file, `revisions/1`, `revisions` and the model
-/// directory are all still there after the delete and after a sweep with no retention at all.
+/// (b) Delete never touches a file: the owner's folder is exactly as it was after the delete and
+/// after a sweep with no retention at all.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn deleting_a_revised_part_leaves_every_file_and_directory_in_place(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -3054,16 +2621,12 @@ async fn deleting_a_revised_part_leaves_every_file_and_directory_in_place(pool: 
     handler.handle(&job_for(BRACKET)).await.expect("ingests");
     stage(ingest_dir.path(), BRACKET, SPACER_FIXTURE);
     handler.handle(&job_for(BRACKET)).await.expect("revises");
-    let rows = revision_rows(&pool).await;
-    let (model_dir, _) = rows[1].4.rsplit_once('/').expect("a model directory");
-    let model_dir = blob_root.path().join(model_dir);
-    assert!(model_dir.join("revisions").exists(), "the precondition");
+    let before = snapshot(ingest_dir.path());
 
     let part = sqlx::query_scalar::<_, Uuid>("SELECT id FROM part")
         .fetch_one(&pool)
         .await
         .expect("the one part");
-    let before = all_files(&model_dir);
     let parts = PgParts(pool.clone());
     let part = lapidary_core::PartId::from_uuid(part);
     assert!(parts.delete(part).await.expect("delete"));
@@ -3072,14 +2635,10 @@ async fn deleting_a_revised_part_leaves_every_file_and_directory_in_place(pool: 
         .expect("sweep");
 
     assert_eq!(
-        all_files(&model_dir),
+        snapshot(ingest_dir.path()),
         before,
-        "the model directory holds exactly what it held"
+        "the owner's folder is as it was"
     );
-    for (_, _, _, hash, path) in &rows {
-        let bytes = std::fs::read(blob_root.path().join(path)).expect("each file stays");
-        assert_eq!(&hex_of(&bytes), hash);
-    }
 }
 
 /// A new part's first revision says how its bytes arrived: a scan is `ingest`, an upload is
@@ -3092,9 +2651,16 @@ async fn a_new_parts_first_revision_says_whether_it_was_scanned_or_uploaded(pool
 
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
     handler.handle(&job_for(BRACKET)).await.expect("scans");
-    let hash = upload_into(&pool, blob_root.path(), BRACKET_FIXTURE).await;
+    stage(
+        &blob_root.path().join("inbox"),
+        "uploads/brackets/spare/LP-1042-03.stl",
+        BRACKET_FIXTURE,
+    );
     handler
-        .handle(&blob_job(hash, "brackets/spare/LP-1042-03.stl"))
+        .handle(&inbox_job(
+            "uploads/brackets/spare/LP-1042-03.stl",
+            "brackets/spare/LP-1042-03.stl",
+        ))
         .await
         .expect("uploads");
 
@@ -3188,6 +2754,24 @@ fn bundle_describing(parts: &[(&str, &[&[u8]], PartMeta)]) -> Vec<u8> {
     zip.add(bundle::MANIFEST, &mut manifest.as_slice())
         .expect("adds");
     zip.finish().expect("finishes")
+}
+
+/// A bundle stored as the api's import route stores one: in Lapidary's own store under its hash,
+/// with a `blob` row that nothing references yet.
+async fn upload_into(pool: &PgPool, blob_root: &Path, bytes: &[u8]) -> BlobHash {
+    let stored = lapidary_storage::DerivativeStore::open(blob_root)
+        .put(bytes)
+        .expect("stores the bundle");
+    lapidary_db::PgBlobs(pool.clone())
+        .record_unreferenced(&StoredBlobRow {
+            hash: stored.hash,
+            size_bytes: stored.size_bytes,
+            stored_bytes: stored.stored_bytes,
+            zstd_level: stored.zstd_level,
+        })
+        .await
+        .expect("records the bundle");
+    stored.hash
 }
 
 fn import_job(payload: JobPayload, batch: BatchId) -> JobRow {
@@ -3580,198 +3164,6 @@ async fn a_part_whose_history_began_elsewhere_is_refused_though_it_ends_on_a_bun
     assert_eq!(revision_rows(&pool).await.len(), 2, "nothing grafted");
 }
 
-/// Goal 2's recorded state: the bracket filed under a disambiguated name, since the owner's own directory holds its
-/// plain one, then revised to the spacer, and purged — by a purge from before delete became final, whose queue is
-/// written here by hand, since delete never queues a file. The spacer's bytes wait out their quarantine where the
-/// bracket's first file resolves again. Returns that path.
-async fn purged_bytes_in_the_way(
-    pool: &PgPool,
-    handler: &WorkerHandler,
-    ingest_dir: &Path,
-    blob_root: &Path,
-) -> String {
-    std::fs::create_dir_all(blob_root.join("libraries/default/bracket-lp-1042-03"))
-        .expect("the owner's directory");
-    stage(ingest_dir, BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-    stage(ingest_dir, BRACKET, SPACER_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("revises"),
-        Outcome::Revised
-    );
-    let short = format!(
-        "libraries/default/bracket-lp-1042-03_{}/{BRACKET}",
-        &hex_of(BRACKET_FIXTURE)[..6]
-    );
-    assert_eq!(
-        revision_rows(pool).await[1].4,
-        short,
-        "the revised file is on top in the disambiguated directory"
-    );
-    let part = lapidary_core::PartId::from_uuid(
-        sqlx::query_scalar("SELECT id FROM part")
-            .fetch_one(pool)
-            .await
-            .expect("the part"),
-    );
-    let files: Vec<(String, String)> = sqlx::query_as(
-        "SELECT f.storage_path, f.blake3 FROM file f \
-         JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1",
-    )
-    .bind(part.as_uuid())
-    .fetch_all(pool)
-    .await
-    .expect("the part's files");
-    assert!(PgParts(pool.clone()).delete(part).await.expect("deletes"));
-    for (path, hash) in files {
-        sqlx::query("INSERT INTO quarantined_file (storage_path, blake3) VALUES ($1, $2)")
-            .bind(path)
-            .bind(hash)
-            .execute(pool)
-            .await
-            .expect("the old purge's queue");
-    }
-    assert_eq!(
-        std::fs::read(blob_root.join(&short)).expect("quarantined, still on disk"),
-        SPACER_FIXTURE
-    );
-    short
-}
-
-/// Goal 2's recorded failure. A part in a disambiguated directory is revised, then purged, so its newest
-/// file waits out its quarantine at that path. The part's first file dropped back at the same source path resolves
-/// to the same directory and meets those bytes. No part names them, so the file takes a longer name instead of
-/// failing every attempt, and the quarantined bytes stay for the sweep.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_file_meeting_a_purged_parts_bytes_takes_a_longer_name_rather_than_failing(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    let short = purged_bytes_in_the_way(&pool, &handler, ingest_dir.path(), blob_root.path()).await;
-    let hash = hex_of(BRACKET_FIXTURE);
-
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler
-            .handle(&job_for(BRACKET))
-            .await
-            .expect("ingests under a longer name"),
-        Outcome::Ingested
-    );
-    let longer = format!(
-        "libraries/default/bracket-lp-1042-03_{}/{BRACKET}",
-        &hash[..12]
-    );
-    let rows = revision_rows(&pool).await;
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].4, longer);
-    assert_eq!(
-        std::fs::read(blob_root.path().join(&longer)).expect("the new file"),
-        BRACKET_FIXTURE
-    );
-    assert_eq!(
-        std::fs::read(blob_root.path().join(&short)).expect("still quarantined"),
-        SPACER_FIXTURE,
-        "the purged part's bytes are left for the sweep"
-    );
-}
-
-/// A new part's first `metadata.json` is the manifest its rows give, written as the revision and custom-value
-/// writers write theirs: through `PgRevisions::write_manifest`, while the part's row is held.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_new_parts_first_metadata_json_is_the_manifest_its_rows_give(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
-        Outcome::Ingested
-    );
-
-    let part = lapidary_core::PartId::from_uuid(
-        sqlx::query_scalar("SELECT id FROM part")
-            .fetch_one(&pool)
-            .await
-            .expect("the part"),
-    );
-    let rows = lapidary_db::PgRevisions(pool.clone())
-        .manifest(part)
-        .await
-        .expect("reads")
-        .expect("the part");
-    let written = manifest_in(
-        &blob_root
-            .path()
-            .join("libraries/default/bracket-lp-1042-03"),
-    );
-    assert_eq!(
-        serde_json::to_value(&written).expect("json"),
-        serde_json::to_value(&rows).expect("json")
-    );
-    // And what it holds, against the ingest itself rather than the rows alone.
-    assert_eq!(written.part.source_path, BRACKET);
-    assert_eq!(written.revisions.len(), 1);
-    assert_eq!(written.revisions[0].rev_label, "1");
-    assert_eq!(
-        written.revisions[0].triangle_count,
-        i32::try_from(u32::from_le_bytes([
-            BRACKET_FIXTURE[80],
-            BRACKET_FIXTURE[81],
-            BRACKET_FIXTURE[82],
-            BRACKET_FIXTURE[83]
-        ]))
-        .ok(),
-        "the count a binary STL's header gives"
-    );
-    let file = &written.revisions[0].files[0];
-    assert_eq!(file.blake3.to_hex(), hex_of(BRACKET_FIXTURE));
-    assert_eq!(file.file_name, BRACKET);
-}
-
-/// When the 12-digit name is held too, by another purged part's quarantined bytes, the file takes its whole hash, and
-/// those bytes are left as they are.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_file_past_two_quarantined_names_takes_its_whole_hash(pool: PgPool) {
-    let ingest_dir = tempfile::tempdir().expect("temp dir");
-    let blob_root = tempfile::tempdir().expect("temp dir");
-    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
-    purged_bytes_in_the_way(&pool, &handler, ingest_dir.path(), blob_root.path()).await;
-    let hash = hex_of(BRACKET_FIXTURE);
-    let twelve = format!(
-        "libraries/default/bracket-lp-1042-03_{}/{BRACKET}",
-        &hash[..12]
-    );
-    stage(blob_root.path(), &twelve, GEAR_FIXTURE);
-    sqlx::query("INSERT INTO quarantined_file (storage_path, blake3) VALUES ($1, $2)")
-        .bind(&twelve)
-        .bind(hex_of(GEAR_FIXTURE))
-        .execute(&pool)
-        .await
-        .expect("the gear's quarantine");
-
-    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
-    assert_eq!(
-        handler
-            .handle(&job_for(BRACKET))
-            .await
-            .expect("ingests under its whole hash"),
-        Outcome::Ingested
-    );
-    assert_eq!(
-        revision_rows(&pool).await[0].4,
-        format!("libraries/default/bracket-lp-1042-03_{hash}/{BRACKET}")
-    );
-    assert_eq!(
-        std::fs::read(blob_root.path().join(&twelve)).expect("the gear's bytes"),
-        GEAR_FIXTURE,
-        "left as they were"
-    );
-}
-
 // ---------------------------------------------------------------------------------------
 // F1: a 3MF's own thumbnail becomes the part's picture, when the part has none.
 // ---------------------------------------------------------------------------------------
@@ -3903,4 +3295,27 @@ async fn a_thumbnail_never_replaces_a_picture_somebody_chose(pool: PgPool) {
         Outcome::Revised
     );
     assert_eq!(pictures_of(&pool, CARRIER).await, ["uploaded"]);
+}
+
+/// An export is never built from a file changed in its folder since it was indexed: the bytes no
+/// longer hash to the revision's, and the job says to scan again rather than export something else.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_export_of_a_file_changed_in_its_folder_is_refused(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    stage(ingest_dir.path(), BRACKET, GEAR_FIXTURE);
+    let revision = only_revision(&pool).await;
+    match handler
+        .handle(&derive_job(revision, DerivativeKind::ExportStl))
+        .await
+    {
+        Err(HandlerError::Permanent { message }) => {
+            assert!(message.contains("Scan again"), "{message}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(derivatives(&pool).await.is_empty());
 }

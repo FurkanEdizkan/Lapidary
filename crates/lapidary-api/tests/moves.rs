@@ -1,23 +1,21 @@
-//! Task 9: moving a model between categories. `PATCH /api/parts/{id}` and
-//! `GET /api/parts/{id}/moves`, end to end — a live migrated Postgres (via `sqlx::test`), a
-//! real store on disk in a `tempfile` directory, and the router this crate builds.
+//! Moving a model between categories. `PATCH /api/parts/{id}` and `GET /api/parts/{id}/moves`,
+//! end to end — a live migrated Postgres (via `sqlx::test`), the owner's folders in a `tempfile`
+//! directory, and the router this crate builds.
 //!
-//! The store is real rather than mocked because the ordering these tests exist to pin is
-//! about a real filesystem: the rename happens inside the transaction, and a rename that
-//! cannot happen has to leave every row exactly where it was.
+//! Since M4 a move is a database change and nothing else: the folders are real so the tests can
+//! prove nothing in them was touched.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use lapidary_api::{AppState, Role, router};
-use lapidary_core::{BlobHash, FolderId, LibraryId, MeshMeasurements, PartId, RevisionOrigin};
+use lapidary_core::{
+    BlobHash, FileRoot, FolderId, LibraryId, MeshMeasurements, PartId, RevisionOrigin,
+};
 use lapidary_db::{
     IngestRequest, PgFolders, PgIngest, PgRevisions, RevisionRequest, StoredBlobRow,
 };
 use tower::ServiceExt;
 
-/// Seeded by `crates/lapidary-db/migrations/0002_parts.sql`, and its slug — what
-/// `PgParts::library_slug` derives from the name `Default` — is the `default` in every
-/// path below.
 const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
 fn library() -> LibraryId {
@@ -34,65 +32,85 @@ fn measurements() -> MeshMeasurements {
     }
 }
 
-/// One model, in the database and on disk at the same time. Returns its id.
-///
-/// Both halves, because a move is the one route where they have to agree: a part whose row
-/// names a directory that is not there is precisely the state the ordering rule exists to
-/// avoid producing, so a fixture that produced it would be testing the wrong thing.
+/// Every file and directory under `root`, with its size, modification time and, for a file, its
+/// BLAKE3 — what "nothing under it changed" is checked against.
+fn snapshot(root: &std::path::Path) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(dir) = queue.pop() {
+        for entry in std::fs::read_dir(&dir).expect("reads a directory") {
+            let path = entry.expect("an entry").path();
+            let meta = std::fs::symlink_metadata(&path).expect("stats");
+            let rel = path
+                .strip_prefix(root)
+                .expect("under root")
+                .display()
+                .to_string();
+            let mtime = meta.modified().expect("an mtime");
+            if meta.is_dir() {
+                seen.push(format!("{rel}/ {mtime:?}"));
+                queue.push(path);
+            } else {
+                let hash = blake3::hash(&std::fs::read(&path).expect("reads"));
+                seen.push(format!("{rel} {} {mtime:?} {hash}", meta.len()));
+            }
+        }
+    }
+    seen.sort();
+    seen
+}
+
+/// One model, in the database and in the owner's folders at the same time, read where it is.
 async fn seed_model(
     pool: &sqlx::PgPool,
-    store: &std::path::Path,
+    folders: &std::path::Path,
     folder: Option<FolderId>,
     name: &str,
     source_path: &str,
-    storage_path: &str,
-    seed: u8,
 ) -> PartId {
+    let bytes = format!("solid {name}\nendsolid {name}\n").into_bytes();
+    let file = folders.join(source_path);
+    std::fs::create_dir_all(file.parent().expect("a directory")).expect("directory");
+    std::fs::write(&file, &bytes).expect("the owner's file");
+    let stat = lapidary_storage::LibraryReader::open(folders)
+        .stat_at(source_path)
+        .expect("stats");
     let blob = StoredBlobRow {
-        hash: BlobHash::from_bytes([seed; 32]),
-        size_bytes: 7_412_880,
-        stored_bytes: 7_412_880,
+        hash: BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes()),
+        size_bytes: bytes.len() as u64,
+        stored_bytes: bytes.len() as u64,
         zstd_level: 0,
     };
-    let part = PgIngest(pool.clone())
+    PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
             library: library(),
             name,
             source_path,
             folder,
-            storage_path: Some(storage_path),
+            storage_path: Some(source_path),
+            root: FileRoot::Library,
+            mtime_ns: Some(stat.mtime_ns),
             blob: &blob,
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
         .await
-        .expect("seed model");
-
-    let file = store.join(storage_path);
-    std::fs::create_dir_all(file.parent().expect("a model directory")).expect("model directory");
-    std::fs::write(&file, b"solid cliff\nendsolid cliff\n").expect("source file");
-    // `metadata.json` beside it, as ingest writes: it is what makes a model directory
-    // self-identifying, and therefore what makes a disk that is ahead of the database
-    // repairable rather than a puzzle.
-    std::fs::write(
-        file.parent()
-            .expect("a model directory")
-            .join("metadata.json"),
-        format!("{{\"part\":{{\"name\":\"{name}\",\"sourcePath\":\"{source_path}\"}}}}"),
-    )
-    .expect("manifest");
-    part
+        .expect("seed model")
 }
 
-fn app(pool: sqlx::PgPool, store: &std::path::Path) -> axum::Router {
+fn app(pool: sqlx::PgPool, folders: &std::path::Path) -> axum::Router {
     router(
         AppState {
             db: pool,
-            blob_root: store.to_path_buf(),
+            blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: folders.to_path_buf(),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -102,7 +120,7 @@ fn app(pool: sqlx::PgPool, store: &std::path::Path) -> axum::Router {
 /// `PATCH /api/parts/{id}` with the given target and acknowledgement.
 async fn move_request(
     pool: &sqlx::PgPool,
-    store: &std::path::Path,
+    folders: &std::path::Path,
     part: PartId,
     folder: Option<FolderId>,
     acknowledge: bool,
@@ -111,7 +129,7 @@ async fn move_request(
         "folderId": folder.map(|f| f.to_string()),
         "acknowledgeDuplicate": acknowledge,
     });
-    let response = app(pool.clone(), store)
+    let response = app(pool.clone(), folders)
         .oneshot(
             Request::builder()
                 .method("PATCH")
@@ -126,14 +144,10 @@ async fn move_request(
     let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("body reads");
-    // A 200 answers with no body at all, which is not JSON — `Null` stands in for it so
-    // every caller can read `json["reason"]` without knowing which it got.
     let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
 
-/// As text, so this file never has to name the `uuid` crate to say which category a part is
-/// in — `FolderId`'s own `Display` is what every assertion below compares against.
 async fn folder_of(pool: &sqlx::PgPool, part: PartId) -> Option<String> {
     sqlx::query_scalar("SELECT folder_id::text FROM part WHERE id = $1")
         .bind(part.as_uuid())
@@ -142,15 +156,16 @@ async fn folder_of(pool: &sqlx::PgPool, part: PartId) -> Option<String> {
         .expect("reads folder")
 }
 
-async fn storage_path_of(pool: &sqlx::PgPool, part: PartId) -> Option<String> {
+/// Every revision's file path, oldest first.
+async fn storage_paths_of(pool: &sqlx::PgPool, part: PartId) -> Vec<Option<String>> {
     sqlx::query_scalar(
         "SELECT f.storage_path FROM file f JOIN revision r ON r.id = f.revision_id \
-         WHERE r.part_id = $1",
+         WHERE r.part_id = $1 ORDER BY r.created_at, r.id",
     )
     .bind(part.as_uuid())
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
-    .expect("reads storage path")
+    .expect("reads storage paths")
 }
 
 async fn move_count(pool: &sqlx::PgPool, part: PartId) -> i64 {
@@ -161,45 +176,39 @@ async fn move_count(pool: &sqlx::PgPool, part: PartId) -> i64 {
         .expect("counts moves")
 }
 
-/// THE test. `source_path` is immutable identity, `folder_id` is mutable location, and this
-/// is the case that proves splitting them was right: after a move, the file is under its new
-/// category on disk and in the row, and the path a re-scan matches on has not moved at all.
-///
-/// The re-scan itself is `lapidary-ingest`'s own test (`handler.rs`, the `Outcome::Skipped`
-/// case keyed on `source_path`) — this crate cannot reach that handler without depending on
-/// the one crate that links the CAD kernel, which is the dependency `xtask/src/layers.rs`
-/// exists to forbid. What is asserted here is the half a move is responsible for: the thing
-/// the re-scan keys on is untouched.
+/// (b) THE test. A move changes the category and nothing else: the row's path, the part's identity
+/// and every byte, name and timestamp in the owner's folders are what they were, and the file still
+/// downloads from where it always was.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_move_changes_where_a_model_is_and_never_what_it_is(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
-    let folders = PgFolders(pool.clone());
-    let terrain = folders
+async fn a_move_changes_the_category_and_writes_nothing_on_disk(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let tree = PgFolders(pool.clone());
+    let terrain = tree
         .get_or_create(library(), None, "Terrain", "Terrain")
         .await
         .expect("Terrain");
-    let bases = folders
+    let bases = tree
         .get_or_create(library(), None, "Bases", "Bases")
         .await
         .expect("Bases");
     let part = seed_model(
         &pool,
-        store.path(),
+        folders.path(),
         Some(terrain),
         "rock",
         "Terrain/rock.stl",
-        "libraries/default/Terrain/rock/rock.stl",
-        0x11,
     )
     .await;
+    let before = snapshot(folders.path());
 
-    let (status, _) = move_request(&pool, store.path(), part, Some(bases), false).await;
+    let (status, json) = move_request(&pool, folders.path(), part, Some(bases), false).await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(folder_of(&pool, part).await, Some(bases.to_string()));
     assert_eq!(
-        storage_path_of(&pool, part).await.as_deref(),
-        Some("libraries/default/Bases/rock/rock.stl"),
+        storage_paths_of(&pool, part).await,
+        [Some("Terrain/rock.stl".to_owned())],
+        "the file is where it was"
     );
     let source_path: String = sqlx::query_scalar("SELECT source_path FROM part WHERE id = $1")
         .bind(part.as_uuid())
@@ -207,280 +216,107 @@ async fn a_move_changes_where_a_model_is_and_never_what_it_is(pool: sqlx::PgPool
         .await
         .expect("reads source path");
     assert_eq!(source_path, "Terrain/rock.stl", "identity never moved");
-    assert!(
-        store
-            .path()
-            .join("libraries/default/Bases/rock/rock.stl")
-            .exists()
+    assert_eq!(
+        snapshot(folders.path()),
+        before,
+        "nothing in the owner's folders changed"
     );
-    assert!(
-        !store.path().join("libraries/default/Terrain/rock").exists(),
-        "the directory was renamed, not copied"
-    );
-    assert!(
-        store
-            .path()
-            .join("libraries/default/Bases/rock/metadata.json")
-            .exists(),
-        "the manifest travels with the directory, and needs no rewrite: it carries no path"
-    );
+
+    let response = app(pool.clone(), folders.path())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/parts/{part}/file"))
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body reads");
+    assert_eq!(&bytes[..], b"solid rock\nendsolid rock\n");
 }
 
-/// Phase 4 slice 1: a model's older revisions live in `revisions/<label>/` inside its own
-/// directory, so the rename carries them and the prefix rewrite finds their rows. Both
-/// originals must still download, byte for byte, from where the move put them.
+/// A revised part moves with its whole history, and no row's path changes.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_move_carries_every_revision_and_each_still_downloads(pool: sqlx::PgPool) {
-    const FIRST: &[u8] = b"solid rock\nendsolid rock\n";
-    const SECOND: &[u8] = b"solid rock, 10 mm taller\nendsolid rock\n";
-    const STORED: &str = "libraries/default/Terrain/rock/rock.stl";
-    // Real digests: the download route hashes what it streams and refuses a mismatch.
-    let row = |bytes: &[u8]| StoredBlobRow {
-        hash: BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()),
-        size_bytes: bytes.len() as u64,
-        stored_bytes: bytes.len() as u64,
-        zstd_level: 0,
-    };
-    let store = tempfile::tempdir().expect("temp store");
-    let folders = PgFolders(pool.clone());
-    let terrain = folders
-        .get_or_create(library(), None, "Terrain", "Terrain")
-        .await
-        .expect("Terrain");
-    let bases = folders
+async fn a_revised_part_moves_with_every_revision_where_it_was(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let bases = PgFolders(pool.clone())
         .get_or_create(library(), None, "Bases", "Bases")
         .await
         .expect("Bases");
-
-    let part = PgIngest(pool.clone())
-        .record(IngestRequest {
-            origin: lapidary_core::RevisionOrigin::Ingest,
-            library: library(),
-            name: "rock",
-            source_path: "Terrain/rock.stl",
-            folder: Some(terrain),
-            storage_path: Some(STORED),
-            blob: &row(FIRST),
+    let part = seed_model(&pool, folders.path(), None, "rock", "rock.stl").await;
+    let revisions = PgRevisions(pool.clone());
+    let first = revisions
+        .current(library(), "rock.stl")
+        .await
+        .expect("reads")
+        .expect("the part")
+        .revision;
+    revisions
+        .record_revision(RevisionRequest {
+            part,
+            parent: first,
+            origin: RevisionOrigin::Ingest,
+            root: FileRoot::Library,
+            storage_path: "rock.stl",
+            mtime_ns: Some(1_760_000_100_000_000_000),
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([0x23; 32]),
+                size_bytes: 31,
+                stored_bytes: 31,
+                zstd_level: 0,
+            },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
         .await
-        .expect("revision 1");
-    std::fs::create_dir_all(store.path().join("libraries/default/Terrain/rock"))
-        .expect("model directory");
-    std::fs::write(store.path().join(STORED), FIRST).expect("revision 1 on disk");
-
-    let revisions = PgRevisions(pool.clone());
-    let first = revisions
-        .current(library(), "Terrain/rock.stl")
-        .await
-        .expect("reads")
-        .expect("the part")
-        .revision;
-    let second = revisions
-        .record_revision(
-            RevisionRequest {
-                part,
-                parent: first,
-                origin: RevisionOrigin::Ingest,
-                blob: &row(SECOND),
-                measurements: &measurements(),
-                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                format: "stl",
-            },
-            // The filesystem half as the worker does it: the current file set aside, the new
-            // bytes written where it was.
-            |current, set_aside| {
-                let aside = store.path().join(set_aside);
-                std::fs::create_dir_all(aside.parent().expect("a directory"))
-                    .map_err(|e| e.to_string())?;
-                std::fs::rename(store.path().join(current), &aside).map_err(|e| e.to_string())?;
-                std::fs::write(store.path().join(current), SECOND).map_err(|e| e.to_string())
-            },
-        )
-        .await
         .expect("revision 2");
+    let before = snapshot(folders.path());
 
-    let (status, json) = move_request(&pool, store.path(), part, Some(bases), false).await;
+    let (status, json) = move_request(&pool, folders.path(), part, Some(bases), false).await;
     assert_eq!(status, StatusCode::OK, "{json}");
-    assert!(
-        store
-            .path()
-            .join("libraries/default/Bases/rock/revisions/1/rock.stl")
-            .exists(),
-        "revision 1's file moved with its model"
-    );
-
-    for (revision, bytes) in [(first, FIRST), (second, SECOND)] {
-        let response = app(pool.clone(), store.path())
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/revisions/{revision}/download?variant=original"
-                    ))
-                    .body(Body::empty())
-                    .expect("request builds"),
-            )
-            .await
-            .expect("router responds");
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "revision {revision} downloads after the move"
-        );
-        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .expect("body reads");
-        assert_eq!(&body[..], bytes, "revision {revision}'s own bytes");
-    }
-}
-
-/// Rename first, inside the transaction: a failure must move nothing and change nothing.
-///
-/// The rename is made to fail by removing the source directory rather than by revoking
-/// write permission — a chmod is a no-op when the suite runs as root, and a test that
-/// silently *succeeds* at moving is the one failure mode this test must not have.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_failed_rename_leaves_the_database_untouched(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
-    let folders = PgFolders(pool.clone());
-    let terrain = folders
-        .get_or_create(library(), None, "Terrain", "Terrain")
-        .await
-        .expect("Terrain");
-    let bases = folders
-        .get_or_create(library(), None, "Bases", "Bases")
-        .await
-        .expect("Bases");
-    let part = seed_model(
-        &pool,
-        store.path(),
-        Some(terrain),
-        "rock",
-        "Terrain/rock.stl",
-        "libraries/default/Terrain/rock/rock.stl",
-        0x22,
-    )
-    .await;
-    std::fs::remove_dir_all(store.path().join("libraries/default/Terrain/rock"))
-        .expect("the directory the rename would have moved");
-
-    let (status, _) = move_request(&pool, store.path(), part, Some(bases), false).await;
-
     assert_eq!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "the rename failed"
+        storage_paths_of(&pool, part).await,
+        [Some("rock.stl".to_owned()), Some("rock.stl".to_owned())]
     );
-    assert_eq!(
-        folder_of(&pool, part).await,
-        Some(terrain.to_string()),
-        "no row moved"
-    );
-    assert_eq!(
-        storage_path_of(&pool, part).await.as_deref(),
-        Some("libraries/default/Terrain/rock/rock.stl"),
-    );
-    assert_eq!(
-        move_count(&pool, part).await,
-        0,
-        "a move nothing performed is a move nothing recorded"
-    );
-}
-
-/// The one 500 on this route that is not a `DbError`. It has to behave like the others:
-/// the operator gets the real failure through the log, the caller gets prose that names no
-/// host path. `StorageError::Io` carries the store's absolute path, which is the server's
-/// filesystem layout and not something a browser has any business being told.
-#[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_store_that_cannot_take_the_directory_says_so_without_naming_the_disk(
-    pool: sqlx::PgPool,
-) {
-    let store = tempfile::tempdir().expect("temp store");
-    let folders = PgFolders(pool.clone());
-    let terrain = folders
-        .get_or_create(library(), None, "Terrain", "Terrain")
-        .await
-        .expect("Terrain");
-    let bases = folders
-        .get_or_create(library(), None, "Bases", "Bases")
-        .await
-        .expect("Bases");
-    let part = seed_model(
-        &pool,
-        store.path(),
-        Some(terrain),
-        "scree",
-        "Terrain/scree.stl",
-        "libraries/default/Terrain/scree/scree.stl",
-        0x44,
-    )
-    .await;
-
-    // A plain file standing where the category's directory has to go. `create_dir` is
-    // `mkdir -p`, so it fails on the component that is not a directory — the cheapest
-    // reachable stand-in for a volume that is full, read-only or unmounted.
-    std::fs::write(
-        store.path().join("libraries/default/Bases"),
-        b"not a directory",
-    )
-    .expect("a file in the way");
-
-    let (status, body) = move_request(&pool, store.path(), part, Some(bases), false).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(
-        body["reason"], "storageUnwritable",
-        "the client tells this apart from a failed rename by `reason`, never by the prose"
-    );
-    let message = body["message"].as_str().expect("a message");
-    assert!(
-        !message.contains(store.path().to_str().expect("utf-8 temp dir")),
-        "the store's absolute path is for the log, not for the response: {message}"
-    );
-    assert!(
-        message.contains("storage"),
-        "and it still has to tell the operator what to go and look at: {message}"
-    );
+    assert_eq!(snapshot(folders.path()), before);
 }
 
 /// Two models may share a name — slice 6a decided that is the truth — so the collision is a
 /// warning the client can answer, not a refusal.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn moving_into_a_name_collision_needs_an_acknowledgement(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
-    let folders = PgFolders(pool.clone());
-    let terrain = folders
+    let folders = tempfile::tempdir().expect("the owner's folders");
+    let tree = PgFolders(pool.clone());
+    let terrain = tree
         .get_or_create(library(), None, "Terrain", "Terrain")
         .await
         .expect("Terrain");
-    let bases = folders
+    let bases = tree
         .get_or_create(library(), None, "Bases", "Bases")
         .await
         .expect("Bases");
     let moving = seed_model(
         &pool,
-        store.path(),
+        folders.path(),
         Some(terrain),
         "cliff",
         "Terrain/cliff.stl",
-        "libraries/default/Terrain/cliff/cliff.stl",
-        0x33,
     )
     .await;
     seed_model(
         &pool,
-        store.path(),
+        folders.path(),
         Some(bases),
         "cliff",
         "Bases/cliff.stl",
-        "libraries/default/Bases/cliff/cliff.stl",
-        0x44,
     )
     .await;
 
-    let (refused, body) = move_request(&pool, store.path(), moving, Some(bases), false).await;
+    let (refused, body) = move_request(&pool, folders.path(), moving, Some(bases), false).await;
     assert_eq!(refused, StatusCode::CONFLICT);
     assert_eq!(body["reason"], "duplicateName");
     assert!(
@@ -491,40 +327,24 @@ async fn moving_into_a_name_collision_needs_an_acknowledgement(pool: sqlx::PgPoo
     );
     assert_eq!(folder_of(&pool, moving).await, Some(terrain.to_string()));
 
-    let (accepted, _) = move_request(&pool, store.path(), moving, Some(bases), true).await;
+    let (accepted, _) = move_request(&pool, folders.path(), moving, Some(bases), true).await;
     assert_eq!(accepted, StatusCode::OK);
     assert_eq!(folder_of(&pool, moving).await, Some(bases.to_string()));
-    // The disambiguated directory, because `Bases/cliff` was already standing there. The
-    // suffix is six hex characters of this model's own source hash, so re-ingesting the
-    // same bytes would land on the same name.
     assert_eq!(
-        storage_path_of(&pool, moving).await.as_deref(),
-        Some("libraries/default/Bases/cliff_333333/cliff.stl"),
-    );
-    assert!(
-        store
-            .path()
-            .join("libraries/default/Bases/cliff/cliff.stl")
-            .exists(),
-        "the model already there was not replaced"
+        storage_paths_of(&pool, moving).await,
+        [Some("Terrain/cliff.stl".to_owned())]
     );
 }
 
-/// A model still in the shared store has no directory to rename, and the refusal says so in
-/// the words the card shows for the same state rather than reading as a name collision.
+/// A part from before the folder tree, whose bytes are content-addressed in the store, moves like
+/// any other: a move needs no directory. It used to be refused as "migration pending".
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_model_the_storage_migration_has_not_reached_cannot_be_moved(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
+async fn a_content_addressed_part_moves_too(pool: sqlx::PgPool) {
+    let folders = tempfile::tempdir().expect("the owner's folders");
     let bases = PgFolders(pool.clone())
         .get_or_create(library(), None, "Bases", "Bases")
         .await
         .expect("Bases");
-    let blob = StoredBlobRow {
-        hash: BlobHash::from_bytes([0x55; 32]),
-        size_bytes: 212_004,
-        stored_bytes: 64_118,
-        zstd_level: 3,
-    };
     let part = PgIngest(pool.clone())
         .record(IngestRequest {
             origin: lapidary_core::RevisionOrigin::Ingest,
@@ -532,50 +352,52 @@ async fn a_model_the_storage_migration_has_not_reached_cannot_be_moved(pool: sql
             name: "corner bracket",
             source_path: "corner bracket.stl",
             folder: None,
-            // The live state migration 0009 documents: the bytes are still at
-            // `blobs/ab/cd/<hash>`, and no model directory exists to move.
             storage_path: None,
-            blob: &blob,
+            root: FileRoot::Store,
+            mtime_ns: None,
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([0x55; 32]),
+                size_bytes: 212_004,
+                stored_bytes: 64_118,
+                zstd_level: 3,
+            },
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
         .await
-        .expect("seed unmigrated part");
+        .expect("seed a store part");
 
-    let (status, body) = move_request(&pool, store.path(), part, Some(bases), false).await;
+    let (status, body) = move_request(&pool, folders.path(), part, Some(bases), false).await;
 
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["reason"], "migrationPending");
-    assert_eq!(move_count(&pool, part).await, 0);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(move_count(&pool, part).await, 1);
 }
 
 /// The history is the audit trail `part_move` was created for, and it records both ends of
 /// the move — where it came from as well as where it went.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_history_records_both_ends_of_a_move(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
+    let folders = tempfile::tempdir().expect("the owner's folders");
     let terrain = PgFolders(pool.clone())
         .get_or_create(library(), None, "Terrain", "Terrain")
         .await
         .expect("Terrain");
     let part = seed_model(
         &pool,
-        store.path(),
+        folders.path(),
         Some(terrain),
         "rock",
         "Terrain/rock.stl",
-        "libraries/default/Terrain/rock/rock.stl",
-        0x66,
     )
     .await;
 
     // Out of Terrain and into the library root, which is a real destination and not the
     // absence of one.
-    let (status, _) = move_request(&pool, store.path(), part, None, false).await;
+    let (status, _) = move_request(&pool, folders.path(), part, None, false).await;
     assert_eq!(status, StatusCode::OK);
 
-    let response = app(pool.clone(), store.path())
+    let response = app(pool.clone(), folders.path())
         .oneshot(
             Request::builder()
                 .uri(format!("/api/parts/{part}/moves"))
@@ -597,40 +419,27 @@ async fn the_history_records_both_ends_of_a_move(pool: sqlx::PgPool) {
         history[0]["movedAt"].is_string(),
         "a move that cannot say when it happened is not an audit trail: {history}"
     );
-    assert_eq!(
-        storage_path_of(&pool, part).await.as_deref(),
-        Some("libraries/default/rock/rock.stl"),
-        "the library root is `libraries/<library>` with no category between",
-    );
 }
 
-/// Re-filing a model into the category it is already in changes nothing, and in particular
-/// does not rename its directory to a disambiguated one because the directory it is
-/// standing in is "already taken".
+/// Re-filing a model into the category it is already in changes nothing.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn moving_a_model_into_its_own_category_is_a_no_op(pool: sqlx::PgPool) {
-    let store = tempfile::tempdir().expect("temp store");
+    let folders = tempfile::tempdir().expect("the owner's folders");
     let terrain = PgFolders(pool.clone())
         .get_or_create(library(), None, "Terrain", "Terrain")
         .await
         .expect("Terrain");
     let part = seed_model(
         &pool,
-        store.path(),
+        folders.path(),
         Some(terrain),
         "rock",
         "Terrain/rock.stl",
-        "libraries/default/Terrain/rock/rock.stl",
-        0x77,
     )
     .await;
 
-    let (status, _) = move_request(&pool, store.path(), part, Some(terrain), false).await;
+    let (status, _) = move_request(&pool, folders.path(), part, Some(terrain), false).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        storage_path_of(&pool, part).await.as_deref(),
-        Some("libraries/default/Terrain/rock/rock.stl"),
-    );
     assert_eq!(move_count(&pool, part).await, 0, "nothing moved, so no row");
 }

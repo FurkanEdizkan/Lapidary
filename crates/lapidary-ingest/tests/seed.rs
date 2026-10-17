@@ -22,7 +22,13 @@ async fn a_first_run_lands_the_bundled_parts_with_real_measurements(pool: PgPool
     // the download would answer 500. These are real bytes, measured by the real kernel.
     let blobs = tempfile::tempdir().expect("temp dir");
 
-    let added = seed_examples(pool.clone(), blobs.path(), &examples()).await;
+    let added = seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
 
     assert!(added >= 6, "the six committed example parts, got {added}");
     let (parts, measured): (i64, i64) = sqlx::query_as(
@@ -38,27 +44,36 @@ async fn a_first_run_lands_the_bundled_parts_with_real_measurements(pool: PgPool
         "every seeded part carries the measurements a real ingest produces"
     );
 
-    // And the bytes are on disk where the row says they are, so the download link works.
-    //
-    // `storage_path`, not the hash fan-out: a seeded part goes through the same ingest as
-    // any other and lands in its own model directory, so the file this asserts is
-    // `libraries/default/.../flange-dn40-pn16-lp-3310-02.stl` and not
-    // `blobs/41/ed/41ed...`. Read off the row rather than reconstructed, because the row
-    // is what the download route follows.
-    let rel: String =
-        sqlx::query_scalar("SELECT storage_path FROM file WHERE role = 'source' LIMIT 1")
+    // And the bytes are where the row says they are, so the download link works: copied once
+    // into the inbox under `examples/`, read from there (M4), never into the store.
+    let (rel, root): (String, String) =
+        sqlx::query_as("SELECT storage_path, root FROM file WHERE role = 'source' LIMIT 1")
             .fetch_one(&pool)
             .await
             .expect("query");
-    let path = blobs.path().join(&rel);
+    assert_eq!(root, "inbox");
+    assert!(rel.starts_with("examples/"), "{rel}");
+    let path = blobs.path().join("inbox").join(&rel);
     assert!(path.exists(), "no bytes at {}", path.display());
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_second_start_seeds_nothing(pool: PgPool) {
     let blobs = tempfile::tempdir().expect("temp dir");
-    let first = seed_examples(pool.clone(), blobs.path(), &examples()).await;
-    let second = seed_examples(pool.clone(), blobs.path(), &examples()).await;
+    let first = seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
+    let second = seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
 
     assert!(first > 0);
     assert_eq!(second, 0, "restarting a worker must not re-seed");
@@ -91,7 +106,13 @@ async fn a_library_with_history_but_no_parts_is_not_seeded(pool: PgPool) {
     .await
     .expect("a scan has run here before");
 
-    let added = seed_examples(pool.clone(), blobs.path(), &examples()).await;
+    let added = seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
 
     assert_eq!(
         added, 0,
@@ -109,7 +130,13 @@ async fn deleting_every_seeded_part_does_not_bring_them_back(pool: PgPool) {
     // The user-facing half of the rule above. Delete leaves no row for a short-circuit to
     // find, so the history guard is the only thing that stops this.
     let blobs = tempfile::tempdir().expect("temp dir");
-    seed_examples(pool.clone(), blobs.path(), &examples()).await;
+    seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
     let ids: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM part")
         .fetch_all(&pool)
         .await
@@ -124,7 +151,13 @@ async fn deleting_every_seeded_part_does_not_bring_them_back(pool: PgPool) {
         );
     }
 
-    let again = seed_examples(pool.clone(), blobs.path(), &examples()).await;
+    let again = seed_examples(
+        pool.clone(),
+        blobs.path(),
+        &blobs.path().join("inbox"),
+        &examples(),
+    )
+    .await;
 
     assert_eq!(again, 0, "a restart must not undo a deliberate deletion");
 }
@@ -138,6 +171,7 @@ async fn a_missing_examples_directory_is_not_a_failure(pool: PgPool) {
     let added = seed_examples(
         pool,
         blobs.path(),
+        &blobs.path().join("inbox"),
         std::path::Path::new("/nonexistent-example-parts"),
     )
     .await;

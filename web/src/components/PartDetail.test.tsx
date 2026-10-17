@@ -52,6 +52,7 @@ const BRACKET: PartDetail = {
   compressed: true,
   directory: 'libraries/default/cad',
   storagePath: 'libraries/default/cad/angle-bracket-60x60x40-lp-9004-00.igs',
+  fileRoot: 'store',
   createdAt: '2026-09-13T10:00:00Z',
   updatedAt: '2026-09-13T10:00:00Z',
 }
@@ -91,6 +92,7 @@ test('the history appears once a part has a second revision, and says where each
     sourceHash: '6666666666666666666666666666666666666666666666666666666666666666',
     sourceFormat: 'stl',
     sourceBytes: 20124,
+    onDisk: true,
   } satisfies PartRevision
   const first = {
     ...second,
@@ -101,6 +103,8 @@ test('the history appears once a part has a second revision, and says where each
     createdAt: '2026-09-13T10:00:00Z',
     volumeMm3: { value: 35840, approximate: true },
     massG: { value: 281.344, approximate: true },
+    // The owner saved revision 2 over it in their folder (M4), so its bytes are nowhere.
+    onDisk: false,
   } satisfies PartRevision
   let history: PartRevision[] = [first]
   vi.stubGlobal(
@@ -140,13 +144,13 @@ test('the history appears once a part has a second revision, and says where each
   expect(item('2')?.textContent).toContain(strings.detail.origin.upload)
   expect(item('2')?.textContent).toContain(strings.detail.approximate)
   expect(item('1')?.textContent).toContain(strings.detail.origin.ingest)
-  // Every revision stays downloadable: the older file is history, not gone.
+  // The revision on disk downloads; the one it replaced keeps its figures and says why it has no
+  // link, rather than offering one that answers 410.
   expect(item('2')?.querySelector('a')?.getAttribute('href')).toBe(
     `/api/revisions/${second.id}/download?variant=original`,
   )
-  expect(item('1')?.querySelector('a')?.getAttribute('href')).toBe(
-    `/api/revisions/${first.id}/download?variant=original`,
-  )
+  expect(item('1')?.querySelector('a')).toBeNull()
+  expect(item('1')?.textContent).toContain(strings.detail.historyNotOnDisk)
   // No comparison and no diff request: those went with governance (S4).
   expect(section.querySelector('table')).toBeNull()
   expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/diff?'))

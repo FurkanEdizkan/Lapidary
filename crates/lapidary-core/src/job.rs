@@ -84,36 +84,15 @@ pub enum JobPayload {
     /// be wrong. See `lapidary_ingest::scan`'s module doc for why the walk is a job at
     /// all.
     ScanDirectory,
-    /// The same work as `IngestFile`, for bytes that are already in the blob store
-    /// rather than on the ingest mount. The upload route writes the blob from the api
-    /// and enqueues this; the worker reads it back out with the `SourceStore` it holds
-    /// anyway.
+    /// A file Lapidary itself wrote into the inbox — an upload — indexed from there (M4). `path` is
+    /// where it is under the inbox; `source_path` is the part it belongs to, the path the browser
+    /// reported, which is what a re-upload of the same file is a revision of.
     ///
-    /// It carries the hash *and* the path because they answer different questions: the
-    /// hash says which bytes, and `source_path` is the part's identity within the
-    /// library (§2) and the name the browser reported for the file. Neither is
-    /// derivable from the other.
-    ///
-    /// A separate kind rather than a flag on `IngestFile`, because the two differ in
-    /// where the bytes come from, and a payload whose meaning depends on which of two
-    /// optional keys is present is the shape `from_row` exists to keep out. See the
-    /// slice 6a design, §4.1.
-    IngestBlob {
-        blake3: BlobHash,
+    /// Replaced `IngestBlob`, which read bytes the upload route had put into the store.
+    IngestInbox {
+        path: String,
         source_path: String,
     },
-    /// Move every source blob in this library out of the content-addressed store and into
-    /// its model's own directory, writing a `metadata.json` beside it.
-    ///
-    /// A job rather than part of migration `0009`, because sqlx runs a migration in one
-    /// transaction at startup and copying a corpus is neither transactional nor fast.
-    /// Resumable because the queue is: it selects the next batch of `file` rows whose
-    /// `storage_path` is still null, so a killed worker resumes where it stopped.
-    ///
-    /// No fields, for `ScanDirectory`'s reason: the library is the job row's own column,
-    /// and how much to do per run is the handler's policy rather than a number a caller
-    /// gets to write into a row that outlives the build that wrote it.
-    MigrateStorage,
     /// Unpack a bundle the upload route stored (Phase 4 slice 2 spec §7): check the whole
     /// archive, then queue one `ImportPart` per part into this job's own batch. `path` is the
     /// bundle's file name, so a refused bundle is named in the batch's failure list.
@@ -127,12 +106,6 @@ pub enum JobPayload {
         bundle: BlobHash,
         part: u32,
         path: String,
-    },
-    /// Write a part's `metadata.json` again from its rows, after something only the rows held changed:
-    /// a custom field's value. The api queues it, because the worker is what writes into a model's
-    /// directory.
-    DescribePart {
-        part: crate::PartId,
     },
     /// Import a model from the page a person pasted: Printables, Thingiverse or MyMiniFactory (F3).
     /// The worker reads the model, fetches its files and files each through ordinary ingest. The
@@ -148,11 +121,6 @@ struct ImportLinkPayload {
 }
 
 #[derive(Deserialize)]
-struct DescribePartPayload {
-    part: crate::PartId,
-}
-
-#[derive(Deserialize)]
 struct ImportBundlePayload {
     blake3: BlobHash,
     path: String,
@@ -165,13 +133,13 @@ struct ImportPartPayload {
     path: String,
 }
 
-/// The `ingest_blob` payload, deserialised whole for the same reason `DerivePayload` is:
+/// The `ingest_inbox` payload, deserialised whole for the same reason `DerivePayload` is:
 /// a malformed row reports serde's own message rather than a guess at which key was
 /// wrong.
 #[derive(Deserialize)]
-struct IngestBlobPayload {
-    blake3: BlobHash,
+struct IngestInboxPayload {
     path: String,
+    inbox: String,
 }
 
 /// The `derive` payload's shape, deserialised as a whole rather than field by field so a
@@ -186,11 +154,9 @@ impl JobPayload {
     pub const INGEST_FILE: &'static str = "ingest_file";
     pub const DERIVE: &'static str = "derive";
     pub const SCAN_DIRECTORY: &'static str = "scan_directory";
-    pub const INGEST_BLOB: &'static str = "ingest_blob";
-    pub const MIGRATE_STORAGE: &'static str = "migrate_storage";
+    pub const INGEST_INBOX: &'static str = "ingest_inbox";
     pub const IMPORT_BUNDLE: &'static str = "import_bundle";
     pub const IMPORT_PART: &'static str = "import_part";
-    pub const DESCRIBE_PART: &'static str = "describe_part";
     pub const IMPORT_LINK: &'static str = "import_link";
 
     pub fn kind(&self) -> &'static str {
@@ -198,11 +164,9 @@ impl JobPayload {
             JobPayload::IngestFile { .. } => Self::INGEST_FILE,
             JobPayload::Derive { .. } => Self::DERIVE,
             JobPayload::ScanDirectory => Self::SCAN_DIRECTORY,
-            JobPayload::IngestBlob { .. } => Self::INGEST_BLOB,
-            JobPayload::MigrateStorage => Self::MIGRATE_STORAGE,
+            JobPayload::IngestInbox { .. } => Self::INGEST_INBOX,
             JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
             JobPayload::ImportPart { .. } => Self::IMPORT_PART,
-            JobPayload::DescribePart { .. } => Self::DESCRIBE_PART,
             JobPayload::ImportLink { .. } => Self::IMPORT_LINK,
         }
     }
@@ -215,21 +179,19 @@ impl JobPayload {
             JobPayload::Derive { revision, produce } => {
                 serde_json::json!({ "revision": revision, "produce": produce })
             }
-            JobPayload::ScanDirectory | JobPayload::MigrateStorage => serde_json::json!({}),
-            // `path` and not `sourcePath`: it means what `IngestFile`'s `path`
-            // means, and one key spelled two ways across two kinds is a key
-            // somebody reads out of the wrong one.
-            JobPayload::IngestBlob {
-                blake3,
-                source_path,
-            } => serde_json::json!({ "blake3": blake3, "path": source_path }),
+            JobPayload::ScanDirectory => serde_json::json!({}),
+            // `path` is the part's source path, as `IngestFile`'s is: it is what a failure is
+            // listed under, and one key meaning two things across two kinds is a key somebody
+            // reads out of the wrong one. Where the bytes are in the inbox is `inbox`.
+            JobPayload::IngestInbox { path, source_path } => {
+                serde_json::json!({ "path": source_path, "inbox": path })
+            }
             JobPayload::ImportBundle { blake3, path } => {
                 serde_json::json!({ "blake3": blake3, "path": path })
             }
             JobPayload::ImportPart { bundle, part, path } => {
                 serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
-            JobPayload::DescribePart { part } => serde_json::json!({ "part": part }),
             JobPayload::ImportLink { url } => serde_json::json!({ "url": url, "path": url }),
         }
     }
@@ -261,12 +223,9 @@ impl JobPayload {
             // names a directory walk, and refusing it would strand a scan over a key
             // this build does not use.
             Self::SCAN_DIRECTORY => Ok(JobPayload::ScanDirectory),
-            // Empty for the same reason, and read the same way: a `migrate_storage` row
-            // carries no payload at all, so there is nothing in it to be malformed.
-            Self::MIGRATE_STORAGE => Ok(JobPayload::MigrateStorage),
-            Self::INGEST_BLOB => serde_json::from_value::<IngestBlobPayload>(payload.clone())
-                .map(|p| JobPayload::IngestBlob {
-                    blake3: p.blake3,
+            Self::INGEST_INBOX => serde_json::from_value::<IngestInboxPayload>(payload.clone())
+                .map(|p| JobPayload::IngestInbox {
+                    path: p.inbox,
                     source_path: p.path,
                 })
                 .map_err(|source| CoreError::MalformedJobPayload {
@@ -288,12 +247,6 @@ impl JobPayload {
                     part: p.part,
                     path: p.path,
                 })
-                .map_err(|source| CoreError::MalformedJobPayload {
-                    kind: kind.to_owned(),
-                    detail: source.to_string(),
-                }),
-            Self::DESCRIBE_PART => serde_json::from_value::<DescribePartPayload>(payload.clone())
-                .map(|p| JobPayload::DescribePart { part: p.part })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),
@@ -508,24 +461,6 @@ mod tests {
     // `JobState` are skipped for the same reason: their variants are single words,
     // so `JobState`'s existing literal-match test above is already sufficient.
 
-    /// A row the desktop agent queued under a check-out carries a `lock` key. Both are gone (S4), and
-    /// such a row still parses: the key is ignored, and the save is an ordinary one.
-    #[test]
-    fn an_ingest_blob_row_from_the_agent_still_parses_and_its_lock_is_ignored() {
-        let agent = serde_json::json!({
-            "blake3": "5d".repeat(32),
-            "path": "flange-dn40-lp-3310-02.stl",
-            "lock": "0193a0c2-7d40-7000-8000-00000000c0de",
-        });
-        assert_eq!(
-            JobPayload::from_row("ingest_blob", &agent).expect("an agent's row parses"),
-            JobPayload::IngestBlob {
-                blake3: BlobHash::from_bytes([0x5d; 32]),
-                source_path: "flange-dn40-lp-3310-02.stl".to_owned(),
-            }
-        );
-    }
-
     #[test]
     fn an_import_link_payload_round_trips_and_names_its_url_as_its_path() {
         let payload = JobPayload::ImportLink {
@@ -543,48 +478,20 @@ mod tests {
     }
 
     #[test]
-    fn a_describe_part_payload_round_trips_through_its_row() {
-        let payload = JobPayload::DescribePart {
-            part: crate::PartId::new(),
-        };
-        assert_eq!(
-            JobPayload::from_row(payload.kind(), &payload.to_json()).expect("parses"),
-            payload
-        );
-    }
-
-    #[test]
-    fn an_ingest_blob_payload_round_trips_through_its_row() {
-        let payload = JobPayload::IngestBlob {
-            blake3: BlobHash::from_bytes([0x5c; 32]),
+    fn an_ingest_inbox_payload_lists_its_part_by_source_path_and_round_trips() {
+        let payload = JobPayload::IngestInbox {
+            path: "uploads/brackets/steel/LP-1042-03 (2).stl".to_owned(),
             source_path: "brackets/steel/LP-1042-03.stl".to_owned(),
         };
         let json = payload.to_json();
-        assert_eq!(payload.kind(), "ingest_blob");
-        // The hash goes over as hex, like everywhere else a `BlobHash` is written, and
-        // the path key is spelled the way `ingest_file` spells it.
+        assert_eq!(payload.kind(), "ingest_inbox");
         assert_eq!(
-            json["blake3"],
-            "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c"
+            json["path"], "brackets/steel/LP-1042-03.stl",
+            "a failure is listed under `path`, which is the part's own path"
         );
-        assert_eq!(json["path"], "brackets/steel/LP-1042-03.stl");
         assert_eq!(
-            JobPayload::from_row("ingest_blob", &json).expect("round trips"),
+            JobPayload::from_row("ingest_inbox", &json).expect("round trips"),
             payload
-        );
-    }
-
-    #[test]
-    fn an_ingest_blob_row_missing_its_hash_names_the_kind_and_the_problem() {
-        // The kind column says `ingest_blob`, so the row is not an unknown kind and must
-        // not be reported as one: it is this kind, malformed, and the message has to say
-        // which key serde could not find or a reader is left guessing at a payload.
-        let err = JobPayload::from_row("ingest_blob", &serde_json::json!({ "path": "a.stl" }))
-            .expect_err("a payload with no hash is malformed");
-        let message = err.to_string();
-        assert!(
-            message.contains("ingest_blob") && message.contains("blake3"),
-            "must name the kind and the missing key, got: {message}"
         );
     }
 
@@ -647,26 +554,6 @@ mod tests {
         );
         assert_eq!(
             JobPayload::from_row("scan_directory", &serde_json::json!({ "path": "unused" }))
-                .expect("an unread key is not a malformed payload"),
-            p
-        );
-    }
-
-    /// Same shape as the `scan_directory` case above, and pinned for the same two
-    /// reasons: the kind is the COLUMN, and `from_row` must not start reading a payload it
-    /// does not use. A `migrate_storage` row written by a build that later learns to carry
-    /// a batch size in its payload must still name a storage migration to this one.
-    #[test]
-    fn a_migrate_storage_payload_is_empty_and_round_trips() {
-        let p = JobPayload::MigrateStorage;
-        assert_eq!(p.kind(), "migrate_storage");
-        assert_eq!(p.to_json(), serde_json::json!({}));
-        assert_eq!(
-            JobPayload::from_row("migrate_storage", &p.to_json()).expect("round trips"),
-            p
-        );
-        assert_eq!(
-            JobPayload::from_row("migrate_storage", &serde_json::json!({ "limit": 200 }))
                 .expect("an unread key is not a malformed payload"),
             p
         );

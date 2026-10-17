@@ -63,10 +63,6 @@ export type TerminalRefusal = Exclude<MoveRefusalReason, 'duplicateName'>
  */
 export function refusalMessage(reason: TerminalRefusal): string {
   switch (reason) {
-    case 'migrationPending':
-      // Same wording the card's own "not movable yet" state uses — the two places a user
-      // meets this state say the same thing.
-      return strings.folders.notMigrated
     case 'crossLibrary':
       return strings.folders.crossLibraryRefusal
     case 'noSuchFolder':
@@ -406,7 +402,7 @@ export function FolderTree({
           title={strings.folders.renameTitle(renaming.name)}
           confirm={strings.folders.renameConfirm}
           initial={renaming.name}
-          hint={strings.folders.renameKeepsDirectory(renaming.slug)}
+          hint={strings.folders.renameKeepsDirectory}
           busy={rename.isPending}
           note={writeRefusal ?? (rename.isError ? strings.folders.renameFailed : null)}
           onConfirm={(name) => rename.mutate({ folder: renaming, name })}

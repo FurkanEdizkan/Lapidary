@@ -6,7 +6,6 @@ mod error;
 mod event;
 mod ids;
 mod job;
-pub mod manifest;
 mod measurement;
 mod part;
 pub mod slug;
@@ -22,7 +21,7 @@ pub use ids::{
 pub use job::{BatchStatus, JobFailure, JobPayload, JobState, Outcome, ScanAccepted};
 pub use measurement::{MeasurementProvenance, MeshMeasurements, Provenance, Topology};
 pub use part::{
-    CAD_FORMATS, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal, is_ignored,
+    CAD_FORMATS, FileRoot, MESH_EXTENSIONS, PartSummary, RevisionOrigin, cad_refusal, is_ignored,
     is_model_file, path_escapes, source_format,
 };
 

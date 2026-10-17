@@ -25,8 +25,15 @@ struct Config {
     // rather than figment's generic one.
     ingest_dir: Option<PathBuf>,
     blob_root: Option<PathBuf>,
-    // Where a partial upload is assembled before its bytes are verified and enter the store.
+    // Where a partial upload is assembled before its bytes are verified and enter the inbox.
     upload_dir: Option<PathBuf>,
+    /// Where Lapidary writes an upload, a link import or a seeded example, once, before indexing
+    /// it like any other file (M4). Never inside `ingest_dir`, which is the owner's and read only.
+    inbox_dir: Option<PathBuf>,
+    /// Where `ingest_dir` and `inbox_dir` are mounted from on the host, for the reason
+    /// `host_storage_root` gives. Ignored unless absolute.
+    host_ingest_root: Option<PathBuf>,
+    host_inbox_root: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
     /// Nothing in this process reads a file through it, and nothing should: it exists to be
@@ -143,53 +150,6 @@ fn parsers_description() -> String {
     format!("{}, for stl, obj and 3mf", lapidary_cad::IMPLEMENTATION)
 }
 
-/// One `migrate_storage` job per library still holding source files in the old
-/// content-addressed store, so an operator upgrading from before that migration existed
-/// never has to hand-write `INSERT INTO job` -- the gap Task 8b closes.
-///
-/// Never fails startup. `libraries_needing_migration` and `enqueue_migration_if_absent`
-/// each log and return on their own error rather than propagate one, because a database
-/// hiccup at this one moment must cost a delayed migration -- picked up on the next
-/// restart, exactly as any other resumable job would be -- and not a server that never
-/// came up at all.
-async fn enqueue_pending_migrations(db: &lapidary_db::PgPool) {
-    let libraries = match lapidary_db::PgStorageMigration(db.clone())
-        .libraries_needing_migration()
-        .await
-    {
-        Ok(libraries) => libraries,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "could not check for libraries needing a storage migration; skipping for \
-                 this boot -- the next restart tries again"
-            );
-            return;
-        }
-    };
-
-    let jobs = lapidary_db::PgJobs(db.clone());
-    for library in libraries {
-        match jobs.enqueue_migration_if_absent(library).await {
-            Ok(Some(batch)) => tracing::info!(
-                %library,
-                %batch,
-                "queued a storage migration for a library upgraded from the old \
-                 content-addressed store"
-            ),
-            // Already pending, already running, or a concurrent caller won the race --
-            // all three are the guard doing its job, not something worth a log line.
-            Ok(None) => {}
-            Err(error) => tracing::warn!(
-                %library,
-                %error,
-                "could not queue a storage migration for this library; it will be \
-                 retried on the next restart"
-            ),
-        }
-    }
-}
-
 /// Spawns the job worker that drains what `/scan`, uploads and imports enqueue, and the hourly
 /// quarantine sweep beside it.
 ///
@@ -200,6 +160,7 @@ fn spawn_worker(
     db: lapidary_db::PgPool,
     config: &Config,
     ingest_dir: PathBuf,
+    inbox_dir: PathBuf,
     blob_root: PathBuf,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
@@ -233,6 +194,7 @@ fn spawn_worker(
     let handler = std::sync::Arc::new(lapidary_ingest::WorkerHandler {
         db: db.clone(),
         ingest_dir,
+        inbox_dir,
         blob_root: blob_root.clone(),
         pause: None,
         sites: lapidary_sites::Sites::public(),
@@ -377,6 +339,21 @@ async fn main() -> Result<()> {
                 .clone()
                 .context("Could not start: LAPIDARY_UPLOAD_DIR is not set. It names where an upload waits until its bytes are checked.")?;
 
+        let inbox_dir = config
+                .inbox_dir
+                .clone()
+                .context("Could not start: LAPIDARY_INBOX_DIR is not set. It names the folder Lapidary writes uploads and link imports into before indexing them; keep it outside the folders you scan.")?;
+        refuse_inbox_inside(&inbox_dir, &ingest_dir)?;
+        // And on the host: inside the containers the two are `/inbox` and `/ingest`, which never nest,
+        // while the folders they are mounted from can. Both host paths come from the same `.env`.
+        if let (Some(host_inbox), Some(host_ingest)) =
+            (&config.host_inbox_root, &config.host_ingest_root)
+            && host_inbox.is_absolute()
+            && host_ingest.is_absolute()
+        {
+            refuse_inbox_inside(host_inbox, host_ingest)?;
+        }
+
         // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
         // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
         // never hold a connection a browser is waiting for.
@@ -384,16 +361,15 @@ async fn main() -> Result<()> {
             .await
             .context("Could not start: connecting the job worker to the database failed.")?;
         // Before the loop starts, so a first run has a populated grid by the time anyone
-        // opens it; and the migration check after the seed, so the two do not race for the
-        // same library on a first run.
+        // opens it.
         if let Some(examples) = &config.example_dir {
-            lapidary_ingest::seed_examples(jobs_db.clone(), &blob_root, examples).await;
+            lapidary_ingest::seed_examples(jobs_db.clone(), &blob_root, &inbox_dir, examples).await;
         }
-        enqueue_pending_migrations(&jobs_db).await;
         let worker = spawn_worker(
             jobs_db,
             &config,
-            ingest_dir,
+            ingest_dir.clone(),
+            inbox_dir.clone(),
             blob_root.clone(),
             shutdown.clone(),
         );
@@ -433,11 +409,11 @@ async fn main() -> Result<()> {
                 // Absolute or nothing — see the field's doc. A relative path here is
                 // compose's unset default rather than an operator's choice, and showing it as
                 // though it were one is the mistake this guards.
-                host_storage_root: config
-                    .host_storage_root
-                    .as_ref()
-                    .filter(|path| path.is_absolute())
-                    .map(|path| path.display().to_string()),
+                host_storage_root: absolute(config.host_storage_root.as_ref()),
+                host_ingest_root: absolute(config.host_ingest_root.as_ref()),
+                host_inbox_root: absolute(config.host_inbox_root.as_ref()),
+                ingest_dir,
+                inbox_dir,
             },
             Role::Api,
         )
@@ -491,6 +467,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// A host path to show, absolute or nothing — see `Config::host_storage_root`. A relative path is
+/// compose's unset default rather than an operator's choice.
+fn absolute(path: Option<&PathBuf>) -> Option<String> {
+    path.filter(|path| path.is_absolute())
+        .map(|path| path.display().to_string())
+}
+
+/// The inbox is written to; the owner's folders never are (M4). An inbox inside them would make
+/// every upload a write into a folder the owner keeps, so the server does not start. Compared
+/// after resolving both, so a symlink or a `..` cannot hide it; a path that does not exist yet is
+/// compared as written.
+fn refuse_inbox_inside(inbox: &std::path::Path, ingest: &std::path::Path) -> Result<()> {
+    let resolve =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let (inbox_at, ingest_at) = (resolve(inbox), resolve(ingest));
+    if inbox_at.starts_with(&ingest_at) {
+        bail!(
+            "Could not start: LAPIDARY_INBOX_DIR ({}) is inside LAPIDARY_INGEST_DIR ({}). Lapidary \
+             never writes into the folders it scans, and the inbox is written to. Point the inbox \
+             at a folder outside them.",
+            inbox.display(),
+            ingest.display()
+        );
+    }
+    Ok(())
+}
+
 /// `LAPIDARY_ROLE` chose between the processes this server used to be split into. One process does
 /// everything now, so any value is a compose file from before.
 fn refuse_old_role(role: Option<&str>) -> Result<()> {
@@ -532,7 +535,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
-    use uuid::Uuid;
 
     const SEEDED_LIBRARY: &str = "01931b6e-0000-7000-8000-000000000001";
 
@@ -601,6 +603,10 @@ mod tests {
                 // stages an upload.
                 blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
                 host_storage_root: None,
+                host_ingest_root: None,
+                host_inbox_root: None,
+                ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+                inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
                 touches: Default::default(),
                 upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             },
@@ -636,91 +642,30 @@ mod tests {
         assert_eq!(absent.status(), StatusCode::NOT_FOUND);
     }
 
-    // `enqueue_pending_migrations`'s own wiring, proved end to end: the underlying
-    // enumeration and guard are `lapidary-db`'s own, thoroughly tested there, but
-    // nothing there proves this function actually calls them in the right order for a
-    // real library holding a real un-migrated file. This is a plain, sequential test —
-    // the guard's race-freedom is `lapidary-db`'s `two_workers_forced_to_start_together_
-    // still_enqueue_exactly_one_migration`, which forces a real concurrent collision;
-    // this only needs to show one call queues a job and a second does not duplicate it.
-    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-    async fn enqueue_pending_migrations_queues_exactly_one_job_for_a_library_with_un_migrated_files(
-        pool: sqlx::PgPool,
-    ) {
-        let library = Uuid::parse_str(SEEDED_LIBRARY).expect("seeded library id parses");
-        let hash = "a".repeat(64);
-        sqlx::query("INSERT INTO blob (blake3, size_bytes, stored_bytes) VALUES ($1, 10, 10)")
-            .bind(&hash)
-            .execute(&pool)
-            .await
-            .expect("blob inserts");
-        let part = Uuid::now_v7();
-        sqlx::query("INSERT INTO part (id, library_id, name, source_path) VALUES ($1, $2, $3, $3)")
-            .bind(part)
-            .bind(library)
-            .bind("bracket-lp-1042-05")
-            .execute(&pool)
-            .await
-            .expect("part inserts");
-        let revision = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO revision (id, part_id, rev_label, origin) VALUES ($1, $2, '1', 'ingest')",
-        )
-        .bind(revision)
-        .bind(part)
-        .execute(&pool)
-        .await
-        .expect("revision inserts");
-        sqlx::query(
-            "INSERT INTO file (id, revision_id, role, format, blake3, size_bytes) \
-             VALUES ($1, $2, 'source', 'stl', $3, 10)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(revision)
-        .bind(&hash)
-        .execute(&pool)
-        .await
-        .expect("file inserts with a null storage_path -- an old, un-migrated store");
-
-        enqueue_pending_migrations(&pool).await;
-
-        let jobs: Vec<(String, Uuid)> =
-            sqlx::query_as("SELECT kind, library_id FROM job WHERE kind = 'migrate_storage'")
-                .fetch_all(&pool)
-                .await
-                .expect("reads back");
-        assert_eq!(
-            jobs,
-            vec![("migrate_storage".to_owned(), library)],
-            "exactly one migration job, for the library the un-migrated file belongs to"
+    #[test]
+    fn an_inbox_inside_the_scanned_folders_does_not_start() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let ingest = root.path().join("ingest");
+        std::fs::create_dir_all(ingest.join("parts")).expect("mkdir");
+        let message = refuse_inbox_inside(&ingest.join("parts/inbox"), &ingest)
+            .expect_err("an inbox under the owner's folders is refused")
+            .to_string();
+        assert!(
+            message.contains("never writes into the folders it scans"),
+            "{message}"
         );
-
-        // Calling it again -- the next worker restart, say -- must not queue a
-        // duplicate: the guard underneath this wiring is what makes that true, and this
-        // is what proves the wiring actually reaches it.
-        enqueue_pending_migrations(&pool).await;
-        let total: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'migrate_storage'")
-                .fetch_one(&pool)
-                .await
-                .expect("counts");
-        assert_eq!(total, 1, "a second call must not queue a duplicate");
-    }
-
-    // The converse: a library with nothing un-migrated must not get a job at all. The
-    // seeded library has no parts of its own in a fresh migrated database, so this is
-    // the "nothing to do" case with no setup beyond the migrations themselves.
-    #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
-    async fn enqueue_pending_migrations_queues_nothing_for_a_library_with_nothing_to_migrate(
-        pool: sqlx::PgPool,
-    ) {
-        enqueue_pending_migrations(&pool).await;
-
-        let total: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM job WHERE kind = 'migrate_storage'")
-                .fetch_one(&pool)
-                .await
-                .expect("counts");
-        assert_eq!(total, 0, "nothing needs a migration, so nothing is queued");
+        refuse_inbox_inside(&ingest, &ingest).expect_err("the same folder is refused too");
+        refuse_inbox_inside(&root.path().join("inbox"), &ingest).expect("a sibling folder is fine");
+        // The host's folders, which need not exist where the server runs: compared as written.
+        refuse_inbox_inside(
+            std::path::Path::new("/srv/parts/inbox"),
+            std::path::Path::new("/srv/parts"),
+        )
+        .expect_err("an inbox inside the owner's folders on the host is refused too");
+        refuse_inbox_inside(
+            std::path::Path::new("/srv/lapidary-inbox"),
+            std::path::Path::new("/srv/parts"),
+        )
+        .expect("beside them is fine");
     }
 }

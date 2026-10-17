@@ -62,6 +62,8 @@ async fn filed(
             source_path,
             folder: None,
             storage_path: Some(stored),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &row(bytes),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
@@ -71,7 +73,9 @@ async fn filed(
         .expect("records")
 }
 
-/// The flange saved again through the agent, its files moved as the revision path moves them.
+/// The flange saved again, as a part from before M4 holds it: its first file was set aside under
+/// `revisions/1/` in Lapidary's store, and its row says so, so both revisions are still on disk.
+/// Since M4 nothing sets a file aside; this is the store layout those parts were left in.
 async fn revise(pool: &sqlx::PgPool, root: &Path, part: PartId, bytes: &[u8]) {
     let revisions = PgRevisions(pool.clone());
     let current = revisions
@@ -79,25 +83,31 @@ async fn revise(pool: &sqlx::PgPool, root: &Path, part: PartId, bytes: &[u8]) {
         .await
         .expect("reads")
         .expect("the part");
+    let path = current.storage_path.expect("a store path");
+    let (dir, name) = path.rsplit_once('/').expect("a directory");
+    let aside = format!("{dir}/revisions/1/{name}");
+    std::fs::create_dir_all(root.join(&aside).parent().expect("a folder")).expect("mkdir");
+    std::fs::rename(root.join(&path), root.join(&aside)).expect("set aside");
+    std::fs::write(root.join(&path), bytes).expect("the new file");
+    sqlx::query("UPDATE file SET storage_path = $2 WHERE storage_path = $1")
+        .bind(&path)
+        .bind(&aside)
+        .execute(pool)
+        .await
+        .expect("the row follows");
     revisions
-        .record_revision(
-            RevisionRequest {
-                part,
-                parent: current.revision,
-                origin: RevisionOrigin::Agent,
-                blob: &row(bytes),
-                measurements: &measurements(),
-                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                format: "stl",
-            },
-            |current, aside| {
-                let aside = root.join(aside);
-                std::fs::create_dir_all(aside.parent().expect("a folder"))
-                    .map_err(|e| e.to_string())?;
-                std::fs::rename(root.join(current), &aside).map_err(|e| e.to_string())?;
-                std::fs::write(root.join(current), bytes).map_err(|e| e.to_string())
-            },
-        )
+        .record_revision(RevisionRequest {
+            part,
+            parent: current.revision,
+            origin: RevisionOrigin::Agent,
+            root: lapidary_core::FileRoot::Store,
+            storage_path: &path,
+            mtime_ns: None,
+            blob: &row(bytes),
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
         .await
         .expect("revision 2");
 }
@@ -115,6 +125,10 @@ async fn post(
             blob_root: root.to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -455,7 +469,7 @@ async fn a_deleted_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
     );
 
     let jigs = PgParts(pool.clone())
-        .create_library("Workshop jigs")
+        .create_library("Workshop jigs", "")
         .await
         .expect("a second library");
     let clamp = PgIngest(pool.clone())
@@ -466,6 +480,8 @@ async fn a_deleted_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
             source_path: "clamps/toggle-clamp-lp-4120-01.stl",
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &row(b"solid toggle-clamp-lp-4120-01\n"),
             measurements: &measurements(),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,

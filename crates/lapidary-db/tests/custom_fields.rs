@@ -53,6 +53,8 @@ async fn part(pool: &sqlx::PgPool, name: &str, seed: u8) -> PartId {
             source_path: &source_path,
             folder: None,
             storage_path: Some(&storage_path),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             blob: &StoredBlobRow {
                 hash: BlobHash::from_bytes([seed; 32]),
                 size_bytes: 48_112,

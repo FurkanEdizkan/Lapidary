@@ -81,6 +81,7 @@ function card(suffix: string, name: string, path: string): PartCard {
     compressed: true,
     directory: null,
     storagePath: null,
+    fileRoot: 'store',
     createdAt: '2026-09-26T09:05:00Z',
     updatedAt: '2026-09-26T09:05:00Z',
     }
@@ -132,6 +133,8 @@ function valueFor(config: DrawnWidget): WidgetResult {
             sourceBytes: 8_388_608,
             derivativeBytes: 629_145,
             quarantinedBytes: 0,
+            hostIngestRoot: null,
+            hostInboxRoot: null,
             renderCacheBytes: 0,
             onDiskBytes: null,
             hostStorageRoot: null,
@@ -465,7 +468,7 @@ test('a widget can be taken off the page, and nothing else asks again', async ()
   const calls = stub(TWELVE)
   renderPage()
   const title = strings.dashboard.inLibrary(strings.dashboard.storageLabel, NAME)
-  await screen.findAllByText(/on disk/)
+  await screen.findAllByText(/in your folders/)
   const menu = await openMenu(strings.dashboard.widgetMenu(title))
   fireEvent.click(within(menu).getByRole('button', { name: strings.dashboard.removeWidget }))
   await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
@@ -748,7 +751,7 @@ test('a key is never reused, so a failed ask cannot leave the old widget on scre
   seed([{ ...(TWELVE[0] as StoredWidget), widget: { kind: 'storage', library: OTHER }, libraryName: OTHER_NAME }])
   const calls = stub(TWELVE)
   renderPage()
-  await screen.findAllByText(/on disk/)
+  await screen.findAllByText(/in your folders/)
 
   const title = strings.dashboard.inLibrary(strings.dashboard.storageLabel, OTHER_NAME)
   const menu = await openMenu(strings.dashboard.widgetMenu(title))
@@ -771,7 +774,7 @@ test('a key is never reused, so a failed ask cannot leave the old widget on scre
   // Still loading, which is true — and emphatically not the removed widget's figures, which under
   // a reused key would be another library's bytes carrying this one's name.
   screen.getByText(strings.dashboard.loading)
-  expect(screen.queryByText(/on disk/)).toBeNull()
+  expect(screen.queryByText(/in your folders/)).toBeNull()
   expect(calls.length).toBeGreaterThan(0)
 })
 

@@ -47,6 +47,10 @@ pub struct PartRevision {
     pub source_format: Option<String>,
     #[ts(type = "number | null")]
     pub source_bytes: Option<u64>,
+    /// False once a later revision's bytes replaced this one's file where it was (M4). Its
+    /// figures stay in the history; its download answers 410, and the page says "no longer on
+    /// disk" instead of offering one.
+    pub on_disk: bool,
 }
 
 /// A part that is not there — never existed, or deleted — answers the `404` its page does:
@@ -159,6 +163,6 @@ fn to_revision(row: RevisionRow) -> Result<PartRevision, DbError> {
                 })
             })
             .transpose()?,
-        // Filled in once the whole history is read: a parent is another row.
+        on_disk: row.on_disk,
     })
 }

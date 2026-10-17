@@ -8,24 +8,14 @@
 //!
 //! # Where the bytes land
 //!
-//! In the blob store, written from here. The alternative was a staging volume the worker
-//! also mounts, with `IngestFile` learning a second root to join against; that buys a
-//! mount, a payload discriminator and the failure mode of the worker opening a file the
-//! api has not finished writing, in order to move bytes this process is already sitting
-//! on. `deploy/compose.yaml` mounts the blob volume here read-write already, and says in
-//! a comment that this is deliberate — the open-path boundary is a type, not a mount
-//! flag.
+//! In the inbox, once (M4): `uploads/<the path the browser reported>`, or `name (2).stl` beside
+//! it when a file is already there — an upload never replaces a file an earlier one wrote. The
+//! worker then indexes it from there with `JobPayload::IngestInbox`, exactly as a scan indexes a
+//! file in the owner's folders. Nothing goes into Lapidary's store and nothing is copied twice.
+//! The only other file-shaped state is the partial upload, in `upload_dir`.
 //!
-//! So this route writes the blob and enqueues `JobPayload::IngestBlob`, and the worker
-//! reads it back with the full source handle it holds anyway (naming that type here,
-//! even in a comment, is what `check-deploy` refuses). The only file-shaped state here
-//! is the partial upload, which lives in `upload_dir` and never in the blob store.
-//!
-//! This is the one file in `lapidary-api` allowed to name `SourceWriter`, enforced by
-//! `cargo xtask check-deploy` exactly as `download.rs` is the only one allowed to name
-//! the matching read handle. (Naming that type here, even in this sentence, is what
-//! the check would refuse — it greps source text, deliberately.) See
-//! `lapidary_storage`'s module doc and the slice 6a design §4.1.
+//! An imported bundle is the exception, and on purpose: it is Lapidary's own export, not a part,
+//! so it is kept in the store under its hash until its job has unpacked it into the inbox.
 //!
 //! # The session is the file
 //!
@@ -56,7 +46,7 @@ use lapidary_core::{
     source_format,
 };
 use lapidary_db::{PgBlobs, PgParts, StoredBlobRow};
-use lapidary_storage::{Compression, SourceWriter};
+use lapidary_storage::{DerivativeStore, InboxWriter, StorageError};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use ts_rs::TS;
@@ -101,13 +91,12 @@ pub struct UploadManifest {
     pub files: Vec<UploadFile>,
 }
 
-/// What the client has to do, per file, sorted into three answers.
+/// What the client has to do, per file, sorted into two answers (`DATA.md` §5.2).
 ///
-/// `DATA.md` describes two lists. The third is where the larger win is: `have` only
-/// catches a re-import into the *same* library at the *same* path, while `needRows`
-/// catches every file whose bytes are already in the store for any reason — a second
-/// library, a moved file, the same model downloaded twice — and skips its transfer
-/// entirely.
+/// There was a third, `needRows`, for bytes already in the store under another library or
+/// path: their transfer was skipped and the worker read the stored copy. Since M4 there is no
+/// stored copy to read — a file is wherever its owner keeps it — so every file a library does
+/// not already hold is sent.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -115,9 +104,6 @@ pub struct UploadPlan {
     /// This library already indexes these bytes at this path. Nothing to send, nothing
     /// to commit.
     pub have: Vec<String>,
-    /// The bytes are in the store; only the rows are missing. Commit without
-    /// transferring.
-    pub need_rows: Vec<String>,
     /// Send these.
     pub need_bytes: Vec<String>,
 }
@@ -219,27 +205,13 @@ pub async fn probe(
         Ok(held) => held,
         Err(err) => return internal_error(&err, "upload probe failed"),
     };
-    let hashes: Vec<BlobHash> = manifest
-        .files
-        .iter()
-        .zip(&held)
-        .filter(|(_, held)| !**held)
-        .map(|(file, _)| file.blake3)
-        .collect();
-    let stored = match blobs.existing(&hashes).await {
-        Ok(stored) => stored,
-        Err(err) => return internal_error(&err, "upload probe failed"),
-    };
     let mut plan = UploadPlan {
         have: Vec::new(),
-        need_rows: Vec::new(),
         need_bytes: Vec::new(),
     };
     for (file, held) in manifest.files.into_iter().zip(held) {
         if held {
             plan.have.push(file.path);
-        } else if stored.contains(&file.blake3) {
-            plan.need_rows.push(file.path);
         } else {
             plan.need_bytes.push(file.path);
         }
@@ -442,86 +414,159 @@ pub async fn commit(
         return refusal;
     }
 
-    let hashes: Vec<BlobHash> = manifest.files.iter().map(|file| file.blake3).collect();
-    // Bytes some library already holds need nothing verified and nothing written: the store is
-    // content-addressed, so the bytes at that hash are already the bytes a file names.
-    let mut stored = match PgBlobs(state.db.clone()).existing(&hashes).await {
-        Ok(stored) => stored,
-        Err(err) => return internal_error(&err, "upload commit failed"),
+    let jobs = match place_all(&state, library, &manifest.files).await {
+        Ok(jobs) => jobs,
+        Err(response) => return response,
     };
-    let mut jobs = Vec::with_capacity(manifest.files.len());
-    let mut storing = Vec::new();
-    for file in &manifest.files {
-        // Each set of bytes the store lacks, once: two files with the same bytes stage one file, and
-        // storing it twice at once would race over it.
-        if stored.insert(file.blake3) {
-            storing.push(file.clone());
-        }
-        jobs.push(JobPayload::IngestBlob {
-            blake3: file.blake3,
-            source_path: file.path.clone(),
-        });
-    }
-    if let Err(response) = store_all(&state, library, storing).await {
-        return response;
-    }
     accept(state.db, library, &jobs).await
 }
 
-/// Every staged file the store lacks, verified and stored as many at a time as there are cores, less one.
-/// Hashing and compressing are the commit's cost and take a core each, a drop's files are independent of
-/// each other, and the core left over is for the rest of what this process serves. Under compose's one-CPU
-/// api, `available_parallelism` is 1 and a commit stores one file at a time.
+/// Every file of a commit into the inbox, a few at a time, and the job that indexes each one.
 ///
-/// The first refusal is the answer, and no file is started after it. Files already stored stay, as
-/// unreferenced blobs the reaper collects, as they did when a commit was refused partway.
-async fn store_all(
+/// Grouped by hash: two paths with the same bytes share one staged file, which goes only once
+/// both are placed. A file the browser did not send — its staged file is missing — refuses the
+/// whole commit before anything is placed or queued.
+async fn place_all(
     state: &AppState,
     library: LibraryId,
-    files: Vec<UploadFile>,
-) -> Result<(), Response> {
+    files: &[UploadFile],
+) -> Result<Vec<JobPayload>, Response> {
+    let mut by_hash: Vec<(BlobHash, Vec<String>)> = Vec::new();
+    for file in files {
+        match by_hash.iter_mut().find(|(hash, _)| *hash == file.blake3) {
+            Some((_, paths)) => paths.push(file.path.clone()),
+            None => by_hash.push((file.blake3, vec![file.path.clone()])),
+        }
+    }
+    // Every file sent before any is placed, so a commit missing one places nothing and a retry
+    // does not leave a second copy of the others beside the first.
+    if let Some((_, paths)) = by_hash
+        .iter()
+        .find(|(hash, _)| !staged_path(&state.upload_dir, library, hash).exists())
+    {
+        return Err(not_sent(&paths[0]));
+    }
+    // As many at a time as there are cores, less one: hashing the copy is a commit's cost.
     let at_once = std::thread::available_parallelism()
         .map_or(1, |cores| cores.get().saturating_sub(1).max(1));
     let mut running = tokio::task::JoinSet::new();
+    let mut placed: Vec<(String, String)> = Vec::new();
     let mut refused = None;
-    for file in files {
+    for (hash, paths) in by_hash {
         while running.len() >= at_once {
-            if let Some(response) = running.join_next().await.and_then(refusal_of) {
-                refused.get_or_insert(response);
+            if let Some(result) = running.join_next().await {
+                collect(result, &mut placed, &mut refused);
             }
         }
         if refused.is_some() {
             break;
         }
-        let state = state.clone();
-        running.spawn(async move { store_staged(&state, library, &file).await });
+        let staged = staged_path(&state.upload_dir, library, &hash);
+        let inbox = state.inbox_dir.clone();
+        running.spawn_blocking(move || place_staged(&inbox, &staged, &hash, &paths));
     }
     while let Some(result) = running.join_next().await {
-        if let Some(response) = refusal_of(result) {
-            refused.get_or_insert(response);
-        }
+        collect(result, &mut placed, &mut refused);
     }
-    refused.map_or(Ok(()), Err)
+    if let Some(response) = refused {
+        return Err(response);
+    }
+    // In the order the browser listed them, so the batch's jobs read as the drop did.
+    Ok(files
+        .iter()
+        .filter_map(|file| {
+            placed
+                .iter()
+                .position(|(source_path, _)| *source_path == file.path)
+                .map(|at| placed.remove(at))
+        })
+        .map(|(source_path, path)| JobPayload::IngestInbox { path, source_path })
+        .collect())
 }
 
-/// One store's refusal, if it made one, with a store that panicked answered as the server's own failure.
-fn refusal_of(result: Result<Result<(), Response>, tokio::task::JoinError>) -> Option<Response> {
+type Placements = Result<Vec<(String, String)>, Box<Response>>;
+
+fn collect(
+    result: Result<Placements, tokio::task::JoinError>,
+    placed: &mut Vec<(String, String)>,
+    refused: &mut Option<Response>,
+) {
     match result {
-        Ok(Ok(())) => None,
-        Ok(Err(response)) => Some(response),
+        Ok(Ok(more)) => placed.extend(more),
+        Ok(Err(response)) => {
+            refused.get_or_insert(*response);
+        }
         Err(error) => {
-            tracing::error!(%error, "storing an uploaded file stopped");
-            Some(
+            tracing::error!(%error, "placing an uploaded file stopped");
+            refused.get_or_insert(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
-                        "message": "Storing an uploaded file stopped unexpectedly. Commit the upload again; the server log has the cause."
+                        "message": "Placing an uploaded file stopped unexpectedly. Commit the upload again; the server log has the cause."
                     })),
                 )
                     .into_response(),
-            )
+            );
         }
     }
+}
+
+/// One staged file into the inbox at each of `paths` — `uploads/<path>`, or the next free name
+/// beside it — verified against `hash` on the way, then the staged file removed. Answers each
+/// `(source path, inbox path)`.
+fn place_staged(
+    inbox: &std::path::Path,
+    staged: &std::path::Path,
+    hash: &BlobHash,
+    paths: &[String],
+) -> Placements {
+    if !staged.exists() {
+        return Err(Box::new(not_sent(&paths[0])));
+    }
+    let writer = InboxWriter::open(inbox);
+    let mut placed = Vec::with_capacity(paths.len());
+    for path in paths {
+        match writer.put_new_file(&format!("uploads/{path}"), staged, hash) {
+            Ok(at) => placed.push((path.clone(), at.path)),
+            // The staged bytes are not the file the browser hashed: they go, so the retry
+            // sends them again.
+            Err(err @ StorageError::HashMismatch { .. }) => {
+                let _ = std::fs::remove_file(staged);
+                return Err(Box::new(bad_request(err.to_string())));
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "could not place an uploaded file in the inbox");
+                return Err(Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "message": err.to_string() })),
+                    )
+                        .into_response(),
+                ));
+            }
+        }
+    }
+    if let Err(err) = std::fs::remove_file(staged) {
+        tracing::warn!(
+            path = %staged.display(),
+            error = %err,
+            "failed to remove a staged upload after placing it; it is now wasted disk"
+        );
+    }
+    Ok(placed)
+}
+
+fn not_sent(path: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "message": format!(
+                "The bytes for {path:?} have not been uploaded yet. Send the file's \
+                 chunks before committing it."
+            )
+        })),
+    )
+        .into_response()
 }
 
 /// `POST /api/libraries/{id}/imports`'s body: a bundle already sent through the chunked upload.
@@ -561,7 +606,7 @@ pub async fn import_bundle(
     // Always from this library's own staged upload, never from bytes the store already holds:
     // content addressing is not authorization, and a bundle's hash alone must not import another
     // library's export here.
-    if let Err(response) = store_staged(&state, library, &file).await {
+    if let Err(response) = store_bundle(&state, library, &file).await {
         return response;
     }
     accept(
@@ -575,7 +620,7 @@ pub async fn import_bundle(
     .await
 }
 
-/// Move one staged file into the blob store, and record it.
+/// Move a staged bundle into Lapidary's store, and record it.
 ///
 /// The `blob` row is the point of the second half. Between this commit and the worker's
 /// job there are bytes on disk that no `part` references, and if that job fails
@@ -588,40 +633,28 @@ pub async fn import_bundle(
 /// filesystem write cannot be rolled back by Postgres, so the bytes must be there before
 /// anything is allowed to point at them. If the row fails the staged file is left alone,
 /// so the client can commit again rather than re-transfer.
-async fn store_staged(
+async fn store_bundle(
     state: &AppState,
     library: LibraryId,
     file: &UploadFile,
 ) -> Result<(), Response> {
     let staged = staged_path(&state.upload_dir, library, &file.blake3);
     if !staged.exists() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "message": format!(
-                    "The bytes for {:?} have not been uploaded yet. Send the file's \
-                     chunks before committing it.",
-                    file.path
-                )
-            })),
-        )
-            .into_response());
+        return Err(not_sent(&file.path));
     }
 
-    let compression = Compression::for_source_format(&source_format(&file.path));
-    // Hashing and compressing block, so they run on the blocking pool instead of holding one of the
-    // runtime's threads for the length of the file.
+    // Hashing blocks, so it runs on the blocking pool instead of holding one of the runtime's
+    // threads for the length of the file.
     let (root, path, expect) = (state.blob_root.clone(), staged.clone(), file.blake3);
-    let put = tokio::task::spawn_blocking(move || {
-        SourceWriter::open(&root).put_file(&path, &expect, compression)
-    })
-    .await
-    .unwrap_or_else(|error| {
-        Err(lapidary_storage::StorageError::Io {
-            path: staged.display().to_string(),
-            source: std::io::Error::other(error),
-        })
-    });
+    let put =
+        tokio::task::spawn_blocking(move || DerivativeStore::open(&root).put_file(&path, &expect))
+            .await
+            .unwrap_or_else(|error| {
+                Err(StorageError::Io {
+                    path: staged.display().to_string(),
+                    source: std::io::Error::other(error),
+                })
+            });
     let stored = match put {
         Ok(stored) => stored,
         Err(err) => {
@@ -632,7 +665,7 @@ async fn store_staged(
             // never verify.
             let _ = std::fs::remove_file(&staged);
             return Err(match err {
-                lapidary_storage::StorageError::HashMismatch { .. } => bad_request(err.to_string()),
+                StorageError::HashMismatch { .. } => bad_request(err.to_string()),
                 other => {
                     tracing::error!(error = %other, "could not store an uploaded blob");
                     (

@@ -17,6 +17,10 @@ fn app(pool: sqlx::PgPool) -> axum::Router {
             blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -156,7 +160,7 @@ async fn a_taken_name_conflicts_and_an_unknown_library_is_not_found(pool: sqlx::
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_category_from_another_library_is_not_kept(pool: sqlx::PgPool) {
     let workshop = PgParts(pool.clone())
-        .create_library("Workshop fixtures")
+        .create_library("Workshop fixtures", "")
         .await
         .expect("a second library");
     let jigs = PgFolders(pool.clone())

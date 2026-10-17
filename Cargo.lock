@@ -1187,6 +1187,7 @@ dependencies = [
  "ts-rs",
  "url",
  "zip",
+ "zstd",
 ]
 
 [[package]]

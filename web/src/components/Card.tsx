@@ -92,7 +92,6 @@ export function pictureStyle(image: PartImage | null): CSSProperties {
 
 export function Card({
   part,
-  hostRoot,
   layout,
   selecting,
   selected,
@@ -101,7 +100,6 @@ export function Card({
   onLook,
 }: {
   part: PartCard
-  hostRoot: string | null
   layout: Layout
   selecting: boolean
   selected: boolean
@@ -112,12 +110,6 @@ export function Card({
 }) {
   const nameId = `part-name-${part.id}`
   const well = useRef<HTMLDivElement>(null)
-  const directory = part.directory
-  // A model still in the shared store has no directory to rename, and the move route
-  // refuses it. The card withholds the move rather than letting the user discover that
-  // from a `409` — the same status the route uses for a name collision, which the UI
-  // would otherwise present as one.
-  const movable = directory !== null
   // Where the name can be clamped (a line in the gallery, two in the detail grid); a list row
   // has room for the whole name and a tooltip repeating it is noise. Decided here rather than
   // in the attribute, because a literal inside a user-visible attribute reads to the
@@ -162,7 +154,7 @@ export function Card({
         const render = event.currentTarget.querySelector('img')
         onOpen(part, render === null ? DEFAULT_ORIGIN : render.getBoundingClientRect())
       }}
-      draggable={movable}
+      draggable
       onDragStart={(event) =>
         event.dataTransfer.setData(
           PART_DRAG_TYPE,

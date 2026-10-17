@@ -17,7 +17,9 @@
  */
 export type InstanceStorageView = { 
 /**
- * Every live model file across every library. One file per model, no deduplication.
+ * Source files in Lapidary's own store: parts indexed before M4, whose files stayed where
+ * they were. A file in the owner's folders or the inbox is not on this volume and is not
+ * counted here.
  */
 sourceBytes: number, 
 /**
@@ -63,4 +65,14 @@ onDiskBytes: number | null,
  * machine the user is sitting at. Reporting it would be worse than reporting nothing:
  * they would paste it into a file manager and find no such directory.
  */
-hostStorageRoot: string | null, };
+hostStorageRoot: string | null, 
+/**
+ * Where the owner's folders (the ingest mount) are on the host, when the deployment has
+ * said — `LAPIDARY_HOST_INGEST_ROOT`. What a `library` file's path is joined to.
+ */
+hostIngestRoot: string | null, 
+/**
+ * Where Lapidary's inbox is on the host — `LAPIDARY_HOST_INBOX_ROOT`. What an `inbox`
+ * file's path is joined to.
+ */
+hostInboxRoot: string | null, };

@@ -70,6 +70,8 @@ async fn seed_reachable_export(pool: &sqlx::PgPool, root: &std::path::Path) -> B
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: None,
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -171,6 +173,8 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
             origin: lapidary_core::RevisionOrigin::Ingest,
             folder: None,
             storage_path: Some("libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl"),
+            root: lapidary_core::FileRoot::Store,
+            mtime_ns: None,
             library: library(),
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
@@ -198,23 +202,23 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
         .put(b"pretend-this-is-the-wider-bracket")
         .expect("stores the newer export");
     revisions
-        .record_revision(
-            lapidary_db::RevisionRequest {
-                part: current.part,
-                parent: current.revision,
-                origin: lapidary_core::RevisionOrigin::Agent,
-                blob: &StoredBlobRow {
-                    hash: BlobHash::from_bytes([0xb2; 32]),
-                    size_bytes: 214_016,
-                    stored_bytes: 214_016,
-                    zstd_level: 0,
-                },
-                measurements: &measurements(),
-                provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
-                format: "stl",
+        .record_revision(lapidary_db::RevisionRequest {
+            part: current.part,
+            parent: current.revision,
+            origin: lapidary_core::RevisionOrigin::Agent,
+            root: lapidary_core::FileRoot::Store,
+            storage_path: "libraries/default/bracket-lp-1042-03/bracket-lp-1042-03.stl",
+            mtime_ns: None,
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes([0xb2; 32]),
+                size_bytes: 214_016,
+                stored_bytes: 214_016,
+                zstd_level: 0,
             },
-            |_, _| Ok(()),
-        )
+            measurements: &measurements(),
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
         .await
         .expect("revision 2");
     file_export(&pool, part, &newer).await;
@@ -224,6 +228,10 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -244,6 +252,10 @@ async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sq
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -278,6 +290,10 @@ async fn a_blob_on_disk_that_no_derivative_references_is_not_found(pool: sqlx::P
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Api,
@@ -303,6 +319,10 @@ async fn an_unknown_hash_is_not_found_with_the_same_body(pool: sqlx::PgPool) {
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
 
@@ -328,6 +348,10 @@ async fn the_worker_role_does_not_serve_blobs(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: Default::default(),
         },
         Role::Worker,
@@ -351,6 +375,10 @@ async fn serving_a_blob_records_when_it_was_last_read(pool: sqlx::PgPool) {
             blob_root: root.path().to_path_buf(),
             upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
             host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
             touches: touches.clone(),
         },
         Role::Api,
@@ -392,6 +420,10 @@ async fn reading_a_blob_again_the_same_day_does_not_write_it_again(pool: sqlx::P
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: touches.clone(),
     };
 
@@ -422,6 +454,10 @@ async fn a_blob_that_is_not_served_is_not_recorded_as_read(pool: sqlx::PgPool) {
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: touches.clone(),
     };
 
@@ -467,6 +503,10 @@ async fn a_head_request_warms_last_accessed_at_the_way_a_get_does(pool: sqlx::Pg
         blob_root: root.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: touches.clone(),
     };
     assert_eq!(last_read_us(&touches, &pool, &hash).await, None);
@@ -518,6 +558,10 @@ async fn a_missing_export_is_queued_for_rebuilding_and_says_so(pool: sqlx::PgPoo
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
 
@@ -591,6 +635,10 @@ async fn a_missing_rung_is_not_promised_a_rebuild_and_queues_nothing(pool: sqlx:
         blob_root: served.path().to_path_buf(),
         upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
         host_storage_root: None,
+        ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+        inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+        host_ingest_root: None,
+        host_inbox_root: None,
         touches: Default::default(),
     };
 

@@ -107,37 +107,18 @@ pub struct PartCard {
     /// and holding that hash is not authorization, because `blob.rs` checks reachability
     /// before it serves anything.
     pub image: Option<crate::images::PartImage>,
-    /// The model's own directory in the store, relative to the storage root:
-    /// `libraries/default/Terrain/rock`. Shown, never opened — no browser can navigate a
-    /// `file://` URL from a page, and the api runs in a container where an absolute path
-    /// would name a filesystem the user is not looking at. The Tauri shell is what will
-    /// eventually have a host to ask.
-    ///
-    /// Kept beside `storagePath` below rather than derived from it, because the two answer
-    /// different questions and one of them is a *move* target: this is what the move route
-    /// renames, and what the card offers to move. Deriving it in the client would put a
-    /// second definition of "the parent of a model file" in TypeScript, next to
-    /// `model_directory`'s in Rust.
-    ///
-    /// `None` is a real state and not a missing value — the part predates the folder layout
-    /// and its bytes are still content-addressed, so it has no directory to show and cannot
-    /// be moved until `migrate_storage` reaches it. The card says so rather than offering a
-    /// move that the route would refuse.
+    /// The directory holding the part's file, relative to its root: the parent of
+    /// `storagePath`. Shown, never opened, and never a move target — since M4 a move renames
+    /// nothing.
     pub directory: Option<String>,
-    /// The model's file, path and all: `libraries/default/Terrain/rock/rock.stl`.
-    ///
-    /// The `directory` above with the filename back on, and the client cannot reconstruct
-    /// it: `model_dir_for` disambiguates a colliding model name — the second `cliff` becomes
-    /// `cliff_a1b2c3` — so a path joined from a part's name would be confidently wrong
-    /// exactly where a person is most likely to be looking for it.
-    ///
-    /// Shown, never opened. No browser navigates a `file://` URL from a page, so this is
-    /// selectable text; and prefixed with `InstanceStorageView::host_storage_root` when the
-    /// deployment has said where the store is, which is what makes it a path somebody can
-    /// paste into a file manager rather than one they have to work out.
-    ///
-    /// `None` alongside `directory`, and for the same reason.
+    /// The part's file, relative to the directory `fileRoot` names: for a file in the owner's
+    /// folders, its path under the ingest mount. Shown as selectable text, prefixed with the
+    /// matching host root from `InstanceStorageView` when the deployment has said where it is.
+    /// `None` for a part from before the folder tree whose bytes are content-addressed.
     pub storage_path: Option<String>,
+    /// Which directory `storagePath` is relative to: the owner's folders, Lapidary's inbox, or
+    /// its store (a part indexed before M4).
+    pub file_root: Option<lapidary_core::FileRoot>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -662,7 +643,9 @@ pub(crate) fn library_storage(totals: lapidary_db::StorageTotals) -> LibraryStor
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceStorageView {
-    /// Every live model file across every library. One file per model, no deduplication.
+    /// Source files in Lapidary's own store: parts indexed before M4, whose files stayed where
+    /// they were. A file in the owner's folders or the inbox is not on this volume and is not
+    /// counted here.
     #[ts(type = "number")]
     pub source_bytes: u64,
     /// What Lapidary wrote **on the storage volume** — the slicer exports — each blob counted
@@ -703,6 +686,12 @@ pub struct InstanceStorageView {
     /// machine the user is sitting at. Reporting it would be worse than reporting nothing:
     /// they would paste it into a file manager and find no such directory.
     pub host_storage_root: Option<String>,
+    /// Where the owner's folders (the ingest mount) are on the host, when the deployment has
+    /// said — `LAPIDARY_HOST_INGEST_ROOT`. What a `library` file's path is joined to.
+    pub host_ingest_root: Option<String>,
+    /// Where Lapidary's inbox is on the host — `LAPIDARY_HOST_INBOX_ROOT`. What an `inbox`
+    /// file's path is joined to.
+    pub host_inbox_root: Option<String>,
 }
 
 /// `GET /api/storage` — the instance total, and where the store is.
@@ -721,7 +710,7 @@ pub async fn instance_storage(
             "could not record recent reads; the render cache figure may count parts opened in the last five minutes"
         );
     }
-    let totals = match PgParts(state.db).instance_storage().await {
+    let totals = match PgParts(state.db.clone()).instance_storage().await {
         Ok(totals) => totals,
         Err(err) => return internal_error(&err, "instance storage query failed"),
     };
@@ -742,12 +731,7 @@ pub async fn instance_storage(
         })
     });
 
-    Json(instance_storage_view(
-        totals,
-        on_disk.flatten(),
-        state.host_storage_root.clone(),
-    ))
-    .into_response()
+    Json(instance_storage_view(totals, on_disk.flatten(), &state)).into_response()
 }
 
 /// The instance figures as the wire carries them, for this route and the dashboard's `instanceStorage`
@@ -756,7 +740,7 @@ pub async fn instance_storage(
 pub(crate) fn instance_storage_view(
     totals: lapidary_db::InstanceStorage,
     on_disk: Option<u64>,
-    host_storage_root: Option<String>,
+    state: &AppState,
 ) -> InstanceStorageView {
     InstanceStorageView {
         source_bytes: totals.source_bytes,
@@ -764,7 +748,9 @@ pub(crate) fn instance_storage_view(
         quarantined_bytes: totals.quarantined_bytes,
         render_cache_bytes: totals.render_cache_bytes,
         on_disk_bytes: on_disk,
-        host_storage_root,
+        host_storage_root: state.host_storage_root.clone(),
+        host_ingest_root: state.host_ingest_root.clone(),
+        host_inbox_root: state.host_inbox_root.clone(),
     }
 }
 
@@ -907,6 +893,7 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         image: row.image.map(crate::images::part_image),
         directory: row.directory,
         storage_path: row.storage_path,
+        file_root: row.root,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }

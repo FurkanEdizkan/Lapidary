@@ -25,8 +25,8 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "lapidary-core" => Layer::L0,
         "lapidary-db" | "lapidary-storage" => Layer::L1,
         "lapidary-cad" | "lapidary-jobs" | "lapidary-targets" | "lapidary-sites" => Layer::L2,
-        // lapidary-ingest is the one crate allowed to depend on lapidary-cad and hold a
-        // SourceStore (see its module doc, and FORBIDDEN_PAIRS below) — that is why it
+        // lapidary-ingest is the one crate allowed to depend on lapidary-cad (see its
+        // module doc, and FORBIDDEN_PAIRS below) — that is why it
         // exists as its own crate rather than a module inside lapidary-api.
         "lapidary-api" | "lapidary-ingest" => Layer::L3,
         "lapidary-server" | "xtask" => Layer::Bin,
@@ -434,7 +434,8 @@ mod tests {
     #[test]
     fn allows_ingest_depending_on_cad_and_storage() {
         // The whole reason lapidary-ingest exists: it is the crate allowed to depend on
-        // lapidary-cad (for parse and measure) and lapidary-storage (for SourceStore).
+        // lapidary-cad (for parse and measure) and lapidary-storage (to read files and
+        // write into the inbox).
         // FORBIDDEN_PAIRS names no prohibition for lapidary-ingest, so this is an
         // ordinary, permitted L3->L2 edge — same shape as the lapidary-api rejection
         // above, opposite crate.

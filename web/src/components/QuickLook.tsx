@@ -4,7 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { downloadUrl, fetchPartDetail } from '../lib/api'
 import { flipFrom } from '../lib/flip'
 import { Dialog } from './Dialog'
-import { ShowInFolder } from './ShowInFolder'
+import { ShowInFolder, type HostRoots } from './ShowInFolder'
 import { Detail, Preview } from './PartDetail'
 import { Figure } from './Figure'
 import { strings } from '../lib/strings'
@@ -115,7 +115,7 @@ function QuickLookPane({
 export function QuickLook({
   part,
   from,
-  hostRoot,
+  hostRoots,
   onMove,
   onClose,
   pane,
@@ -123,9 +123,8 @@ export function QuickLook({
   part: PartCard
   /** Where this part's render sat on the grid when it was clicked. */
   from: DOMRect
-  hostRoot: string | null
-  /** `null` for a model still in the shared store, which has no directory to rename. */
-  onMove: (() => void) | null
+  hostRoots: HostRoots
+  onMove: () => void
   onClose: () => void
   /** Beside the grid on a wide screen; over it, in a dialog, otherwise. */
   pane: boolean
@@ -169,26 +168,20 @@ export function QuickLook({
           */
           actions={
             <>
-              {onMove === null ? (
-                <span className="text-xs text-[var(--color-muted)]">
-                  {strings.folders.notMigrated}
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onMove}
-                  aria-label={strings.folders.moveToFor(part.name)}
-                  className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
-                >
-                  {strings.folders.moveTo}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={onMove}
+                aria-label={strings.folders.moveToFor(part.name)}
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+              >
+                {strings.folders.moveTo}
+              </button>
             </>
           }
         />
       )}
       </div>
-      <ShowInFolder part={part} hostRoot={hostRoot} />
+      <ShowInFolder part={part} hostRoots={hostRoots} />
       <div className="mt-4 flex justify-end gap-2">
         <Link
           to="/parts/$partId"

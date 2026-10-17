@@ -76,7 +76,9 @@ boundaries. Modular monolith.
 crates/
 ├── lapidary-core/        L0  domain types, errors, ts-rs exports. Depends on nothing.
 ├── lapidary-db/          L1  sqlx, migrations, repository traits. ALL SQL lives here.
-├── lapidary-storage/     L1  blob CAS, object_store, zstd, tiering, quarantine
+├── lapidary-storage/     L1  the three roots (your folders read-only, the inbox, the
+│                                     store's CAS), quarantine. LibraryReader is the only
+│                                     handle onto your folders and cannot write (M4)
 ├── lapidary-cad/         L2  mesh parsers (stl, obj, 3mf), measurement, the two export writers
 ├── lapidary-jobs/        L2  Postgres queue, leases, heartbeats, SSE progress
 ├── lapidary-index/       L2  metadata extraction, tsvector + trigram search, facets
@@ -84,14 +86,14 @@ crates/
 ├── lapidary-targets/     L2  Target trait, format negotiation, export bundles
 ├── lapidary-api/         L3          axum Router: the open path (grid, health) and the
 │                                     download. Depends on the L2 crates it uses — never
-│                                     lapidary-cad, and never lapidary-storage's
-│                                     SourceStore. It may name SourceReader, the
-│                                     read-only source handle, in download.rs and nowhere
-│                                     else; `cargo xtask check-deploy` enforces both
-│                                     halves. A LIBRARY.
+│                                     lapidary-cad. It may name InboxWriter, the one
+│                                     handle that writes a source file, in upload.rs and
+│                                     nowhere else; `cargo xtask check-deploy` enforces
+│                                     that and the read-only ingest mount. A LIBRARY.
 └── lapidary-ingest/      L3          axum Router: the worker-only scan route. The one
-│                                     crate allowed to depend on lapidary-cad and to hold
-│                                     a SourceStore — see its module doc for why this is a
+│                                     crate allowed to depend on lapidary-cad — it reads
+│                                     each file where it is and writes none — see its
+│                                     module doc for why this is a
 │                                     separate crate from lapidary-api rather than a role
 │                                     check inside it. It is also where a STEP or IGES file
 │                                     is refused by name, since `is_model_file` still admits

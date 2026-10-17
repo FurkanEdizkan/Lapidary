@@ -34,6 +34,7 @@ const BASALT: PartCard = {
   compressed: true,
   directory: 'libraries/default/Terrain/Rocks',
   storagePath: 'libraries/default/Terrain/Rocks/basalt-cliff-face.stl',
+  fileRoot: 'store',
   createdAt: '2026-09-02T09:14:00Z',
   updatedAt: '2026-09-02T09:14:00Z',
 }

@@ -25,71 +25,59 @@ derive cheaply, it is a picture a person added, so it is **not re-derivable** an
 the quarantine machinery does not yet know about — see R4's finding, repeated under §1.6.
 
 ```
-<storage-root>/                        LAPIDARY_STORAGE_ROOT; a host directory, bind-mounted
-  libraries/default/
-    Terrain/Rocks/cliff/               one directory per model, named after the part
-      cliff.stl                        the source, under its original filename
-      metadata.json                    part + revision facts, human-readable
-  blobs/ab/cd/<blake3>                 derivatives only, content-addressed, evictable
+<ingest mount>/                        LAPIDARY_INGEST_DIR: the owner's folders, mounted :ro
+  Terrain/Rocks/cliff.stl              read where it is; nothing is ever written here
+<inbox>/                               LAPIDARY_INBOX_DIR: Lapidary writes here, once
+  uploads/<path the browser reported>  an upload; `name (2).stl` beside it, never over it
+  imports/<site>/<creator>/<model>/…   a link import; a re-import may replace its own file
+  imports/bundles/<source path>        an imported bundle's parts
+  examples/…                           the bundled examples, copied in by the first start
+<storage-root>/                        LAPIDARY_STORAGE_ROOT: Lapidary's own store
+  blobs/ab/cd/<blake3>                 exports, pictures over 64 KB, imported bundles
+  libraries/…                          files of parts indexed before M4, left where they are
 ```
 
-That is the whole of it, and it is what the code writes: `SourceStore::put_at` for the
-model directories, `blob_path` — `root.join("blobs")` — for the cache. Two things a
-reader might expect are deliberately absent. **Pictures are not files**: a `part_image`
-under `INLINE_LIMIT` (64 KB) lives in Postgres and a larger one is a blob, so no `images/`
-directory is written. (`derivative.thumb_bytes` was the `bytea` that made this true for
-rendered thumbnails; the column survives with no writer — §1.5.)
-**There is no config file in the store**: nothing in the workspace reads or writes a
-`lapidary.toml`, and configuration is environment variables the container gets
-(`deploy/.env.example` names them). The root itself is not chosen in a first-run dialog
-either — it is `LAPIDARY_STORAGE_ROOT`, a bind mount, and defaults to `deploy/../storage`.
+**Your folders, read where they are (M4, owner, 2026-10-17: "use the directed file path of each
+file or folder").** A scan records where each file is and reads it there. Lapidary never copies,
+renames, moves, writes or deletes anything under the ingest mount — no `metadata.json` beside a
+file, no `revisions/` directory, no model directory of its own. `LibraryReader` is the only handle
+onto those folders and has no method that writes; the `:ro` mount is the backstop, and `cargo xtask
+check-deploy` refuses a compose file that mounts them writable.
 
-**Sources are path-addressed now, not content-addressed.** Each ingested model gets its
-own directory named after the part, under a folder tree mirroring the ingest directory's
-own nesting — `Terrain/Rocks/cliff/` for a file ingested at `Terrain/Rocks/cliff.stl`.
-This reverses the rule that stood here: every source used to land at
-`blobs/ab/cd/<hash>` so identical bytes anywhere in a library shared one file — the same
-directory the derivative cache still writes to, which is why `migrate_storage` moves
-sources out of it and leaves the derivatives where they are. The owner wants the
-opposite — a folder a user can open in a file manager and find their model by name, not
-by hash.
+**Every `file` row names its root** (`0062`): `library` (the owner's folders, `storage_path` is the
+library's own folder joined with its `source_path`), `inbox`, or `store` — every row from before M4,
+whose bytes stay exactly where they were and still download, at a path under the store or, when
+`storage_path` is NULL, at `blobs/ab/cd/<hash>` decoded at the level the row recorded. Nothing writes
+a `store` source row any more, and nothing moves or deletes one.
 
-**The cost, stated plainly: source deduplication is gone.** Two identical files ingested
-at two source paths are now two files on disk. That is the price of a browsable store,
-and it is not recoverable by cleverness — a store cannot be both one file per model and
-one file per distinct content. **`CLAUDE.md`'s "Hash first, always" still holds:** BLAKE3
-is still computed before anything else in ingest, and a known `(library_id, source_path,
-blake3)` still short-circuits a re-scan of the same path. Only the filename the bytes are
-written under changed; which paths dedupe against which did not.
+**A library has a folder** (`library.root`, under the mount; `''` is the whole of it, which is what
+every library scanned before M4). A part's `source_path` is relative to that folder and stays its
+identity. **A category is the library's own grouping**: moving a part between categories, or renaming
+one, is a database change and moves nothing on disk.
 
-**A category's directory name is allocated once, when the category is created.** Renaming
-a category changes the row's `name` and nothing on disk — the decision, taken 2026-09-07:
-a rename is a correction to a label, and rewriting every file under `WIP` because somebody
-renamed it `Archive 2024` is not what that person asked for. So `folder.slug` is the
-category's *address* and `folder.name` is its *label*, they agree at creation, and they
-stop agreeing at the first rename. `PgFolders::rename` cannot write a slug — the parameter
-is not in the signature — and the one job that legitimately repoints a category at another
-directory says so by calling `reslug` instead.
+**A changed file is a new revision with its file where it is.** The owner overwrote the previous
+bytes, and Lapidary keeps no copy: the earlier revision keeps its figures and its hash, is marked
+`file.on_disk = false`, and its download answers 410 with a sentence. An earlier file at another place
+— a pre-M4 store copy, an earlier upload under another inbox name — is still there and still
+downloads.
 
-The alternative is worse than a stale directory name, which is why this is a rule rather
-than a deferral. Nothing rewrites `file.storage_path`, so parts already ingested stay where
-they are whatever the row says; if the slug followed the name, `slug_path` would start
-answering the new directory and the next ingest or move into that *same* category would
-land there — one category, two directories, and another with every further rename. A store
-you can browse must have one directory per category more than it must have a current name
-on it.
+**Byte-identical as long as the file has not changed since it was indexed.** `file.mtime_ns` and
+`size_bytes` are what the file was when it was read; a download compares both before it sends a byte
+and refuses a difference with "This file changed in your folder since Lapidary last read it — scan
+again." (409). The end-of-stream BLAKE3 stays, for an edit that kept both. A re-scan that finds the
+same bytes with a new time records the time, so a `touch` never leaves a file undownloadable.
 
-What follows from it: a scan matches a directory to a category **by slug, not by name**
-(`get_or_create`), so re-scanning a renamed library finds the category rather than forking
-a second one under the old name; and `slugTaken` can now refuse a name because a sibling
-*renamed away from it* still holds the directory, which is why that message names the
-directory instead of explaining which of the two cases happened.
+**`CLAUDE.md`'s "Hash first, always" still holds:** BLAKE3 is computed before anything else in
+ingest, and a known `(library_id, source_path, blake3)` still short-circuits a re-scan. Two identical
+files at two paths are two parts sharing one `blob` row, and — since nothing is copied — one file
+each, which is what the owner already had.
 
-Re-parenting a category would split it the same way one level up, because `slug_path` joins
-*ancestor* slugs and this folder's own slug staying put says nothing about theirs. So
-`PATCH /api/folders/{id}` refuses `parent_id` (`400 cannotMove`) before it writes anything,
-and a category's models are rearranged by moving them. Allowing the move needs the stored
-per-folder directory path this rule made unnecessary for renames.
+**A category's `slug` is allocated once, when it is created**, and a rename changes only its `name`.
+Since M4 the slug names no directory; it keeps the per-parent uniqueness that `slugTaken` refuses on,
+and a scan still matches a folder to a category by slug (`get_or_create`), so re-scanning a library
+whose categories were renamed finds them rather than forking new ones. Re-parenting a category is
+still refused (`400 cannotMove`); with no directory behind it that refusal is now only a decision
+nobody has revisited.
 
 **Content addressing survives for `blobs/` only** — derivatives, which are evictable and
 rebuildable, never the source of truth. Two-level hex sharding gives 65,536 buckets,
@@ -141,19 +129,11 @@ give it a second copy to rot.
 into your subuid range, or `sudo chown -R 10001:10001 storage` under rootful Docker.
 
 **Skip the copy and nothing fails at boot** — which is what makes this worth reading. The
-grid renders normally, because a card's picture comes from `part_image` — inline on the page
-query, or one immutable `/api/blob/{hash}` load — and never from the store's model
-directories at all. The first symptom is a download answering 500: the row names a
-source file that is in the volume, not in the new root. Two classes of bytes are stranded
-and only one of them is cheap — the derivative cache would rebuild itself, but a source
-blob still sitting at `blobs/ab/cd/<hash>` because `migrate_storage` has not moved it yet
-is the only copy those bytes have. That job is enqueued at every worker boot for any
-library still holding sources in the old layout, so it also loops: it reads from the empty
-root, gets ENOENT, records the failure as transient, and re-enqueues.
-
-Nothing is deleted by the upgrade, so this is recoverable after the fact as well as
-before: the volume stays until an operator removes it. Stop the stack, run the copy, start
-it again, and the pending migration finishes on that boot.
+grid renders normally, because a card's picture comes from `part_image` and never from the store's
+model directories. The first symptom is a download answering 500: the row names a source file that is
+in the volume, not in the new root. Since M4 nothing moves those files anywhere, so the copy is the
+whole remedy: stop the stack, run it, start it again. Nothing is deleted by the upgrade, so this is
+recoverable after the fact as well as before: the volume stays until an operator removes it.
 
 ### 1.2 Compression — per-role first, per-age second
 
@@ -299,10 +279,8 @@ a part's own file to the reaper — so nothing the hourly sweep reads ever names
 them. Only the deleted part's **derivative** hashes are recounted, so a cached export nothing
 points at any more enters the ordinary 30-day quarantine cache eviction (§1.5) uses.
 
-A re-scan of a deleted part's file finds no row and ingests it as a new part. Until M4 reads the
-library's folders in place, that files a second copy beside the model directory the delete left
-(`model_dir_for` disambiguates against a directory that exists), and the old directory keeps a
-`metadata.json` naming a part id that no longer exists.
+A re-scan of a deleted part's file finds no row and ingests it as a new part, naming the very file
+the deleted one did, where it is (M4): no copy is made.
 
 Migration `0061` deleted every part and folder that was soft-deleted before this, the same way,
 and dropped `deleted_at` from `part` and `folder`.
@@ -376,11 +354,11 @@ there the check is the only protection and is written as such.
 bytes sit at a path no route serves once the `file` row naming them is gone. Both are
 invisible in the UI, and neither has a restore.
 
-*Removing a model file removes what is around it.* The file, the `metadata.json` beside it,
-and the directory that held them — but only if nothing else is in it. A directory the
-owner has put something of their own into keeps that something, and keeps standing; the
-sweep logs it and carries on rather than failing, because failing would stop every other
-removal for as long as their file sat there.
+*The sweep removes no model file at all since M4.* Its path-addressed half — which unlinked a
+purged part's file, the `metadata.json` beside it and an emptied directory, as listed in
+`quarantined_file` — is gone, and `0062` dropped that table. What the sweep can reach is a
+content-addressed blob in Lapidary's own store and nothing else; the files those last queue rows
+named stay where they are, which is the safe direction to be wrong in.
 
 ---
 
@@ -687,7 +665,8 @@ are non-empty. Users tolerate missing counts; they do not tolerate a 900 ms filt
 - **Removing a field removes its definition only.** Its values stay.
 - **A field defined again under that key** takes back the values it can show. Values it could not show
   refuse the key.
-- **A value set** reaches the part's `metadata.json` through the worker's `describe_part` job.
+- **A value set** is a row change and nothing else: since M4 no `metadata.json` is written beside a
+  file, and the `describe_part` job that kept one current is gone.
 
 ### 3.6 Saved filters
 
@@ -874,10 +853,14 @@ bundle verifiable rather than a folder of mystery files.
   directory at the end.
   - `zip` needs a seekable writer and `async-zip` is not in the tree.
   - A bundle stops short of 4 GiB, since there is no ZIP64 yet.
-- **Paths follow each part's `source_path`,** with earlier revisions under `revisions/<label>/`.
+- **Paths follow each part's `source_path`,** with earlier revisions under `revisions/<label>/`. Since
+  M4 a bundle carries the revisions whose file is still on disk; one a later revision replaced in the
+  owner's folder has no bytes left to carry, and is left out with its figures.
 - **Import:**
   - It validates the whole archive (§5.4) before queuing anything.
-  - It then replays each part's revisions through ingest, oldest first.
+  - It then replays each part's revisions through ingest, oldest first, each written into the inbox at
+    `imports/bundles/<source path>` and indexed from there — so the older ones end as rows, marked no
+    longer on disk, and the newest as the file.
   - Labels, parents, origins and hashes survive. `created_at` becomes the import time.
   - A part the import creates also arrives with its number, its tags and its sources, the licence
     among them (`634df2c`). A part the library already holds keeps what was typed here instead: the
@@ -905,9 +888,10 @@ The rules, as built (design: `docs/superpowers/specs/2026-09-14-phase-4-slice-1-
 - **Every library.** A changed file at a known path becomes a new revision (`revised`). A revert is a
   revision too. The same bytes again are `skipped`. Finished jobs from before S4 may still hold
   `unkept`, a hobby library's old answer; nothing writes or counts it.
-- **Newest on top.** `<model>/<name>` always holds the current revision. The previous file moves to
-  `<model>/revisions/<rev_label>/<name>` in the revision's own transaction, with the part row locked
-  first. `metadata.json` lists every revision, oldest first.
+- **Newest on top, where the file is** (M4). The owner saved over their file, so the new revision's row
+  names the same path and the previous one is marked `on_disk = false` in the same transaction, with
+  the part row locked first. Nothing is moved, copied or set aside: the previous bytes are gone, and its
+  figures and hash are what history keeps. Its download answers 410.
 - **Origin:** `ingest` (scan), `upload` (browser). `agent` is read, never written: rows and bundles from
   the desktop agent still hold it.
 - **History:** `GET /api/parts/{id}/revisions`, newest first, each with its figures and a download of its
