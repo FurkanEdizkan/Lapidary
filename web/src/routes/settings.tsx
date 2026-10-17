@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { createFileRoute } from '@tanstack/react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   chooseModelsFolder,
   checkSiteKey,
@@ -14,31 +14,28 @@ import {
   movePort,
   saveImportSettings,
   saveSiteKey,
-} from "../lib/api";
-import { strings } from "../lib/strings";
-import { HEADLINE, LEAD } from "../components/Page";
-import { AppFrame } from "../components/AppFrame";
-import { AppSkeleton } from "../components/Skeleton";
-import { FolderPicker } from "../components/FolderPicker";
-import { currentUser } from "../lib/session";
-import type { SiteCheck, SiteSetting } from "../lib/types";
+} from '../lib/api'
+import { strings } from '../lib/strings'
+import { HEADLINE, LEAD } from '../components/Page'
+import { AppFrame } from '../components/AppFrame'
+import { AppSkeleton } from '../components/Skeleton'
+import { FolderPicker } from '../components/FolderPicker'
+import { currentUser } from '../lib/session'
+import type { SiteCheck, SiteSetting } from '../lib/types'
 
-export const Route = createFileRoute("/settings")({
+export const Route = createFileRoute('/settings')({
   component: SettingsPage,
-});
+})
 
 const BUTTON =
-  "ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50";
+  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
 /**
  * The keys for the sites a model can be imported from (F3). The whole installation's, not one
  * library's, so it carries no library.
  */
 export function SettingsPage() {
-  const settings = useQuery({
-    queryKey: ["site-settings"],
-    queryFn: fetchSiteSettings,
-  });
+  const settings = useQuery({ queryKey: ['site-settings'], queryFn: fetchSiteSettings })
   return (
     <AppFrame current="siteSettings">
       <section className="max-w-3xl">
@@ -49,36 +46,21 @@ export function SettingsPage() {
           {strings.settings.sitesHeading}
         </h3>
         {settings.isPending ? (
-          <p className="mt-4 text-[var(--color-muted)]">
-            {strings.settings.loading}
-          </p>
+          <p className="mt-4 text-[var(--color-muted)]">{strings.settings.loading}</p>
         ) : settings.isError ? (
-          <p
-            role="alert"
-            className="mt-4 max-w-prose text-[var(--color-muted)]"
-          >
+          <p role="alert" className="mt-4 max-w-prose text-[var(--color-muted)]">
             {strings.settings.failed}
           </p>
         ) : (
           <>
             {settings.data.enabled ? null : (
-              <p
-                role="status"
-                className="mt-4 max-w-prose text-[var(--color-muted)]"
-              >
+              <p role="status" className="mt-4 max-w-prose text-[var(--color-muted)]">
                 {strings.settings.switchedOff}
               </p>
             )}
-            <ul
-              role="list"
-              className="mt-3 flex flex-col border-t border-[var(--color-border)]"
-            >
+            <ul role="list" className="mt-3 flex flex-col border-t border-[var(--color-border)]">
               {settings.data.sites.map((site) => (
-                <SiteRow
-                  key={site.site}
-                  site={site}
-                  enabled={settings.data.enabled}
-                />
+                <SiteRow key={site.site} site={site} enabled={settings.data.enabled} />
               ))}
             </ul>
           </>
@@ -88,7 +70,7 @@ export function SettingsPage() {
         <ModelsFolderSection />
       </section>
     </AppFrame>
-  );
+  )
 }
 
 /**
@@ -96,22 +78,19 @@ export function SettingsPage() {
  * skeleton while the page follows the app to its new port.
  */
 function ServerSection() {
-  const server = useQuery({
-    queryKey: ["server-port"],
-    queryFn: fetchServerPort,
-  });
-  const [port, setPort] = useState("");
-  const [lost, setLost] = useState<number | null>(null);
-  const admin = currentUser()?.isAdmin ?? true;
+  const server = useQuery({ queryKey: ['server-port'], queryFn: fetchServerPort })
+  const [port, setPort] = useState('')
+  const [lost, setLost] = useState<number | null>(null)
+  const admin = currentUser()?.isAdmin ?? true
   const move = useMutation({
     mutationFn: async (to: number) => {
-      await movePort(to);
-      if (!(await followPort(to))) setLost(to);
+      await movePort(to)
+      if (!(await followPort(to))) setLost(to)
     },
-  });
-  if (server.data === undefined) return null;
-  const locked = server.data.lockedBy;
-  const wanted = Number(port);
+  })
+  if (server.data === undefined) return null
+  const locked = server.data.lockedBy
+  const wanted = Number(port)
   return (
     <>
       {move.isPending ? (
@@ -125,9 +104,8 @@ function ServerSection() {
       <form
         className="mt-3 flex flex-wrap items-end gap-2"
         onSubmit={(event) => {
-          event.preventDefault();
-          if (Number.isInteger(wanted) && wanted > 0 && !move.isPending)
-            move.mutate(wanted);
+          event.preventDefault()
+          if (Number.isInteger(wanted) && wanted > 0 && !move.isPending) move.mutate(wanted)
         }}
       >
         <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
@@ -144,21 +122,13 @@ function ServerSection() {
           />
         </label>
         {locked === null && admin ? (
-          <button
-            type="submit"
-            disabled={port === "" || move.isPending}
-            className={BUTTON}
-          >
+          <button type="submit" disabled={port === '' || move.isPending} className={BUTTON}>
             {strings.settings.movePort}
           </button>
         ) : null}
       </form>
       <p className="mt-2 max-w-prose text-xs text-[var(--color-dim)]">
-        {locked !== null
-          ? strings.settings.portLocked(locked)
-          : admin
-            ? strings.settings.portHint
-            : strings.settings.portAdminsOnly}
+        {locked !== null ? strings.settings.portLocked(locked) : admin ? strings.settings.portHint : strings.settings.portAdminsOnly}
       </p>
       {move.isError ? (
         <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
@@ -171,20 +141,17 @@ function ServerSection() {
         </p>
       )}
     </>
-  );
+  )
 }
 
 /** How Import starts (A2): whether a file added with a page link fetches the page's details. */
 function ImportSettingsSection() {
-  const queryClient = useQueryClient();
-  const current = useQuery({
-    queryKey: ["import-settings"],
-    queryFn: fetchImportSettings,
-  });
+  const queryClient = useQueryClient()
+  const current = useQuery({ queryKey: ['import-settings'], queryFn: fetchImportSettings })
   const save = useMutation({
     mutationFn: (fetchDetails: boolean) => saveImportSettings({ fetchDetails }),
-    onSuccess: (saved) => queryClient.setQueryData(["import-settings"], saved),
-  });
+    onSuccess: (saved) => queryClient.setQueryData(['import-settings'], saved),
+  })
   return (
     <>
       <h3 className="mt-10 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
@@ -200,13 +167,11 @@ function ImportSettingsSection() {
         />
         <span className="flex flex-col gap-1">
           {strings.settings.fetchDetails}
-          <span className="text-xs text-[var(--color-dim)]">
-            {strings.settings.fetchDetailsHint}
-          </span>
+          <span className="text-xs text-[var(--color-dim)]">{strings.settings.fetchDetailsHint}</span>
         </span>
       </label>
     </>
-  );
+  )
 }
 
 /**
@@ -215,70 +180,64 @@ function ImportSettingsSection() {
  * before it replaces one that works.
  */
 function SiteRow({ site, enabled }: { site: SiteSetting; enabled: boolean }) {
-  const queryClient = useQueryClient();
-  const [key, setKey] = useState("");
-  const [answer, setAnswer] = useState<SiteCheck | null>(null);
-  const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: ["site-settings"] });
+  const queryClient = useQueryClient()
+  const [key, setKey] = useState('')
+  const [answer, setAnswer] = useState<SiteCheck | null>(null)
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['site-settings'] })
   const save = useMutation({
     mutationFn: () => saveSiteKey(site.site, key.trim()),
     onSuccess: async () => {
-      setKey("");
-      setAnswer(null);
-      await refresh();
+      setKey('')
+      setAnswer(null)
+      await refresh()
     },
-  });
+  })
   const remove = useMutation({
     mutationFn: () => clearSiteKey(site.site),
     onSuccess: async () => {
-      setAnswer(null);
-      await refresh();
+      setAnswer(null)
+      await refresh()
     },
-  });
+  })
   const check = useMutation({
-    mutationFn: () =>
-      checkSiteKey(site.site, key.trim() === "" ? undefined : key.trim()),
+    mutationFn: () => checkSiteKey(site.site, key.trim() === '' ? undefined : key.trim()),
     onSuccess: async (result) => {
-      setAnswer(result);
-      await refresh();
+      setAnswer(result)
+      await refresh()
     },
-  });
-  const typed = key.trim() !== "";
+  })
+  const typed = key.trim() !== ''
   const status =
     site.hint === null
       ? strings.settings.noneSaved
       : site.checkedOk === null || site.checkedAt === null
         ? strings.settings.saved(site.hint)
-        : `${strings.settings.saved(site.hint)} ${strings.settings.lastCheck(site.checkedOk, site.checkedAt)}`;
+        : `${strings.settings.saved(site.hint)} ${strings.settings.lastCheck(site.checkedOk, site.checkedAt)}`
   const checkLabel = check.isPending
     ? strings.settings.checking
     : !site.needsKey
       ? strings.settings.checkSite
       : typed || site.hint === null
         ? strings.settings.check
-        : strings.settings.checkSaved;
-  const help = strings.settings.keyHelp[site.site];
+        : strings.settings.checkSaved
+  const help = strings.settings.keyHelp[site.site]
   const failure = save.isError
     ? strings.settings.saveFailed
     : check.isError
       ? strings.settings.checkFailed
-      : null;
+      : null
   return (
     <li className="flex flex-col gap-2 border-b border-[var(--color-border)] py-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 className="text-sm font-semibold text-[var(--color-bright)]">
-          {site.name}
-        </h4>
-        <p className="text-xs text-[var(--color-muted)]">
-          {site.needsKey ? status : strings.settings.noKeyNeeded}
-        </p>
+        <h4 className="text-sm font-semibold text-[var(--color-bright)]">{site.name}</h4>
+        <p className="text-xs text-[var(--color-muted)]">{site.needsKey ? status : strings.settings.noKeyNeeded}</p>
       </div>
       {site.needsKey ? (
         <form
           className="flex flex-wrap items-center gap-2"
           onSubmit={(event) => {
-            event.preventDefault();
-            if (typed && !save.isPending) save.mutate();
+            event.preventDefault()
+            if (typed && !save.isPending) save.mutate()
           }}
         >
           <input
@@ -290,67 +249,43 @@ function SiteRow({ site, enabled }: { site: SiteSetting; enabled: boolean }) {
             aria-label={strings.settings.keyLabel(site.name)}
             className="min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 font-mono text-sm"
           />
-          <button
-            type="submit"
-            disabled={!typed || save.isPending}
-            className={BUTTON}
-          >
+          <button type="submit" disabled={!typed || save.isPending} className={BUTTON}>
             {strings.settings.save}
           </button>
           <button
             type="button"
-            disabled={
-              !enabled || check.isPending || (!typed && site.hint === null)
-            }
+            disabled={!enabled || check.isPending || (!typed && site.hint === null)}
             onClick={() => check.mutate()}
             className={BUTTON}
           >
             {checkLabel}
           </button>
           {site.hint === null ? null : (
-            <button
-              type="button"
-              disabled={remove.isPending}
-              onClick={() => remove.mutate()}
-              className={BUTTON}
-            >
+            <button type="button" disabled={remove.isPending} onClick={() => remove.mutate()} className={BUTTON}>
               {strings.settings.remove}
             </button>
           )}
         </form>
       ) : (
         <div>
-          <button
-            type="button"
-            disabled={!enabled || check.isPending}
-            onClick={() => check.mutate()}
-            className={BUTTON}
-          >
+          <button type="button" disabled={!enabled || check.isPending} onClick={() => check.mutate()} className={BUTTON}>
             {checkLabel}
           </button>
         </div>
       )}
-      {help === undefined ? null : (
-        <p className="max-w-prose text-xs text-[var(--color-muted)]">{help}</p>
-      )}
+      {help === undefined ? null : <p className="max-w-prose text-xs text-[var(--color-muted)]">{help}</p>}
       {answer === null ? null : (
-        <p
-          role="status"
-          className="max-w-prose text-sm text-[var(--color-muted)]"
-        >
+        <p role="status" className="max-w-prose text-sm text-[var(--color-muted)]">
           {answer.message}
         </p>
       )}
       {failure === null ? null : (
-        <p
-          role="alert"
-          className="max-w-prose text-sm text-[var(--color-muted)]"
-        >
+        <p role="alert" className="max-w-prose text-sm text-[var(--color-muted)]">
           {failure}
         </p>
       )}
     </li>
-  );
+  )
 }
 
 /**
@@ -358,28 +293,20 @@ function SiteRow({ site, enabled }: { site: SiteSetting; enabled: boolean }) {
  * restarts Lapidary on it, behind the app's skeleton, and the page comes back signed in.
  */
 function ModelsFolderSection() {
-  const folder = useQuery({
-    queryKey: ["models-folder"],
-    queryFn: () => fetchModelsFolder(),
-  });
-  const [picking, setPicking] = useState(false);
-  const [lost, setLost] = useState(false);
-  const admin = currentUser()?.isAdmin ?? true;
+  const folder = useQuery({ queryKey: ['models-folder'], queryFn: () => fetchModelsFolder() })
+  const [picking, setPicking] = useState(false)
+  const [lost, setLost] = useState(false)
+  const admin = currentUser()?.isAdmin ?? true
   const choose = useMutation({
     mutationFn: async (path: string) => {
-      if (!(await chooseModelsFolder(path))) return;
-      const port =
-        window.location.port === ""
-          ? window.location.protocol === "https:"
-            ? 443
-            : 80
-          : Number(window.location.port);
-      if (!(await followRestart(port))) setLost(true);
+      if (!(await chooseModelsFolder({ path, store: null }))) return
+      const port = window.location.port === '' ? (window.location.protocol === 'https:' ? 443 : 80) : Number(window.location.port)
+      if (!(await followRestart(port))) setLost(true)
     },
-  });
-  if (folder.data === undefined) return null;
-  const data = folder.data;
-  const locked = data.lockedBy;
+  })
+  if (folder.data === undefined) return null
+  const data = folder.data
+  const locked = data.lockedBy
   return (
     <>
       {choose.isPending && choose.variables !== undefined ? (
@@ -388,12 +315,8 @@ function ModelsFolderSection() {
         </div>
       ) : null}
       <div className="mt-6 flex flex-col gap-1.5">
-        <p className="text-xs text-[var(--color-muted)]">
-          {strings.settings.modelsFolder}
-        </p>
-        <p className="font-mono text-[13px] break-all">
-          {data.path ?? strings.settings.modelsFolderUnknown}
-        </p>
+        <p className="text-xs text-[var(--color-muted)]">{strings.settings.modelsFolder}</p>
+        <p className="font-mono text-[13px] break-all">{data.path ?? strings.settings.modelsFolderUnknown}</p>
         <p className="max-w-prose text-xs text-[var(--color-dim)]">
           {locked !== null
             ? strings.settings.modelsFolderLocked(locked)
@@ -403,54 +326,38 @@ function ModelsFolderSection() {
                 ? strings.settings.modelsFolderHint
                 : strings.settings.modelsFolderAdminsOnly}
         </p>
-        {data.canChoose && admin ? (
+        {data.canChoose && locked === null && admin ? (
           picking ? (
             <FolderPicker
               start={data.path}
               onChoose={(path) => {
-                setPicking(false);
-                choose.mutate(path);
+                setPicking(false)
+                choose.mutate(path)
               }}
               onCancel={() => setPicking(false)}
             />
           ) : (
-            <button
-              type="button"
-              onClick={() => setPicking(true)}
-              className={`${BUTTON} self-start`}
-            >
+            <button type="button" onClick={() => setPicking(true)} className={`${BUTTON} self-start`}>
               {strings.folderPicker.choose}
             </button>
           )
         ) : null}
         {choose.isError ? (
-          <p
-            role="alert"
-            className="max-w-prose text-sm text-[var(--color-text)]"
-          >
+          <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">
             {choose.error.message}
           </p>
         ) : null}
         {lost ? (
-          <p
-            role="alert"
-            className="max-w-prose text-sm text-[var(--color-text)]"
-          >
+          <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">
             {strings.settings.restartLost}
           </p>
         ) : null}
       </div>
       <div className="mt-6 flex flex-col gap-1.5">
-        <p className="text-xs text-[var(--color-muted)]">
-          {strings.settings.store}
-        </p>
-        <p className="font-mono text-[13px] break-all">
-          {data.store ?? strings.settings.storeUnknown}
-        </p>
-        <p className="max-w-prose text-xs text-[var(--color-dim)]">
-          {strings.settings.storeHint}
-        </p>
+        <p className="text-xs text-[var(--color-muted)]">{strings.settings.store}</p>
+        <p className="font-mono text-[13px] break-all">{data.store ?? strings.settings.storeUnknown}</p>
+        <p className="max-w-prose text-xs text-[var(--color-dim)]">{strings.settings.storeHint}</p>
       </div>
     </>
-  );
+  )
 }

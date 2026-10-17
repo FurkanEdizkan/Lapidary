@@ -64,6 +64,7 @@ struct Config {
     /// falls back to — is resolved against `deploy/`, and this process has no idea where
     /// that is; prefixing it onto a model's path would produce something that looks like an
     /// answer and is not.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
     host_storage_root: Option<PathBuf>,
     /// Where the bundled example parts live, so a first run is never an empty grid.
     ///
@@ -376,6 +377,7 @@ async fn main() -> Result<()> {
         });
         let folder = models_dir::first(
             &db,
+            models_dir::Which::Models,
             mount,
             config
                 .host_ingest_root
@@ -390,6 +392,19 @@ async fn main() -> Result<()> {
             "models folder"
         );
         let ingest_dir = folder.dir.clone();
+        // Lapidary's own files (A8): the same three ways.
+        let store = models_dir::first(
+            &db,
+            models_dir::Which::Store,
+            blob_root,
+            config
+                .host_storage_root
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            host.as_ref(),
+        )
+        .await;
+        let blob_root = store.dir.clone();
         // Required rather than defaulted: a default would put half-transferred files somewhere
         // nobody chose, and the one wrong answer here — the blob root itself — would put
         // incomplete bytes inside a store whose whole contract is that everything in it is
@@ -462,7 +477,7 @@ async fn main() -> Result<()> {
                 // Absolute or nothing — see the field's doc. A relative path here is
                 // compose's unset default rather than an operator's choice, and showing it as
                 // though it were one is the mistake this guards.
-                host_storage_root: absolute(config.host_storage_root.as_ref()),
+                host_storage_root: store.shown.clone(),
                 host_ingest_root: folder.shown.clone(),
                 host_inbox_root: absolute(config.host_inbox_root.as_ref())
                     .or_else(|| folder.shown.clone()),
@@ -478,7 +493,7 @@ async fn main() -> Result<()> {
             ports_db.clone(),
             host,
             folder,
-            absolute(config.host_storage_root.as_ref()),
+            store,
             restart.clone(),
         ));
         let app = match &config.web_dir {
