@@ -117,7 +117,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 
 | Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
 |---|---|---|---|---|---|---|---|---|
-| [A1](A1.md) | Accounts, sign-in and the setup wizard | 10 | Rust + web | M5 | see [ACCOUNTS.md](ACCOUNTS.md) | 0063 | open | `feat/accounts` |
+| [A1](A1.md) | Accounts, sign-in and the setup wizard | 10 | Rust + web | M5 | see [ACCOUNTS.md](ACCOUNTS.md) | 0063 | merged `d1458e1` | `feat/accounts` |
 | [A2](A2.md) | One storage location: browse, add, remove to `_removed/` | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | 0064 | open | `feat/one-storage` |
 | [A3](A3.md) | Models per person | 11 | Rust + web | A2 | see [ACCOUNTS.md](ACCOUNTS.md) | 0065 | open | `feat/models-per-person` |
 | [A4](A4.md) | Sharing and the accounts admin | 11 | Rust + web | A3 | see [ACCOUNTS.md](ACCOUNTS.md) | 0066 | open | `feat/sharing-users` |

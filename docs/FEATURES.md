@@ -56,6 +56,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Delete is final: one Delete behind a confirmation, the part leaves the library at once and its file stays on disk; no removed list, restore or purge (owner, 2026-10-17) | M3, built |
 | Your folders are indexed where they are: nothing is copied, renamed, moved or written under them; uploads and link imports go to an inbox folder; a changed file is refused on download until re-scanned; an overwritten revision keeps its figures, not its bytes | M4, built |
 | A model's pictures as a set: an import brings every picture on the page (up to 12) to each part, and a card with several flips through them without opening the part | M5, built |
+| Accounts: a first-run setup wizard (with a setup code from the server log), sign-in and sign-out, and every route behind a session; `reset-password` for a lost admin password | A1, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
