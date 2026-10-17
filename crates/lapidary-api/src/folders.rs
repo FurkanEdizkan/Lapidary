@@ -283,7 +283,7 @@ pub(crate) fn refused(status: StatusCode, reason: &'static str, message: &str) -
         .into_response()
 }
 
-fn no_such_folder() -> Response {
+pub(crate) fn no_such_folder() -> Response {
     refused(
         StatusCode::NOT_FOUND,
         "noSuchFolder",

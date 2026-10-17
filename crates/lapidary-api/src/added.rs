@@ -98,17 +98,27 @@ pub struct NewSourceRequest {
 }
 
 /// `GET /api/storage/browse?path=` — one folder of the models folder.
-pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
+pub async fn browse(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    Query(query): Query<BrowseQuery>,
+) -> Response {
     let path = query.path.trim_matches('/').to_owned();
     if let Err(refusal) = inside(&path) {
         return *refusal;
     }
+    if let Err(refusal) = not_someone_elses(&path, &user.username) {
+        return *refusal;
+    }
+    let only = (path == UPLOADS).then(|| user.username.clone());
     let dir = state.ingest_dir.join(&path);
     let listed = tokio::task::spawn_blocking(move || list(&dir)).await;
     match listed {
         Ok(Ok((entries, truncated))) => Json(BrowseListing {
             entries: entries
                 .into_iter()
+                // In `uploads/`, only the person's own folder (A3).
+                .filter(|(name, _, _)| only.as_ref().is_none_or(|own| name == own))
                 .map(|(name, is_folder, size)| BrowseEntry {
                     path: if path.is_empty() {
                         name.clone()
@@ -165,6 +175,7 @@ pub async fn list_sources(
 /// source; the caller then posts its pictures, then asks for a scan.
 pub async fn add_source(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(library): Path<LibraryId>,
     body: Result<Json<NewSourceRequest>, JsonRejection>,
 ) -> Response {
@@ -179,6 +190,15 @@ pub async fn add_source(
     }
     let path = body.path.trim_matches('/').to_owned();
     if let Err(refusal) = inside(&path) {
+        return *refusal;
+    }
+    if path == UPLOADS {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "uploads holds everybody's uploads. Open it and add your own folder instead.",
+        );
+    }
+    if let Err(refusal) = not_someone_elses(&path, &user.username) {
         return *refusal;
     }
     let full = state.ingest_dir.join(&path);
@@ -250,6 +270,25 @@ pub async fn remove_source(
         Ok(None) => no_such_source(),
         Err(err) => internal_error(&err, "removing a source failed"),
     }
+}
+
+/// Where uploads are written, one folder per person (A2).
+const UPLOADS: &str = "uploads";
+
+/// Not inside another person's uploads (A3), which is that person's to see. Said as a folder that is
+/// not there, which is what it is to this person.
+fn not_someone_elses(path: &str, username: &str) -> Result<(), Box<Response>> {
+    let mut segments = path.split('/');
+    if segments.next() == Some(UPLOADS)
+        && let Some(owner) = segments.next()
+        && owner != username
+    {
+        return Err(Box::new(refused(
+            StatusCode::NOT_FOUND,
+            "That folder is not in your models folder any more. Go back up and choose again.",
+        )));
+    }
+    Ok(())
 }
 
 /// A path in the models folder a person may look at or add: not out of it, and not into `_removed/`.

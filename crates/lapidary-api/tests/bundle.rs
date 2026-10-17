@@ -430,12 +430,13 @@ async fn forty_parts_are_planned_in_two_queries(pool: sqlx::PgPool) {
         plan(pool.clone(), root.path(), serde_json::json!(parts)).await
     };
     assert_eq!(response.status(), StatusCode::OK);
-    // Since A1 the request also passes the sign-in guard: the test account's two idempotent writes
-    // (`tests/common`) and the guard's one session lookup, none of them per part.
+    // The request also passes the sign-in guard, none of it per part: the test account's four
+    // idempotent writes (`tests/common`), the session lookup and the library's owner (A1, A3). Then the
+    // handler: the library's owner and row, and the selection's one query.
     assert_eq!(
         statements.load(std::sync::atomic::Ordering::SeqCst),
-        3 + 2,
-        "the session's three, then the library's row and the selection's"
+        4 + 2 + 3,
+        "the session's six, then the library's two and the selection's one"
     );
 }
 

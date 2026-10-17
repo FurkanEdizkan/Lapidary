@@ -15,7 +15,8 @@ pub struct SiteKeyRow {
     pub updated_at_us: i64,
 }
 
-pub struct PgSiteKeys(pub PgPool);
+/// One person's keys (A3): a MyMiniFactory token is somebody's own, so each person saves their own.
+pub struct PgSiteKeys(pub PgPool, pub lapidary_core::UserId);
 
 /// `list`'s SELECT, in its order.
 type KeyRow = (String, String, Option<bool>, Option<i64>, i64);
@@ -27,8 +28,9 @@ impl PgSiteKeys {
             "SELECT site, right(secret, 4), checked_ok, \
                     (extract(epoch FROM checked_at) * 1000000)::bigint, \
                     (extract(epoch FROM updated_at) * 1000000)::bigint \
-             FROM site_key ORDER BY site",
+             FROM site_key WHERE user_id = $1 ORDER BY site",
         )
+        .bind(self.1.as_uuid())
         .fetch_all(&self.0)
         .await?;
         Ok(rows
@@ -48,8 +50,9 @@ impl PgSiteKeys {
     /// The key itself, for the one thing that uses it: a request to its site.
     pub async fn secret(&self, site: &str) -> Result<Option<String>, DbError> {
         Ok(
-            sqlx::query_scalar("SELECT secret FROM site_key WHERE site = $1")
+            sqlx::query_scalar("SELECT secret FROM site_key WHERE site = $1 AND user_id = $2")
                 .bind(site)
+                .bind(self.1.as_uuid())
                 .fetch_optional(&self.0)
                 .await?,
         )
@@ -58,12 +61,13 @@ impl PgSiteKeys {
     /// Save `secret` for `site`, replacing what was there and forgetting its last check.
     pub async fn set(&self, site: &str, secret: &str) -> Result<(), DbError> {
         sqlx::query(
-            "INSERT INTO site_key (site, secret) VALUES ($1, $2) \
-             ON CONFLICT (site) DO UPDATE SET secret = EXCLUDED.secret, checked_ok = NULL, \
+            "INSERT INTO site_key (site, secret, user_id) VALUES ($1, $2, $3) \
+             ON CONFLICT (user_id, site) DO UPDATE SET secret = EXCLUDED.secret, checked_ok = NULL, \
                  checked_at = NULL, updated_at = now()",
         )
         .bind(site)
         .bind(secret.trim())
+        .bind(self.1.as_uuid())
         .execute(&self.0)
         .await?;
         Ok(())
@@ -71,9 +75,12 @@ impl PgSiteKeys {
 
     /// Record what checking the saved key said. Nothing when no key is saved.
     pub async fn record_check(&self, site: &str, ok: bool) -> Result<(), DbError> {
-        sqlx::query("UPDATE site_key SET checked_ok = $2, checked_at = now() WHERE site = $1")
-            .bind(site)
-            .bind(ok)
+        sqlx::query(
+            "UPDATE site_key SET checked_ok = $2, checked_at = now() WHERE site = $1 AND user_id = $3",
+        )
+        .bind(site)
+        .bind(ok)
+        .bind(self.1.as_uuid())
             .execute(&self.0)
             .await?;
         Ok(())
@@ -81,8 +88,9 @@ impl PgSiteKeys {
 
     /// Forget the key for `site`. Whether there was one.
     pub async fn clear(&self, site: &str) -> Result<bool, DbError> {
-        let done = sqlx::query("DELETE FROM site_key WHERE site = $1")
+        let done = sqlx::query("DELETE FROM site_key WHERE site = $1 AND user_id = $2")
             .bind(site)
+            .bind(self.1.as_uuid())
             .execute(&self.0)
             .await?;
         Ok(done.rows_affected() > 0)

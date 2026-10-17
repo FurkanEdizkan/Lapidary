@@ -222,6 +222,7 @@ pub struct QueueSummary {
 /// file's.
 async fn resolve(
     State(app): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     body: Result<Json<ResolveRequest>, JsonRejection>,
 ) -> Response {
     let widgets = match body {
@@ -254,11 +255,13 @@ async fn resolve(
     for (at, WidgetRequest { key, widget }) in widgets.into_iter().enumerate() {
         keys.push(key.clone());
         let app = app.clone();
+        let viewer = user.id;
         let permits = Arc::clone(&permits);
         running.spawn(async move {
             // The permit first, then the clock: see this function's doc.
             let _permit = permits.acquire().await;
-            let result = match tokio::time::timeout(PER_KEY, value_of(&app, &widget)).await {
+            let result = match tokio::time::timeout(PER_KEY, value_of(&app, &widget, viewer)).await
+            {
                 Ok(Ok(value)) => WidgetResult::Ok { value },
                 Ok(Err(WidgetRefusal::TimedOut)) => WidgetResult::TimedOut,
                 Ok(Err(WidgetRefusal::Failed(message))) => WidgetResult::Failed { message },
@@ -325,7 +328,40 @@ enum WidgetRefusal {
 ///
 /// Every arm is a read that already exists somewhere in this crate, called with the dashboard's own
 /// limits. Nothing here writes, and nothing here touches a source file.
-async fn value_of(app: &AppState, widget: &Widget) -> Result<WidgetValue, WidgetRefusal> {
+async fn value_of(
+    app: &AppState,
+    widget: &Widget,
+    viewer: lapidary_core::UserId,
+) -> Result<WidgetValue, WidgetRefusal> {
+    // Every widget is about one library, and it has to be the viewer's (A3) — said as a library that
+    // is not there, which is what it is to them.
+    let library = match widget {
+        Widget::Storage { library }
+        | Widget::Recent { library, .. }
+        | Widget::Queue { library }
+        | Widget::SavedFilter { library, .. }
+        | Widget::Facet { library, .. } => Some(*library),
+        // The install's own figures: no one person's models.
+        Widget::InstanceStorage => None,
+    };
+    if let Some(library) = library {
+        let parts = PgParts(app.db.clone());
+        match parts.library_owner(library).await {
+            Ok(Some(owner)) if owner == viewer => {}
+            // Not there at all: the widget's own read says so, as it always has.
+            Ok(None) if !parts.library_exists(library).await.unwrap_or(true) => {}
+            Ok(_) => {
+                return Err(WidgetRefusal::Failed(
+                    "That library is not there any more. Pick another for this tile.".to_owned(),
+                ));
+            }
+            Err(_) => {
+                return Err(WidgetRefusal::Failed(
+                    "Could not check this tile's library. Try again.".to_owned(),
+                ));
+            }
+        }
+    }
     match widget {
         Widget::Storage { library } => storage(&app.db, *library).await,
         Widget::InstanceStorage => instance_storage(app).await,

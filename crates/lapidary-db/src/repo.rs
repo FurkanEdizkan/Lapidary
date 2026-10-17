@@ -2,7 +2,7 @@ use crate::DbError;
 use crate::folders::constraint_of;
 use lapidary_core::{
     BlobHash, DerivativeKind, FolderId, LibraryId, MeasurementProvenance, MeshMeasurements, PartId,
-    PartImageId, PartSourceId, PartSummary, Provenance, RevisionId,
+    PartImageId, PartSourceId, PartSummary, Provenance, RevisionId, UserId,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -639,15 +639,21 @@ impl PgBlobs {
     /// Deliberately unable to distinguish "no such hash" from "on disk but unreferenced".
     /// The caller turns both into the same 404, because a different answer for the second
     /// confirms the bytes exist, which is exactly the capability a hash must not confer.
-    pub async fn derivative_is_reachable(&self, hash: &BlobHash) -> Result<bool, DbError> {
+    /// Reachable **by `viewer`** (A3): one of their parts holds it. Knowing a hash is not access.
+    pub async fn derivative_is_reachable(
+        &self,
+        hash: &BlobHash,
+        viewer: UserId,
+    ) -> Result<bool, DbError> {
         let found: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM derivative d \
              JOIN revision r ON r.id = d.revision_id \
              JOIN part p ON p.id = r.part_id \
              JOIN library l ON l.id = p.library_id \
-             WHERE d.blake3 = $1 LIMIT 1",
+             WHERE d.blake3 = $1 AND p.owner_id = $2 LIMIT 1",
         )
         .bind(hash.to_hex())
+        .bind(viewer.as_uuid())
         .fetch_optional(&self.0)
         .await?;
         Ok(found.is_some())
@@ -1047,8 +1053,9 @@ async fn insert_part_chain(
 ) -> Result<PartId, DbError> {
     let part = PartId::new();
     sqlx::query(
-        "INSERT INTO part (id, library_id, name, source_path, folder_id) \
-         VALUES ($1, $2, $3, $4, $5)",
+        // The library's owner's (A3): whoever added a file to their library owns the model.
+        "INSERT INTO part (id, library_id, name, source_path, folder_id, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, (SELECT owner_id FROM library WHERE id = $2))",
     )
     .bind(part.as_uuid())
     .bind(req.library.as_uuid())
@@ -1871,6 +1878,73 @@ impl PgParts {
     /// the probe, renamed to say what every caller was really asking.
     ///
     /// A `bool` rather than an `Option<()>`: there is nothing left to read, only to confirm.
+    /// Who a library belongs to (A3); `None` for no such library, or one setup has not claimed yet.
+    pub async fn library_owner(&self, library: LibraryId) -> Result<Option<UserId>, DbError> {
+        let owner: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT owner_id FROM library WHERE id = $1")
+                .bind(library.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(owner.flatten().map(UserId::from_uuid))
+    }
+
+    /// Give a library to a person: the one who made it (A3).
+    pub async fn set_library_owner(
+        &self,
+        library: LibraryId,
+        owner: UserId,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE library SET owner_id = $2 WHERE id = $1")
+            .bind(library.as_uuid())
+            .bind(owner.as_uuid())
+            .execute(&self.0)
+            .await?;
+        Ok(())
+    }
+
+    /// What `user` may do with a part (A3): `None` is nothing — no such part, or somebody else's — which
+    /// the API answers exactly as it answers an unknown id.
+    pub async fn part_access(&self, part: PartId, user: UserId) -> Result<Option<Access>, DbError> {
+        let owner: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT owner_id FROM part WHERE id = $1")
+                .bind(part.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(match owner.flatten() {
+            Some(owner) if owner == user.as_uuid() => Some(Access::Owner),
+            _ => None,
+        })
+    }
+
+    /// Whether a part with this id exists at all, whoever's it is.
+    pub async fn part_exists(&self, part: PartId) -> Result<bool, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM part WHERE id = $1)")
+                .bind(part.as_uuid())
+                .fetch_one(&self.0)
+                .await?,
+        )
+    }
+
+    /// The part a revision is of, for the same check.
+    pub async fn revision_part(&self, revision: RevisionId) -> Result<Option<PartId>, DbError> {
+        let part: Option<Uuid> = sqlx::query_scalar("SELECT part_id FROM revision WHERE id = $1")
+            .bind(revision.as_uuid())
+            .fetch_optional(&self.0)
+            .await?;
+        Ok(part.map(PartId::from_uuid))
+    }
+
+    /// The library a category is in, for the same check.
+    pub async fn folder_library(&self, folder: FolderId) -> Result<Option<LibraryId>, DbError> {
+        let library: Option<Uuid> =
+            sqlx::query_scalar("SELECT library_id FROM folder WHERE id = $1")
+                .bind(folder.as_uuid())
+                .fetch_optional(&self.0)
+                .await?;
+        Ok(library.map(LibraryId::from_uuid))
+    }
+
     pub async fn library_exists(&self, library: LibraryId) -> Result<bool, DbError> {
         Ok(
             sqlx::query_scalar::<_, bool>("SELECT true FROM library WHERE id = $1")
@@ -3272,12 +3346,20 @@ impl PgParts {
     /// has to ask whether anything in this instance points at a hash before serving it.
     /// Without this, an image blob would be on disk and unreachable — served to nobody,
     /// including the person who uploaded it.
-    pub async fn image_is_reachable(&self, hash: &BlobHash) -> Result<bool, DbError> {
-        let reachable: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM part_image WHERE blake3 = $1)")
-                .bind(hash.to_hex())
-                .fetch_one(&self.0)
-                .await?;
+    /// Reachable **by `viewer`** (A3): a picture on one of their parts.
+    pub async fn image_is_reachable(
+        &self,
+        hash: &BlobHash,
+        viewer: UserId,
+    ) -> Result<bool, DbError> {
+        let reachable: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM part_image i JOIN part p ON p.id = i.part_id \
+             WHERE i.blake3 = $1 AND p.owner_id = $2)",
+        )
+        .bind(hash.to_hex())
+        .bind(viewer.as_uuid())
+        .fetch_one(&self.0)
+        .await?;
         Ok(reachable)
     }
 }
@@ -3337,6 +3419,15 @@ enum Guard {
     Always,
     IfNone,
     NewSourceUrl,
+}
+
+/// What a person may do with a part (A3; A4 adds reading one shared with them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Theirs: read and change it.
+    Owner,
+    /// Shared with them: read and download it, nothing else.
+    Reader,
 }
 
 /// What [`PgParts::add_part_image`] needs to write a gallery row.
@@ -3575,13 +3666,15 @@ impl PgParts {
     /// Ordered by `created_at` rather than by name so the switcher does not reshuffle when
     /// somebody renames one — and so the seeded library, which is the one an existing
     /// deployment has been using, stays first.
-    pub async fn libraries(&self) -> Result<Vec<LibraryRow>, DbError> {
+    /// One person's libraries (A3), oldest first.
+    pub async fn libraries(&self, owner: UserId) -> Result<Vec<LibraryRow>, DbError> {
         let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
             "SELECT l.id, l.name, \
                     (SELECT count(*) FROM part p \
                       WHERE p.library_id = l.id) \
-               FROM library l ORDER BY l.created_at, l.id",
+               FROM library l WHERE l.owner_id = $1 ORDER BY l.created_at, l.id",
         )
+        .bind(owner.as_uuid())
         .fetch_all(&self.0)
         .await?;
         Ok(rows
@@ -3604,6 +3697,17 @@ impl PgParts {
     /// `root`, when not `''`, is a folder under the models folder the library starts with, as its
     /// first source (A2). The caller has refused one that escapes the mount.
     pub async fn create_library(&self, name: &str, root: &str) -> Result<LibraryId, DbError> {
+        self.create_library_for(name, root, None).await
+    }
+
+    /// [`create_library`](Self::create_library) for a person (A3): the library is theirs, and its name
+    /// need only be unlike their own other libraries'.
+    pub async fn create_library_for(
+        &self,
+        name: &str,
+        root: &str,
+        owner: Option<UserId>,
+    ) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
         // Derived here and never sent by a client, exactly as a category's is: `slugify` is
         // the one place that decides what a filesystem may hold, and a caller who could name
@@ -3611,10 +3715,11 @@ impl PgParts {
         // `library_slug` has always returned and what every existing directory is called.
         let slug = lapidary_core::slug::slugify(name).to_lowercase();
         let mut tx = self.0.begin().await?;
-        sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO library (id, name, slug, owner_id) VALUES ($1, $2, $3, $4)")
             .bind(id.as_uuid())
             .bind(name)
             .bind(&slug)
+            .bind(owner.map(|owner| owner.as_uuid()))
             .execute(&mut *tx)
             .await
             .map_err(|err| match constraint_of(&err).as_deref() {

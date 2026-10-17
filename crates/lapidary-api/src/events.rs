@@ -203,18 +203,35 @@ pub fn router(hub: Hub, db: lapidary_db::PgPool) -> Router {
     Router::new()
         .route("/api/events", get(events))
         .route_layer(axum::middleware::from_fn_with_state(
-            db,
+            db.clone(),
             crate::auth::require_user,
         ))
-        .with_state(hub)
+        .with_state((hub, db))
 }
 
 /// Which libraries changed, for as long as the page is open.
 ///
 /// No 404 and no error body anywhere in here: an `EventSource` cannot read one. A stream that has nothing
 /// to say says nothing, and the keep-alive comment is what stops a proxy closing it for being quiet.
-async fn events(State(hub): State<Hub>) -> impl IntoResponse {
-    let events = BroadcastStream::new(hub.subscribe()).map(frame);
+///
+/// **Only this person's libraries** (A3): which ones are theirs is read once, when the page opens the
+/// stream. `ponytail:` a library they make afterwards is heard after the page next reconnects, which an
+/// `EventSource` does on its own; read it per event if that ever shows.
+async fn events(
+    State((hub, db)): State<(Hub, PgPool)>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+) -> impl IntoResponse {
+    let theirs: HashSet<LibraryId> = lapidary_db::PgParts(db)
+        .libraries(user.id)
+        .await
+        .map(|rows| rows.into_iter().map(|row| row.id).collect())
+        .unwrap_or_default();
+    let events = BroadcastStream::new(hub.subscribe())
+        .filter(move |heard| match heard {
+            Ok(AppEvent::Changed { library }) => theirs.contains(library),
+            _ => true,
+        })
+        .map(frame);
     (
         no_buffering(),
         Sse::new(events).keep_alive(KeepAlive::default()),
