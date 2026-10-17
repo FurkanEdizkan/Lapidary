@@ -63,6 +63,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | The port: 3000 or the first free one at first start, remembered, and moved from Settings with no restart (the old port answers a minute more); fixed by LAPIDARY_PORT when set. Skeleton pages while loading | A5, built |
 | The models folder: chosen in the setup wizard and Settings › Server from a folder picker over the machine (LAPIDARY_BROWSE_ROOT), Lapidary restarting on it; fixed by LAPIDARY_MODELS_DIR when set. Refused while models are read from the current folder | A6, built |
 | Runs as the person who installed it (the owner of deploy/, or LAPIDARY_UID/GID), so their folders open with no permission command and what Lapidary writes is theirs; never root | A7, built |
+| `./install.sh`: Podman or Docker, deploy/.env written once with a random password, built, started, and the address and setup code printed. Lapidary's own files chosen in the wizard beside the models folder, copied there whole | A8, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
