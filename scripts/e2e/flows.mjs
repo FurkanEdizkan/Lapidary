@@ -36,6 +36,8 @@ for (const required of ['out', 'web', 'api', 'seed']) {
   if (args[required] === undefined) throw new Error(`--${required} is required`)
 }
 const seed = JSON.parse(readFileSync(args.seed, 'utf8'))
+// The rig's session (A1), from `stack.sh`; every request here is the rig's account.
+const SIGNED_IN = process.env.LAPIDARY_E2E_COOKIE ? { cookie: `lapidary_session=${process.env.LAPIDARY_E2E_COOKIE}` } : {}
 const only = args.only?.split(',').map((s) => s.trim())
 
 // ---------------------------------------------------------------------------------------------------
@@ -908,7 +910,7 @@ const FLOWS = [
         expect(confirmed, `the confirmation has no "${T.deletePart}" button`)
         // It invalidates the grid and navigates back to it, because the part no longer exists.
         await page.waitFor(`new URL(location.href).pathname === '/'`, 20_000)
-        const gone = await fetch(`${args.api}/api/parts/${victim.id}`)
+        const gone = await fetch(`${args.api}/api/parts/${victim.id}`, { headers: SIGNED_IN })
         expect(gone.status === 404, `the detail route answered ${gone.status} for a deleted part`)
         deleted = true
         const after = await ctx.countParts(ctx.uploaded.id)
@@ -1107,7 +1109,11 @@ const ctx = {
   async request(method, path, body) {
     const response = await fetch(args.api + path, {
       method,
-      ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      headers: {
+        ...SIGNED_IN,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
     if (!response.ok) throw new Error(`${method} ${path} answered ${response.status}`)
     const payload = await response.text()

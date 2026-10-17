@@ -84,6 +84,11 @@ services:
       # it off — the Settings page says so and nothing contacts those sites — for an install that
       # must make no outbound request beyond a picture somebody pastes.
       LAPIDARY_IMPORT_LINKS: ${LAPIDARY_IMPORT_LINKS:-true}
+      # The first-run wizard's setup code (A1). Unset, the server makes one and prints it in its log
+      # (`docker compose logs app`); set it for a scripted install.
+      LAPIDARY_SETUP_CODE: ${LAPIDARY_SETUP_CODE:-}
+      # `true` behind https, so the session cookie is sent over https only.
+      LAPIDARY_COOKIE_SECURE: ${LAPIDARY_COOKIE_SECURE:-false}
       # Job worker knobs, passed through empty when unset, which the server reads as "use the
       # default" (`empty_str_as_none` in bin/lapidary-server/src/main.rs). The defaults live in
       # lapidary_jobs::WorkerConfig; deploy/.env.example documents each one.

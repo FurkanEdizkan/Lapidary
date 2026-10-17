@@ -119,6 +119,10 @@ async function launch(url = args.url, ready = `document.querySelectorAll('articl
   }
 
   await send('Page.enable')
+  // Signed in as the rig's account (A1): `stack.sh` passes its session cookie.
+  if (process.env.LAPIDARY_E2E_COOKIE) {
+    await send('Network.setCookie', { name: 'lapidary_session', value: process.env.LAPIDARY_E2E_COOKIE, url: url })
+  }
   await send('Page.addScriptToEvaluateOnNewDocument', {
     source: `window.__links = []
       for (const context of [WebGLRenderingContext, WebGL2RenderingContext]) {
@@ -249,7 +253,8 @@ if (args.direct) {
     /DEFAULT_LIBRARY_ID: LibraryId = '([^']+)'/,
   )?.[1]
   if (library === undefined) throw new Error('DEFAULT_LIBRARY_ID moved; update open-timing.mjs')
-  const { parts } = await (await fetch(`${args.url}/api/libraries/${library}/parts?limit=500`)).json()
+  const signedIn = process.env.LAPIDARY_E2E_COOKIE ? { cookie: `lapidary_session=${process.env.LAPIDARY_E2E_COOKIE}` } : {}
+  const { parts } = await (await fetch(`${args.url}/api/libraries/${library}/parts?limit=500`, { headers: signedIn })).json()
   const chosen = parts.filter((part) => args.part === undefined || part.name === args.part)
   const draws = []
   for (let round = 0; round < Number(args.rounds); round++) {

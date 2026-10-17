@@ -96,6 +96,8 @@ export const strings = {
     settings: 'Settings — Lapidary',
     profile: 'Profile — Lapidary',
     dashboard: 'Dashboard — Lapidary',
+    setup: 'Set up — Lapidary',
+    login: 'Sign in — Lapidary',
   },
   /**
    * The bar above the grid: where you are, what you are looking for, how it is laid out, and
@@ -141,11 +143,64 @@ export const strings = {
   user: {
     menu: 'Account',
     profile: 'Profile',
+    signOut: 'Sign out',
   },
-  /** This install's profile (M2). There is no sign-in: one person runs an install. */
+  /**
+   * The first-run wizard (A1). It runs once, before anybody has an account, and makes the admin.
+   * Port and folders are compose's, so the server step shows them and says where they change.
+   */
+  setup: {
+    title: 'Set up Lapidary',
+    step: (n: number, of: number) => `Step ${n} of ${of}`,
+    accountTitle: 'Your account',
+    accountLead:
+      'You will be this install’s admin: you add the other people who use it. Nobody else can see your models unless you share them.',
+    codeLabel: 'Setup code',
+    codeHint: 'The server printed it when it started. Run `docker compose logs app` and look for “setup code”.',
+    usernameLabel: 'Username',
+    usernameHint: 'Letters, digits, dots, dashes or underscores. You sign in with it.',
+    displayNameLabel: 'Display name',
+    passwordLabel: 'Password',
+    passwordHint: 'At least 8 characters.',
+    confirmLabel: 'Password, again',
+    passwordsDiffer: 'The two passwords are different. Type the same one twice.',
+    passwordShort: 'A password needs at least 8 characters.',
+    missing: 'Fill in the setup code, a username and a password.',
+    serverTitle: 'This server',
+    serverLead:
+      'Where Lapidary reads your models and keeps its own files. These come from deploy/.env, and change there, followed by `docker compose up -d`.',
+    modelsFolder: 'Your models folder',
+    inbox: 'Uploads and imports',
+    store: 'Lapidary’s own files',
+    notSaid: 'Not given in deploy/.env',
+    optionsTitle: 'Options',
+    importLinks: 'Import models from Printables, Thingiverse and MyMiniFactory links',
+    importLinksHint:
+      'Lapidary contacts those sites only when you paste a link. Turn this off for an install that must contact nobody.',
+    importLinksForcedOff: 'Turned off by LAPIDARY_IMPORT_LINKS=false in deploy/.env.',
+    keysLater: 'Keys for Thingiverse and MyMiniFactory go in Settings once you are signed in.',
+    next: 'Next',
+    back: 'Back',
+    finish: 'Finish setup',
+    finishing: 'Setting up…',
+    failed: 'Setup did not finish. Check that the server is running, then try again.',
+    loading: 'Loading…',
+  },
+  /** Signing in (A1). */
+  login: {
+    title: 'Sign in',
+    lead: 'Sign in to see your models and the ones shared with you.',
+    usernameLabel: 'Username',
+    passwordLabel: 'Password',
+    submit: 'Sign in',
+    signingIn: 'Signing in…',
+    failed: 'Could not sign in. Check that the server is running, then try again.',
+    forgot: 'Forgot your password? Ask this install’s admin to reset it.',
+  },
+  /** The signed-in person's profile (M2; per person since A1). */
   profile: {
     title: 'Profile',
-    lead: 'What this install calls you. There are no accounts or sign-in: the name is this install’s, kept on its server.',
+    lead: 'What Lapidary calls you, in the account menu and wherever your name is shown.',
     nameLabel: 'Display name',
     save: 'Save',
     saved: 'Saved.',

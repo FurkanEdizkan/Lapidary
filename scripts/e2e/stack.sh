@@ -175,6 +175,10 @@ INGEST=$WORK/ingest
 # Where the app writes uploads and link imports, once, before indexing them (M4). Never under $INGEST.
 INBOX=$WORK/inbox
 RUNS=$WORK/runs
+# The rig's session (A1): written by `sign_in_rig`, sent by every `curl` below and handed to the flows.
+COOKIES=$WORK/cookies.txt
+RIG_USER=rig
+RIG_PASSWORD=rig-e2e-password
 # One process serves the app, its API and the worker since S1, so all three names are one origin. Kept
 # as three names because the flows and the seed say which of them they mean.
 WEB=http://127.0.0.1:$LAPIDARY_PORT_WEB
@@ -202,7 +206,7 @@ for var in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB LAPIDARY_LOG \
   LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR \
   LAPIDARY_PORT_WEB LAPIDARY_PORT_API LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER \
   LAPIDARY_WORKER_CONCURRENCY LAPIDARY_JOB_LEASE_SECS LAPIDARY_KERNEL_TIMEOUT \
-  LAPIDARY_JOB_POLL_SECS LAPIDARY_WORKER_ID; do
+  LAPIDARY_JOB_POLL_SECS LAPIDARY_WORKER_ID LAPIDARY_SETUP_CODE LAPIDARY_COOKIE_SECURE; do
   COMPOSE_UNSET+=(-u "$var")
 done
 
@@ -226,6 +230,8 @@ or_none() { local out; out=$("$@" 2>/dev/null | paste -sd', ' -); echo "${out:-n
 free_gb() { df --output=avail -BG "$1" | tail -1 | tr -dc '0-9'; }
 ram_gib() { awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo; }
 field() { python3 -c "import json,sys; value=json.load(sys.stdin); print($1)"; }
+# Every curl in this script carries the rig's session. `command`, so this is not itself.
+curl() { command curl -b "$COOKIES" "$@"; }
 json() { curl -sf -X "$1" -H 'content-type: application/json' ${3:+-d "$3"} "$2"; }
 sql() { compose exec -T db psql -U lapidary -d lapidary -Atc "$1"; }
 
@@ -401,8 +407,29 @@ LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB
 LAPIDARY_PORT_API=$LAPIDARY_PORT_API
 LAPIDARY_PORT_WORKER=$LAPIDARY_PORT_WORKER
 LAPIDARY_PORT_PEER=$LAPIDARY_PORT_PEER
+# The first-run wizard's code (A1), fixed so the seed can run setup without reading the log.
+LAPIDARY_SETUP_CODE=E2E-RIG-SETUP
 EOF
 }
+
+# The rig's account (A1): setup on a fresh stack, sign-in on one already set up. The cookie lands in
+# $COOKIES for every curl, and `rig_cookie` hands its value to the flows' browsers.
+sign_in_rig() {
+  local status
+  status=$(command curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" "$API/api/session")
+  [ "$status" = 200 ] && return 0
+  if [ "$status" = 409 ]; then
+    command curl -sf -c "$COOKIES" -H 'content-type: application/json' \
+      -d "{\"code\":\"E2E-RIG-SETUP\",\"username\":\"$RIG_USER\",\"password\":\"$RIG_PASSWORD\"}" \
+      "$API/api/setup" > /dev/null || die "setup refused the rig's account; see \`compose logs app\`"
+    note "ran first-run setup as $RIG_USER"
+  else
+    command curl -sf -c "$COOKIES" -H 'content-type: application/json' \
+      -d "{\"username\":\"$RIG_USER\",\"password\":\"$RIG_PASSWORD\"}" \
+      "$API/api/session" > /dev/null || die "the rig could not sign in as $RIG_USER (status $status)"
+  fi
+}
+rig_cookie() { awk '$6 == "lapidary_session" { print $7 }' "$COOKIES" | tail -1; }
 
 # ---------------------------------------------------------------------------------------------------
 # build
@@ -808,6 +835,7 @@ seed_picture() { # part id, image file
 
 cmd_seed() {
   wait_for "$API/api/healthz" "the api" 30 || die "nothing is up. Run \`stack.sh up\` first."
+  sign_in_rig
   echo "== INGEST TREE"
   build_ingest_tree
 
@@ -1155,6 +1183,7 @@ EOF
 # drive
 
 cmd_drive() {
+  sign_in_rig
   local compare='' only='' stamp run
   while [ $# -gt 0 ]; do
     case $1 in
@@ -1177,7 +1206,7 @@ cmd_drive() {
   # `seed` is why that is written down).
   {
     echo "== $(date -Is) drive $PROJECT at $(git -C "$ROOT" rev-parse --short HEAD)"
-    node "$ROOT/scripts/e2e/flows.mjs" \
+    LAPIDARY_E2E_COOKIE=$(rig_cookie) node "$ROOT/scripts/e2e/flows.mjs" \
       --out "$run" --web "$WEB" --api "$API" --seed "$WORK/seed.json" ${only:+--only "$only"}
     echo "flows exit $?"
     # **Skipped under `--only`, for the reason `flows.mjs` skips its own extra sessions**: `--only` means
@@ -1190,7 +1219,7 @@ cmd_drive() {
     else
       echo "== TIMING (web/scripts/open-timing.mjs, not reimplemented here)"
       # --url is explicit: its default is the owner's localhost:3000.
-      node "$ROOT/web/scripts/open-timing.mjs" --url "$WEB" --rounds 2
+      LAPIDARY_E2E_COOKIE=$(rig_cookie) node "$ROOT/web/scripts/open-timing.mjs" --url "$WEB" --rounds 2
     fi
   } 2>&1 | tee "$run/run.log"
 
