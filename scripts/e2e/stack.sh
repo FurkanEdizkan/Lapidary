@@ -616,7 +616,8 @@ cmd_up() {
   verify_ports
   mkdir -p "$STORE" "$INGEST" "$INBOX" "$RUNS"
   tag_borrowed_images
-  chown_store 10001:10001
+  # Lapidary runs as the owner of deploy/ (A7), which is this user, so its folders are this user's.
+  chown_store "$(id -u):$(id -g)"
 
   note "up"
   local began=$SECONDS

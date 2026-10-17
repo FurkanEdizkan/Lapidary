@@ -59,6 +59,10 @@ services:
       # Settings can move it with no restart; set, it is fixed here and Settings says so.
       LAPIDARY_PORT: ${LAPIDARY_PORT:-}
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
+      # Who Lapidary runs as (A7). Unset, the owner of this deploy/ folder: whoever installed it, so it
+      # reaches the folders they can and what it writes is theirs. deploy/entrypoint.sh decides.
+      LAPIDARY_UID: ${LAPIDARY_UID:-}
+      LAPIDARY_GID: ${LAPIDARY_GID:-}
       # The browser app, built into the image by deploy/Containerfile's `web` stage.
       LAPIDARY_WEB_DIR: /usr/share/lapidary/web
       # The store every model is kept in: the bind mount below.
@@ -139,6 +143,8 @@ services:
       # host, set LAPIDARY_BROWSE_ROOT to a folder you have labelled, or use LAPIDARY_MODELS_DIR. `rslave`
       # so a drive mounted after start shows up too.
       - ${LAPIDARY_BROWSE_ROOT:-/}:/host:rslave
+      # This folder, read-only, only so deploy/entrypoint.sh can see who owns it (A7).
+      - .:/etc/lapidary/owner:ro
       # Partial uploads. A named volume and not part of the storage root, so a half-transferred
       # file is never inside a directory whose contract is that everything in it is complete.
       - lapidary-uploads:/var/lib/lapidary-uploads:Z
