@@ -30,6 +30,8 @@ mod profile;
 pub mod retire;
 mod revisions;
 mod scan;
+// `pub` for `bin/lapidary-server`'s port routes, which own the listeners (A5).
+pub mod server_port;
 mod site_settings;
 mod sources;
 mod tags;

@@ -5,13 +5,18 @@ import {
   checkSiteKey,
   clearSiteKey,
   fetchImportSettings,
+  fetchServerPort,
   fetchSiteSettings,
+  followPort,
+  movePort,
   saveImportSettings,
   saveSiteKey,
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
+import { AppSkeleton } from '../components/Skeleton'
+import { currentUser } from '../lib/session'
 import type { SiteCheck, SiteSetting } from '../lib/types'
 
 export const Route = createFileRoute('/settings')({
@@ -57,8 +62,80 @@ export function SettingsPage() {
           </>
         )}
         <ImportSettingsSection />
+        <ServerSection />
       </section>
     </AppFrame>
+  )
+}
+
+/**
+ * The port (A5): fixed by deploy/.env, or this install's own and movable here. Moving shows the app's
+ * skeleton while the page follows the app to its new port.
+ */
+function ServerSection() {
+  const server = useQuery({ queryKey: ['server-port'], queryFn: fetchServerPort })
+  const [port, setPort] = useState('')
+  const [lost, setLost] = useState<number | null>(null)
+  const admin = currentUser()?.isAdmin ?? true
+  const move = useMutation({
+    mutationFn: async (to: number) => {
+      await movePort(to)
+      if (!(await followPort(to))) setLost(to)
+    },
+  })
+  if (server.data === undefined) return null
+  const locked = server.data.lockedBy
+  const wanted = Number(port)
+  return (
+    <>
+      {move.isPending ? (
+        <div className="fixed inset-0 z-50">
+          <AppSkeleton label={strings.settings.moving(wanted)} />
+        </div>
+      ) : null}
+      <h3 className="mt-10 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+        {strings.settings.serverHeading}
+      </h3>
+      <form
+        className="mt-3 flex flex-wrap items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (Number.isInteger(wanted) && wanted > 0 && !move.isPending) move.mutate(wanted)
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+          {strings.settings.port}
+          <input
+            type="number"
+            min={1024}
+            max={65535}
+            placeholder={String(server.data.port)}
+            value={port}
+            disabled={locked !== null || !admin}
+            onChange={(event) => setPort(event.target.value)}
+            className="w-32 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)] tabular"
+          />
+        </label>
+        {locked === null && admin ? (
+          <button type="submit" disabled={port === '' || move.isPending} className={BUTTON}>
+            {strings.settings.movePort}
+          </button>
+        ) : null}
+      </form>
+      <p className="mt-2 max-w-prose text-xs text-[var(--color-dim)]">
+        {locked !== null ? strings.settings.portLocked(locked) : admin ? strings.settings.portHint : strings.settings.portAdminsOnly}
+      </p>
+      {move.isError ? (
+        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+          {move.error.message}
+        </p>
+      ) : null}
+      {lost === null ? null : (
+        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+          {strings.settings.moveLost(lost)}
+        </p>
+      )}
+    </>
   )
 }
 

@@ -15,5 +15,7 @@
 # chose.
 services:
   app:
-    ports: !override
-      - "${LAPIDARY_PORT_WEB:?stack.sh writes this into target/e2e/<lane>/e2e.env}:8080"
+    # Host networking since A5, so the app binds the lane's port itself and the port is fixed here, as
+    # an operator would fix it in deploy/.env.
+    environment:
+      LAPIDARY_PORT: "${LAPIDARY_PORT_WEB:?stack.sh writes this into target/e2e/<lane>/e2e.env}"

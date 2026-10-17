@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { TileSkeleton } from '../Skeleton'
 import { flipFrom } from '../../lib/flip'
 import { strings } from '../../lib/strings'
 import type { StoredLayout, StoredWidget } from '../../lib/dashboard'
@@ -618,7 +619,7 @@ function Body({
   onRetry: (key: string) => void
 }) {
   if (result === undefined) {
-    return <p className="text-xs text-[var(--color-muted)]">{strings.dashboard.loading}</p>
+    return <TileSkeleton label={strings.dashboard.loading} />
   }
   if (result.status === 'ok') {
     return <>{drawValue(stored.widget, result.value)}</>
