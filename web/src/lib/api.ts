@@ -2,6 +2,7 @@ import type { Sort } from './preferences'
 import type {
   ChooseModelsFolder,
   HostFolders,
+  MakeFolder,
   ModelsFolder,
   MovePort,
   ServerPort,
