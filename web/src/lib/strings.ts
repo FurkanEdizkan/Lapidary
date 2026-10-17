@@ -225,7 +225,10 @@ export const strings = {
     open: (name: string) => `Open ${name}`,
     select: (name: string) => `Add ${name}`,
     empty: 'No folders or model files here.',
-    size: (bytes: number) => `${(bytes / 1_048_576).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`,
+    size: (bytes: number) =>
+      bytes < 1_048_576
+        ? `${Math.max(1, Math.round(bytes / 1024)).toLocaleString('en-US')} KB`
+        : `${(bytes / 1_048_576).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`,
     truncated: 'This folder holds more than the list shows. Open a folder inside it to see the rest.',
     loading: 'Loading…',
     failed: 'Could not read this folder. Check that the server is running, then try again.',
@@ -1698,7 +1701,7 @@ export const strings = {
   emptyLibrary: {
     title: 'Nothing here yet',
     body:
-      'This library is empty. Upload a folder of models, drop one anywhere on this page, or scan the directory mounted on the server — every model found appears here.',
+      'This library is empty. Choose models from your models folder with Import, upload a folder, or drop one anywhere on this page — every model you add appears here.',
     /** Under the first run's Upload: the gesture with no button of its own, said once where it matters. */
     dropHint: 'Or drag a folder from your file manager and drop it anywhere.',
     /**
