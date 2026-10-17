@@ -10,14 +10,18 @@ export type ModelsFolder = {
  */
 path: string | null, 
 /**
- * Where Lapidary keeps its own files (pictures and the store) on the host, when known. Shown,
- * never chosen here: moving it would break every download.
+ * Where Lapidary keeps its own files (pictures and the store) on the host, when known. Chosen in
+ * the wizard (A8): the store is copied there whole first.
  */
 store: string | null, 
 /**
  * `LAPIDARY_MODELS_DIR` when `deploy/.env` fixes the folder.
  */
 lockedBy: string | null, 
+/**
+ * `LAPIDARY_STORAGE_ROOT` when `deploy/.env` fixes where Lapidary's own files are (A8).
+ */
+storeLockedBy: string | null, 
 /**
  * Whether this deployment mounts a browse root to choose from.
  */

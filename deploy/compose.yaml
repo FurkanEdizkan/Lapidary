@@ -86,10 +86,9 @@ services:
       LAPIDARY_EXAMPLE_DIR: /usr/share/lapidary/example-parts
       # The same value as the storage mount below, told to the process rather than only to the
       # runtime. Nothing reads a file through it: it is what the card shows when it says where a
-      # model is, which is only useful if it is somewhere a person can open. Ignored unless
-      # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
-      # absolute path, as .env.example recommends, and the paths appear.
-      LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
+      # model is, which is only useful if it is somewhere a person can open. Set, it also fixes where
+      # Lapidary's own files are; unset, the wizard may choose a folder inside /host for them (A8).
+      LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-}
       # The same, for your models folder: what a card's "show in folder" path starts with. Set, it also
       # fixes the folder, and the wizard and Settings say so instead of offering a choice (A6).
       LAPIDARY_HOST_INGEST_ROOT: ${LAPIDARY_MODELS_DIR:-}

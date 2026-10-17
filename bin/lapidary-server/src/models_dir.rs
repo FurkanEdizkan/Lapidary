@@ -29,6 +29,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Where the chosen folder is kept, as a host path.
 const SETTING: &str = "models_dir";
+/// And Lapidary's own files (A8).
+const STORE_SETTING: &str = "store_dir";
 /// Lapidary's own top-level folders in the models folder; a new folder gets a copy of them.
 const OWN: [&str; 3] = ["examples", "uploads", "imports"];
 /// Never a models folder: the kernel's and the running system's own.
@@ -77,10 +79,42 @@ pub struct Folder {
     pub locked_by: Option<String>,
 }
 
+/// Which folder: the models folder, or Lapidary's own files (A8). Each is a setting, fixed by its
+/// `deploy/.env` variable.
+#[derive(Debug, Clone, Copy)]
+pub enum Which {
+    Models,
+    Store,
+}
+
+impl Which {
+    fn setting(self) -> &'static str {
+        match self {
+            Self::Models => SETTING,
+            Self::Store => STORE_SETTING,
+        }
+    }
+
+    fn variable(self) -> &'static str {
+        match self {
+            Self::Models => "LAPIDARY_MODELS_DIR",
+            Self::Store => "LAPIDARY_STORAGE_ROOT",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Models => "the models folder",
+            Self::Store => "the folder for Lapidary's own files",
+        }
+    }
+}
+
 /// At start: the operator's folder when `deploy/.env` fixes one, else the one chosen here, else the
 /// deployment's mount (`default`).
 pub async fn first(
     db: &PgPool,
+    which: Which,
     default: PathBuf,
     fixed: Option<String>,
     host: Option<&Host>,
@@ -89,11 +123,11 @@ pub async fn first(
         return Folder {
             dir: default,
             shown: fixed.filter(|shown| Path::new(shown).is_absolute()),
-            locked_by: Some("LAPIDARY_MODELS_DIR".to_owned()),
+            locked_by: Some(which.variable().to_owned()),
         };
     }
     let saved = PgSettings(db.clone())
-        .get(SETTING)
+        .get(which.setting())
         .await
         .ok()
         .flatten()
@@ -109,7 +143,8 @@ pub async fn first(
             }
             None => tracing::warn!(
                 folder = %saved,
-                "the chosen models folder is not there; using the deployment's until it is, or another is chosen"
+                which = which.name(),
+                "the chosen folder is not there; using the deployment's until it is, or another is chosen"
             ),
         }
     }
@@ -125,7 +160,7 @@ struct Picker {
     db: PgPool,
     host: Option<Arc<Host>>,
     folder: Arc<Folder>,
-    store: Option<String>,
+    store: Arc<Folder>,
     restart: CancellationToken,
 }
 
@@ -134,14 +169,14 @@ pub fn routes(
     db: PgPool,
     host: Option<Host>,
     folder: Folder,
-    store: Option<String>,
+    store: Folder,
     restart: CancellationToken,
 ) -> Router {
     let picker = Picker {
         db: db.clone(),
         host: host.map(Arc::new),
         folder: Arc::new(folder),
-        store,
+        store: Arc::new(store),
         restart,
     };
     let signed_in = Router::new()
@@ -164,9 +199,10 @@ pub fn routes(
 fn describe(picker: &Picker) -> ModelsFolder {
     ModelsFolder {
         path: picker.folder.shown.clone(),
-        store: picker.store.clone(),
+        store: picker.store.shown.clone(),
         locked_by: picker.folder.locked_by.clone(),
-        can_choose: picker.host.is_some() && picker.folder.locked_by.is_none(),
+        store_locked_by: picker.store.locked_by.clone(),
+        can_choose: picker.host.is_some(),
     }
 }
 
@@ -319,7 +355,7 @@ fn cannot_open(shown: &str) -> String {
 
 fn cannot_write(shown: &str) -> String {
     format!(
-        "Lapidary can't write to {shown}, so it can't be the models folder: uploads go there, and removed models into its _removed. To use this folder, run `sudo setfacl -R -m u:{uid}:rwX -m d:u:{uid}:rwX \"{shown}\"`, then reload.",
+        "Lapidary can't write to {shown}, so it can't keep uploads, removed models or Lapidary's own files there. To use this folder, run `sudo setfacl -R -m u:{uid}:rwX -m d:u:{uid}:rwX \"{shown}\"`, then reload.",
         uid = rustix::process::getuid().as_raw()
     )
 }
@@ -332,46 +368,112 @@ async fn choose(
     if !user.is_admin {
         return refused(StatusCode::FORBIDDEN, ADMINS_ONLY);
     }
-    if let Some(by) = &picker.folder.locked_by {
-        return refused(
-            StatusCode::CONFLICT,
-            &format!(
-                "The models folder is set by {by} in deploy/.env. Change it there and run `docker compose up -d`."
-            ),
-        );
-    }
     let Some(host) = picker.host.clone() else {
         return refused(StatusCode::CONFLICT, NO_BROWSE_ROOT);
     };
     let Ok(Json(body)) = body else {
         return refused(
             StatusCode::BAD_REQUEST,
-            "Send the folder as `{\"path\": \"/srv/models\"}`.",
+            "Send the folders as `{\"path\": \"/srv/models\", \"store\": null}`.",
         );
     };
-    let current = picker.folder.dir.clone();
-    let db = picker.db.clone();
-    let chosen = tokio::task::spawn_blocking(move || prepare(&host, &body.path, &current)).await;
-    let (shown, new_dir) = match chosen {
-        Ok(Ok(Some(chosen))) => chosen,
-        // The folder it already runs on: nothing to do.
-        Ok(Ok(None)) => return Json(describe(&picker)).into_response(),
-        Ok(Err((status, sentence))) => return refused(status, &sentence),
-        Err(_) => {
+    let mut changes: Vec<(Which, String)> = Vec::new();
+    // The models folder that will be in use, for the store's check that the two stay apart.
+    let mut models_dir = picker.folder.dir.clone();
+    if let Some(asked) = body.path {
+        match choose_models(&picker, &host, asked).await {
+            Ok(Some((shown, dir))) => {
+                models_dir = dir;
+                changes.push((Which::Models, shown));
+            }
+            Ok(None) => {}
+            Err(refusal) => return refusal,
+        }
+    }
+    if let Some(asked) = body.store {
+        match choose_store(&picker, &host, asked, models_dir).await {
+            Ok(Some(shown)) => changes.push((Which::Store, shown)),
+            Ok(None) => {}
+            Err(refusal) => return refusal,
+        }
+    }
+    if changes.is_empty() {
+        return Json(describe(&picker)).into_response();
+    }
+    let settings = PgSettings(picker.db.clone());
+    for (which, shown) in &changes {
+        if let Err(error) = settings
+            .set(which.setting(), &serde_json::json!(shown))
+            .await
+        {
+            tracing::error!(%error, which = which.name(), "could not save the folder");
             return refused(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Checking the folder failed. Try again.",
+                "The folder was not saved. Try again.",
             );
         }
+        tracing::info!(folder = %shown, which = which.name(), "changed; restarting on it");
+    }
+    // The answer leaves first; the graceful stop waits for it either way.
+    let restart = picker.restart.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        restart.cancel();
+    });
+    let mut now = describe(&picker);
+    for (which, shown) in changes {
+        match which {
+            Which::Models => now.path = Some(shown),
+            Which::Store => now.store = Some(shown),
+        }
+    }
+    (StatusCode::ACCEPTED, Json(now)).into_response()
+}
+
+fn locked(which: Which, by: &str) -> Response {
+    refused(
+        StatusCode::CONFLICT,
+        &format!(
+            "{} is set by {by} in deploy/.env. Change it there and run `docker compose up -d`.",
+            capital(which.name())
+        ),
+    )
+}
+
+fn capital(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The models folder, checked, with Lapidary's own files in it copied over: its host path and its
+/// path here, or `None` when it is the one in use.
+async fn choose_models(
+    picker: &Picker,
+    host: &Arc<Host>,
+    asked: String,
+) -> Result<Option<(String, PathBuf)>, Response> {
+    if let Some(by) = &picker.folder.locked_by {
+        return Err(locked(Which::Models, by));
+    }
+    let current = picker.folder.dir.clone();
+    let checked = {
+        let host = host.clone();
+        tokio::task::spawn_blocking(move || prepare(&host, &asked, &current, Which::Models)).await
     };
-    let used = match PgSources(db.clone()).folder_use(&OWN).await {
+    let (shown, new_dir) = match checked {
+        Ok(Ok(Some(chosen))) => chosen,
+        Ok(Ok(None)) => return Ok(None),
+        Ok(Err((status, sentence))) => return Err(refused(status, &sentence)),
+        Err(_) => return Err(failed("Checking the folder failed. Try again.")),
+    };
+    let used = match PgSources(picker.db.clone()).folder_use(&OWN).await {
         Ok(used) => used,
         Err(error) => {
             tracing::error!(%error, "could not read what the models folder holds");
-            return refused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Reading the library failed. Try again.",
-            );
+            return Err(failed("Reading the library failed. Try again."));
         }
     };
     if used.sources > 0 || used.in_place > 0 {
@@ -380,61 +482,72 @@ async fn choose(
             .shown
             .clone()
             .unwrap_or_else(|| "the current models folder".to_owned());
-        return refused(
+        return Err(refused(
             StatusCode::CONFLICT,
             &format!(
                 "{} model(s) and {} added file(s) or folder(s) are read from {now}, and would be lost track of in another folder. Remove them from the library first, or keep this folder.",
                 used.in_place, used.sources
             ),
-        );
+        ));
     }
     let from = picker.folder.dir.clone();
     let files = used.own_files;
-    let copied = tokio::task::spawn_blocking({
-        let new_dir = new_dir.clone();
-        move || copy_own(&from, &new_dir, &files)
-    })
-    .await;
+    let copied = {
+        let to = new_dir.clone();
+        tokio::task::spawn_blocking(move || copy_own(&from, &to, &files)).await
+    };
     match copied {
-        Ok(Ok(())) => {}
-        Ok(Err(sentence)) => return refused(StatusCode::CONFLICT, &sentence),
-        Err(_) => {
-            return refused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Copying Lapidary's files failed. Try again.",
-            );
-        }
+        Ok(Ok(())) => Ok(Some((shown, new_dir))),
+        Ok(Err(sentence)) => Err(refused(StatusCode::CONFLICT, &sentence)),
+        Err(_) => Err(failed("Copying Lapidary's files failed. Try again.")),
     }
-    if let Err(error) = PgSettings(db).set(SETTING, &serde_json::json!(shown)).await {
-        tracing::error!(%error, "could not save the models folder");
-        return refused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "The folder was not saved. Try again.",
-        );
+}
+
+/// Lapidary's own files (A8), checked and copied whole to the new folder: its host path, or `None`
+/// when it is the one in use. Never inside the models folder, nor holding it.
+async fn choose_store(
+    picker: &Picker,
+    host: &Arc<Host>,
+    asked: String,
+    models_dir: PathBuf,
+) -> Result<Option<String>, Response> {
+    if let Some(by) = &picker.store.locked_by {
+        return Err(locked(Which::Store, by));
     }
-    tracing::info!(folder = %shown, "the models folder changed; restarting on it");
-    // The answer leaves first; the graceful stop waits for it either way.
-    let restart = picker.restart.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        restart.cancel();
-    });
-    (
-        StatusCode::ACCEPTED,
-        Json(ModelsFolder {
-            path: Some(shown),
-            store: picker.store.clone(),
-            locked_by: None,
-            can_choose: true,
-        }),
-    )
-        .into_response()
+    let from = picker.store.dir.clone();
+    let checked = {
+        let (host, from) = (host.clone(), from.clone());
+        tokio::task::spawn_blocking(move || {
+            let chosen = prepare(&host, &asked, &from, Which::Store)?;
+            if let Some((shown, real)) = &chosen {
+                let models = models_dir.canonicalize().unwrap_or(models_dir);
+                if real.starts_with(&models) || models.starts_with(real) {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("{shown} and the models folder would be one inside the other. Keep Lapidary's own files in a folder of their own."),
+                    ));
+                }
+                copy_tree(&from, real).map_err(|sentence| (StatusCode::CONFLICT, sentence))?;
+            }
+            Ok(chosen)
+        })
+        .await
+    };
+    match checked {
+        Ok(Ok(chosen)) => Ok(chosen.map(|(shown, _)| shown)),
+        Ok(Err((status, sentence))) => Err(refused(status, &sentence)),
+        Err(_) => Err(failed("Copying Lapidary's files failed. Try again.")),
+    }
+}
+
+fn failed(sentence: &str) -> Response {
+    refused(StatusCode::INTERNAL_SERVER_ERROR, sentence)
 }
 
 /// The chosen folder, checked: `None` when it is the one in use.
 type Chosen = Result<Option<(String, PathBuf)>, (StatusCode, String)>;
 
-fn prepare(host: &Host, asked: &str, current: &Path) -> Chosen {
+fn prepare(host: &Host, asked: &str, current: &Path, which: Which) -> Chosen {
     let asked = asked.trim();
     let outside = || {
         (
@@ -462,7 +575,10 @@ fn prepare(host: &Host, asked: &str, current: &Path) -> Chosen {
     if real == host.dir || off_limits(&shown) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("{shown} can't be the models folder. Choose a folder of your own inside it."),
+            format!(
+                "{shown} can't be {}. Choose a folder of your own inside it.",
+                which.name()
+            ),
         ));
     }
     if !writable(&real) {
@@ -479,37 +595,70 @@ fn prepare(host: &Host, asked: &str, current: &Path) -> Chosen {
 /// copied; one that differs refuses, and nothing in either folder is removed.
 fn copy_own(from: &Path, to: &Path, files: &[String]) -> Result<(), String> {
     for rel in files {
-        let (source, target) = (from.join(rel), to.join(rel));
-        let Ok(meta) = std::fs::metadata(&source) else {
+        if !copy_one(&from.join(rel), &to.join(rel), rel)? {
             tracing::warn!(file = %rel, "a file Lapidary wrote is no longer in the models folder; not copied");
-            continue;
-        };
-        if let Ok(there) = std::fs::metadata(&target) {
-            if there.len() == meta.len() {
-                continue;
-            }
-            return Err(format!(
-                "{} is already in the new folder and is a different file. Move it aside, or choose another folder.",
-                rel
-            ));
         }
-        let copy = || -> std::io::Result<()> {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut out = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)?;
-            std::io::copy(&mut std::fs::File::open(&source)?, &mut out)?;
-            out.set_modified(meta.modified()?)?;
-            out.sync_all()
-        };
-        copy().map_err(|error| {
-            format!("Could not copy {rel} into the new folder ({error}). Check that Lapidary may write there, then try again.")
-        })?;
     }
     Ok(())
+}
+
+/// Copy every file under `from` to the same place under `to` (A8, Lapidary's own files), the same
+/// way. Symbolic links are left out.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    let mut folders = vec![PathBuf::new()];
+    while let Some(rel) = folders.pop() {
+        let entries = std::fs::read_dir(from.join(&rel)).map_err(|error| {
+            format!(
+                "Could not read {} to copy it ({error}).",
+                from.join(&rel).display()
+            )
+        })?;
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let inner = rel.join(entry.file_name());
+            if kind.is_dir() {
+                folders.push(inner);
+            } else if kind.is_file() {
+                let shown = inner.display().to_string();
+                copy_one(&from.join(&inner), &to.join(&inner), &shown)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One file, keeping its modified time, which a download compares. A file already there with the
+/// same size is taken as copied; one that differs refuses. `false` when the source is gone.
+fn copy_one(source: &Path, target: &Path, rel: &str) -> Result<bool, String> {
+    let Ok(meta) = std::fs::metadata(source) else {
+        return Ok(false);
+    };
+    if let Ok(there) = std::fs::metadata(target) {
+        if there.len() == meta.len() {
+            return Ok(true);
+        }
+        return Err(format!(
+            "{rel} is already in the new folder and is a different file. Move it aside, or choose another folder."
+        ));
+    }
+    let copy = || -> std::io::Result<()> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)?;
+        std::io::copy(&mut std::fs::File::open(source)?, &mut out)?;
+        out.set_modified(meta.modified()?)?;
+        out.sync_all()
+    };
+    copy().map_err(|error| {
+        format!("Could not copy {rel} into the new folder ({error}). Check that Lapidary may write there, then try again.")
+    })?;
+    Ok(true)
 }
 
 fn refused(status: StatusCode, message: &str) -> Response {
@@ -550,13 +699,14 @@ mod tests {
         std::fs::create_dir(&models).expect("models");
         let host = host(root.path());
         // The root itself, or a path the mount does not have.
-        assert!(prepare(&host, "/", root.path()).is_err());
-        assert!(prepare(&host, "/missing", root.path()).is_err());
-        assert!(prepare(&host, "/models/../..", root.path()).is_err());
-        let chosen = prepare(&host, "/models", root.path()).expect("chosen");
+        let models_dir = Which::Models;
+        assert!(prepare(&host, "/", root.path(), models_dir).is_err());
+        assert!(prepare(&host, "/missing", root.path(), models_dir).is_err());
+        assert!(prepare(&host, "/models/../..", root.path(), models_dir).is_err());
+        let chosen = prepare(&host, "/models", root.path(), models_dir).expect("chosen");
         assert_eq!(chosen.map(|(shown, _)| shown), Some("/models".to_owned()));
         // The one in use is no change.
-        assert_eq!(prepare(&host, "/models", &models), Ok(None));
+        assert_eq!(prepare(&host, "/models", &models, models_dir), Ok(None));
     }
 
     #[test]
@@ -581,5 +731,24 @@ mod tests {
         std::fs::write(to.path().join(&rel), b"other").expect("other");
         assert!(copy_own(from.path(), to.path(), std::slice::from_ref(&rel)).is_err());
         assert_eq!(std::fs::read(to.path().join(&rel)).expect("kept"), b"other");
+    }
+
+    #[test]
+    fn the_store_is_copied_whole_with_its_times() {
+        let (from, to) = (
+            tempfile::tempdir().expect("from"),
+            tempfile::tempdir().expect("to"),
+        );
+        let rel = "libraries/default/flange-dn40-lp-3310-02_554fb0/flange-dn40-lp-3310-02.stl";
+        std::fs::create_dir_all(from.path().join(rel).parent().expect("parent")).expect("folders");
+        std::fs::write(from.path().join(rel), b"solid flange\nendsolid flange\n").expect("written");
+        copy_tree(from.path(), to.path()).expect("copied");
+        let (a, b) = (
+            std::fs::metadata(from.path().join(rel)).expect("source"),
+            std::fs::metadata(to.path().join(rel)).expect("copy"),
+        );
+        assert_eq!((a.len(), a.modified().ok()), (b.len(), b.modified().ok()));
+        // Again is a no-op.
+        copy_tree(from.path(), to.path()).expect("again");
     }
 }

@@ -31,11 +31,13 @@ pub struct MovePort {
 pub struct ModelsFolder {
     /// The folder on the host, when Lapidary knows it.
     pub path: Option<String>,
-    /// Where Lapidary keeps its own files (pictures and the store) on the host, when known. Shown,
-    /// never chosen here: moving it would break every download.
+    /// Where Lapidary keeps its own files (pictures and the store) on the host, when known. Chosen in
+    /// the wizard (A8): the store is copied there whole first.
     pub store: Option<String>,
     /// `LAPIDARY_MODELS_DIR` when `deploy/.env` fixes the folder.
     pub locked_by: Option<String>,
+    /// `LAPIDARY_STORAGE_ROOT` when `deploy/.env` fixes where Lapidary's own files are (A8).
+    pub store_locked_by: Option<String>,
     /// Whether this deployment mounts a browse root to choose from.
     pub can_choose: bool,
 }
@@ -59,5 +61,10 @@ pub struct HostFolders {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ChooseModelsFolder {
-    pub path: String,
+    /// The models folder, or `null` to keep it.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Lapidary's own files (A8), or `null` to keep them where they are.
+    #[serde(default)]
+    pub store: Option<String>,
 }
