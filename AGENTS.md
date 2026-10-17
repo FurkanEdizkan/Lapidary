@@ -36,14 +36,20 @@ area — these encode decisions that are expensive to reverse.
   always**. There is no analytic half any more, which makes this rule simpler rather than weaker: if a
   number reaches a person without its ≈, that is a bug.
 - **A part keeps its file history; no locks, states or approvals.** A changed file becomes the
-  part's next revision in every library, and the one before it stays on disk and downloadable.
+  part's next revision in every library. The one before it keeps its figures and its hash; its file
+  is gone if the owner saved over it, and its download says so.
   Revisions are immutable and content-addressed. No merge, no branches, no diff. *(Until 2026-10-16
   this read "Perforce-shaped, pessimistic locks" and "governance is opt-in per library"; S4 removed
   check-outs, the library modes and the desktop agent.)*
 - **The application is free and complete.** No gated features in the app. Revenue is the
   server, fleet, support and cloud.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
-  ingested bytes. Anything we produced is named `*.lapidary.*`.
+  ingested bytes — as long as the file on disk has not changed since it was indexed; a changed
+  file is refused with a sentence, never served. Anything we produced is named `*.lapidary.*`.
+- **Your folders are read where they are** (owner, 2026-10-17). A scan never copies, renames,
+  moves, writes or deletes anything under the ingest mount, which is mounted read-only; uploads
+  and imports are written once into the inbox. A category is the library's own grouping, and a
+  move is a database change.
 
 ## Non-negotiable technical rules
 

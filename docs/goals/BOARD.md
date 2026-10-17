@@ -103,7 +103,7 @@ uploads and imports; **delete removes from the library and never touches the fil
 | [M1](M1.md) | What the owner saw first: stale card picture, overlapping part page, home link | 8 | web | — | `PartDetail.tsx` picture mutations and layout, `AppFrame.tsx` mark | — | merged `b421948` | `fix/first-look` |
 | [M2](M2.md) | A user menu (Profile, Settings) and an MVP header | 8 | web + API | M1 | `AppFrame.tsx` places and menu, a profile route | 0060 | merged `ca87e42` | `feat/user-menu` |
 | [M3](M3.md) | Delete is delete: no restore, purge or quarantine | 8 | Rust + web | M1 | `lifecycle.rs`, `removed.tsx`, `repo.rs` delete, the reaper's quarantine | 0061 | merged `fd6886a` | `chore/delete-is-final` |
-| [M4](M4.md) | Your folders, read where they are, and an inbox | 9 | Rust + deploy | M3 | `lapidary-ingest` scan/handler, `lapidary-storage` source half, `download.rs`, `moves.rs`, compose mounts | 0062 | open | `feat/index-in-place` |
+| [M4](M4.md) | Your folders, read where they are, and an inbox | 9 | Rust + deploy | M3 | `lapidary-ingest` scan/handler, `lapidary-storage` source half, `download.rs`, `moves.rs`, compose mounts | 0062 | merged `8c8df96` | `feat/index-in-place` |
 | [M5](M5.md) | A model's pictures, as a set | 9 | Rust + web | M1 | `link.rs` pictures, `Card.tsx` | — | open | `feat/picture-sets` |
 
 **Migration numbers:** 0060 M2 · 0061 M3 · 0062 M4.
