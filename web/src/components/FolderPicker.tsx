@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchHostFolders, makeHostFolder } from '../lib/api'
 import { strings } from '../lib/strings'
 import { Dialog } from './Dialog'
@@ -63,6 +63,11 @@ export function FolderPicker({
   const base = root.replace(/\/$/, '')
   const below = data ? data.path.slice(base.length).split('/').filter(Boolean) : []
   const crumb = (i: number) => `${base}/${below.slice(0, i + 1).join('/')}`
+  // The end of a long path is the part that says where you are.
+  const field = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (field.current !== null && typed === null) field.current.scrollLeft = field.current.scrollWidth
+  }, [data?.path, typed])
 
   return (
     <Dialog title={title} onClose={onCancel} size="wide">
@@ -76,6 +81,7 @@ export function FolderPicker({
         }}
       >
         <input
+          ref={field}
           aria-label={strings.folderPicker.pathLabel}
           value={typed ?? data?.path ?? at ?? ''}
           onChange={(event) => setTyped(event.target.value)}
@@ -98,9 +104,18 @@ export function FolderPicker({
         >
           <Icon name="arrowUp" />
         </button>
-        <nav aria-label={strings.folderPicker.crumbs} className="flex min-w-0 flex-1 flex-wrap items-center text-sm">
-          <button type="button" onClick={() => open(root)} className={`${QUIET} font-mono`}>
-            {root}
+        <nav
+          aria-label={strings.folderPicker.crumbs}
+          className="flex min-w-0 flex-1 items-center overflow-x-auto text-sm"
+        >
+          <button
+            type="button"
+            title={root}
+            aria-current={below.length === 0 ? 'location' : undefined}
+            onClick={() => open(root)}
+            className={`${QUIET} whitespace-nowrap ${below.length === 0 ? 'text-[var(--color-text)]' : ''}`}
+          >
+            {base === '' ? '/' : base.slice(base.lastIndexOf('/') + 1)}
           </button>
           {below.map((name, i) => (
             <span key={crumb(i)} className="flex min-w-0 items-center">
@@ -113,7 +128,7 @@ export function FolderPicker({
                 type="button"
                 aria-current={i === below.length - 1 ? 'location' : undefined}
                 onClick={() => open(crumb(i))}
-                className={`${QUIET} truncate ${i === below.length - 1 ? 'text-[var(--color-text)]' : ''}`}
+                className={`${QUIET} whitespace-nowrap ${i === below.length - 1 ? 'text-[var(--color-text)]' : ''}`}
               >
                 {name}
               </button>
@@ -122,7 +137,7 @@ export function FolderPicker({
         </nav>
         <button
           type="button"
-          disabled={!data?.choosable || naming !== null}
+          disabled={data === undefined || data.problem !== null || naming !== null}
           onClick={() => setNaming('')}
           className={`${QUIET} flex shrink-0 items-center gap-1.5`}
         >
