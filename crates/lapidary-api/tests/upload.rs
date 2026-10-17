@@ -486,6 +486,21 @@ async fn a_drop_with_one_b_rep_file_among_meshes_still_takes_the_meshes(pool: sq
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_archive_beside_a_b_rep_file_is_something_to_take(pool: sqlx::PgPool) {
+    // A10: the archive's job opens it, so a drop of a pack and a STEP file is not refused up front.
+    let server = server(pool.clone());
+    let good = server.upload(BRACKET).await;
+    let (status, json) = server
+        .commit(serde_json::json!([
+            { "path": "packs/voron-spares.zip", "blake3": good.to_hex() },
+            { "path": "fixtures/fixture-plate-lp-9000-00.step", "blake3": good.to_hex() },
+        ]))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    assert_eq!(json["queued"], 2, "{json}");
+}
+
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_hash_that_is_not_a_hash_never_reaches_the_filesystem(pool: sqlx::PgPool) {
     let server = server(pool);
     let (status, json) = server

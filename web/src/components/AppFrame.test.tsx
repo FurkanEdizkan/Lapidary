@@ -90,18 +90,31 @@ test('the crash frame has the mark and nothing that needs a router', () => {
 
 /** DESIGN.md: Layout Blue marks what is live. An Upload button waiting for a click is not. */
 test('Upload wears no accent at rest, and an accent bar while an upload runs', () => {
-  const { rerender, container } = render(<UploadButton onUpload={() => {}} busy={false} progress={undefined} />)
+  const { rerender, container } = render(<UploadButton onFiles={() => {}} onFolder={() => {}} busy={false} progress={undefined} />)
   expect(container.innerHTML).not.toContain('--color-accent')
 
   rerender(
     <UploadButton
-      onUpload={() => {}}
+      onFiles={() => {}}
+      onFolder={() => {}}
       busy
       progress={{ phase: 'transferring', filesDone: 3, filesTotal: 12, bytesSent: 25, bytesToSend: 100, alreadyHere: 0 }}
     />,
   )
   expect(container.innerHTML).toContain('--color-accent')
   expect(container.textContent).toContain('25%')
+})
+
+/** A10: Upload opens a menu, and its two items open the files picker and the folder picker. */
+test('Upload offers files, archives among them, or a folder', () => {
+  const onFiles = vi.fn()
+  const onFolder = vi.fn()
+  render(<UploadButton onFiles={onFiles} onFolder={onFolder} busy={false} progress={undefined} />)
+  fireEvent.click(screen.getByText(strings.toolbar.uploadFiles))
+  expect(onFiles).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByText(strings.toolbar.uploadAFolder))
+  expect(onFolder).toHaveBeenCalledTimes(1)
+  expect(screen.getByText(strings.toolbar.uploadFilesHint)).toBeDefined()
 })
 
 function Overlay({ onFiles }: { onFiles: () => void }) {

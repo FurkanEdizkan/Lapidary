@@ -34,13 +34,16 @@ export function ImportDialog({
   onClose,
   onScan,
   onUpload,
+  onUploadFolder,
   onFromLink,
 }: {
   library: LibraryId
   onClose: () => void
   /** Scan the library, with the grid's own progress line. */
   onScan: () => void
+  /** Files, archives among them (A10). */
   onUpload: () => void
+  onUploadFolder: () => void
   onFromLink: () => void
 }) {
   const queryClient = useQueryClient()
@@ -252,6 +255,9 @@ export function ImportDialog({
         {strings.addModels.otherWays}
         <button type="button" onClick={onUpload} className={QUIET}>
           {strings.addModels.upload}
+        </button>
+        <button type="button" onClick={onUploadFolder} className={QUIET}>
+          {strings.addModels.uploadFolder}
         </button>
         <button type="button" onClick={onFromLink} className={QUIET}>
           {strings.addModels.fromLink}

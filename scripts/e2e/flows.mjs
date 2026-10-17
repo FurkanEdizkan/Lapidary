@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { execFileSync } from 'node:child_process'
 import { session, sleep, uploadThrough } from './cdp.mjs'
 
 const { values: args } = parseArgs({
@@ -120,21 +121,34 @@ function stampInto(dir, files, stamp, ctx) {
   }
 }
 
-/** The header's Upload button, pressed for real, because Chrome opens no file chooser without user activation. */
-function pressUpload(page, folder) {
+/**
+ * The header's Upload menu and one of its items, both pressed for real, because Chrome opens no file chooser
+ * without user activation. `item` is the menu's A folder… (a directory in `paths`) or Files… (files in it).
+ */
+function pressUpload(page, folder, { item = T.uploadAFolder, paths = [folder] } = {}) {
+  const centre = (find) => `(() => {
+    const b = ${find}
+    if (!b) return null
+    const r = b.getBoundingClientRect()
+    return r.width === 0 ? null : { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  })()`
   return uploadThrough(
     page,
     async (p) => {
-      const at = await p.evaluate(`(() => {
-        const b = [...document.querySelectorAll('header button')].find((e) => e.textContent.includes(${JSON.stringify(T.uploadButton)}))
-        if (!b) return null
-        const r = b.getBoundingClientRect()
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-      })()`)
+      const at = await p.evaluate(
+        centre(`[...document.querySelectorAll('header button')].find((e) => e.textContent.trim() === ${JSON.stringify(T.uploadButton)})`),
+      )
       expect(at !== null, `no header button reads "${T.uploadButton}"`)
       await p.click(at.x, at.y)
+      const choice = await p.settle(
+        () => p.evaluate(centre(`[...document.querySelectorAll('#upload-menu button')].find((e) => e.textContent.startsWith(${JSON.stringify(item)}))`)),
+        (r) => r !== null,
+        { timeout: 5000, every: 100 },
+      )
+      expect(choice !== null, `the Upload menu has no "${item}"`)
+      await p.click(choice.x, choice.y)
     },
-    [folder],
+    paths,
     { mode: 'selectMultiple' },
   )
 }
@@ -158,7 +172,9 @@ const T = {
   deletePart: 'Delete',
   // The sentence the delete confirmation exists to say: delete is final, and the file is not touched.
   deleteKeepsFile: 'moved into _removed in your models folder, never deleted',
-  uploadButton: 'Upload a folder',
+  uploadButton: 'Upload',
+  uploadAFolder: 'A folder…',
+  uploadFiles: 'Files…',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
   uploadComplete: 'Upload complete —',
@@ -993,6 +1009,48 @@ const FLOWS = [
         `the uploaded parts are not filed under ${UPLOAD_CATEGORY}: ${JSON.stringify(filed.parts.map((p) => p.sourcePath).slice(-4))}`,
       )
       return `${before2} -> ${after} parts in Uploaded through the real control (chooser ${chooser.mode}), filed under ${UPLOAD_CATEGORY}; transfer line ${progress.hits.length ? JSON.stringify(progress.hits[0]) : 'too quick to catch'}`
+    },
+  },
+  {
+    name: 'upload-files',
+    // A10: single files and archives, through the Upload menu's Files…. A loose 3MF, a zip holding a mesh in a
+    // folder and a 3MF, and a 7z when this machine has 7z to make one. Every name carries the stamp, so a
+    // rerun makes new parts rather than skips.
+    async run(page, ctx) {
+      const stamp = `${ctx.stamp}-${Date.now()}`
+      const dir = join(ctx.tmp, `e2e-files-${stamp}`)
+      const pack = join(dir, 'pack')
+      stampInto(join(pack, 'stl'), [UPLOAD_FILES[0]], `Lapidary e2e files ${stamp}`, ctx)
+      writeFileSync(join(pack, 'planetary-carrier-lp-3480-02.3mf'), readFileSync(join(ctx.root, 'fixtures/planetary-carrier-lp-3480-02.3mf')))
+      const loose = join(dir, `planetary-carrier-lp-3480-02-${stamp}.3mf`)
+      writeFileSync(loose, readFileSync(join(ctx.root, 'fixtures/planetary-carrier-lp-3480-02.3mf')))
+      const zip = join(dir, `voron-spares-${stamp}.zip`)
+      execFileSync('python3', ['-c', 'import shutil,sys; shutil.make_archive(sys.argv[1][:-4], "zip", sys.argv[2])', zip, pack])
+      const files = [loose, zip]
+      let sevenZip = null
+      try {
+        sevenZip = join(dir, `hinge-pack-${stamp}.7z`)
+        execFileSync('7z', ['a', '-bd', '-y', sevenZip, '*'], { cwd: pack, stdio: 'ignore' })
+        files.push(sevenZip)
+      } catch {
+        sevenZip = null
+      }
+      const before = await ctx.countParts(ctx.uploaded.id)
+      await page.go(grid(ctx.uploaded.id), 'document.querySelector("#parts") !== null')
+      const chooser = await pressUpload(page, null, { item: T.uploadFiles, paths: files })
+      const want = before + 1 + 2 + (sevenZip === null ? 0 : 2)
+      const after = await page.settle(() => ctx.countParts(ctx.uploaded.id), (n) => n >= want, { timeout: 120_000, every: 1000 })
+      const { parts } = await ctx.get(`/api/libraries/${ctx.uploaded.id}/parts?limit=500`)
+      const paths = parts.map((p) => p.sourcePath ?? '').filter((p) => p.includes(stamp)).sort()
+      const expected = [
+        `planetary-carrier-lp-3480-02-${stamp}.3mf`,
+        `voron-spares-${stamp}/planetary-carrier-lp-3480-02.3mf`,
+        `voron-spares-${stamp}/stl/${UPLOAD_FILES[0][1]}`,
+        ...(sevenZip === null ? [] : [`hinge-pack-${stamp}/planetary-carrier-lp-3480-02.3mf`, `hinge-pack-${stamp}/stl/${UPLOAD_FILES[0][1]}`]),
+      ].sort()
+      expect(JSON.stringify(paths) === JSON.stringify(expected), `the parts made are ${JSON.stringify(paths)}, not ${JSON.stringify(expected)}`)
+      expect(after === want, `${files.length} files should add ${want - before} parts; they added ${after - before}`)
+      return `${before} -> ${after} parts through Files… (chooser ${chooser.mode}): a loose 3MF, a zip${sevenZip === null ? '' : ' and a 7z'} unpacked into ${paths.length - 1} parts`
     },
   },
   {

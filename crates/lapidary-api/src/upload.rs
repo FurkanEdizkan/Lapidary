@@ -42,8 +42,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{
-    BlobHash, CAD_FORMATS, JobPayload, LibraryId, MESH_EXTENSIONS, cad_refusal, path_escapes,
-    source_format,
+    ARCHIVE_EXTENSIONS, BlobHash, CAD_FORMATS, JobPayload, LibraryId, MESH_EXTENSIONS, cad_refusal,
+    path_escapes, source_format,
 };
 use lapidary_db::{PgBlobs, PgParts, StoredBlobRow};
 use lapidary_storage::{DerivativeStore, InboxWriter, StorageError};
@@ -153,11 +153,11 @@ pub struct ChunkQuery {
 /// B-rep file in it is refused by its own job, with this same sentence, exactly as a scan refuses
 /// one. If there is not, there is nothing to transfer and the refusal comes before the bytes do.
 fn refuse_b_rep(manifest: &UploadManifest) -> Option<Response> {
-    if manifest
-        .files
-        .iter()
-        .any(|file| MESH_EXTENSIONS.contains(&source_format(&file.path).as_str()))
-    {
+    if manifest.files.iter().any(|file| {
+        let format = source_format(&file.path);
+        // An archive is opened by its job (A10), so it is something to take too.
+        MESH_EXTENSIONS.contains(&format.as_str()) || ARCHIVE_EXTENSIONS.contains(&format.as_str())
+    }) {
         return None;
     }
     let mut b_rep = manifest

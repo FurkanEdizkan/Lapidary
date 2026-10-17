@@ -3466,3 +3466,99 @@ async fn a_part_gets_the_pictures_its_folder_was_added_with_once(pool: PgPool) {
     assert_eq!(handler.handle(&job).await.expect("files"), Outcome::Revised);
     assert_eq!(gallery().await, ["uploaded"]);
 }
+
+/// (A10) An uploaded zip is kept, its models are unpacked beside it and queued into the upload's
+/// batch, and each is indexed as the part `<archive>/<path inside>`; a RAR says why not.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_uploaded_zip_unpacks_its_models_into_the_batch_and_a_rar_is_refused(pool: PgPool) {
+    use std::io::Write;
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let inbox = blob_root.path().join("inbox");
+    std::fs::create_dir_all(inbox.join("uploads/ayse")).expect("uploads");
+    let mut zip = zip::ZipWriter::new(
+        std::fs::File::create(inbox.join("uploads/ayse/brackets.zip")).expect("zip"),
+    );
+    for (name, bytes) in [
+        (format!("lp-1042/{BRACKET}"), BRACKET_FIXTURE),
+        (CARRIER.to_owned(), CARRIER_FIXTURE),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .expect("entry");
+        zip.write_all(bytes).expect("bytes");
+    }
+    zip.finish().expect("zip written");
+    let upload = JobPayload::IngestInbox {
+        path: "uploads/ayse/brackets.zip".to_owned(),
+        source_path: "brackets.zip".to_owned(),
+    };
+    let (batch, _) = lapidary_db::PgJobs(pool.clone())
+        .enqueue(seeded(), std::slice::from_ref(&upload))
+        .await
+        .expect("enqueues the upload");
+    let row = |payload: &JobPayload| JobRow {
+        id: JobId::new(),
+        batch_id: batch,
+        library_id: seeded(),
+        kind: payload.kind().to_owned(),
+        payload: payload.to_json(),
+        attempts: 1,
+        max_attempts: 3,
+    };
+    let handler = handler_over(
+        &pool,
+        Path::new("/nonexistent-ingest-dir"),
+        blob_root.path(),
+    );
+    assert_eq!(
+        handler.handle(&row(&upload)).await.expect("unpacks"),
+        Outcome::Scanned
+    );
+    assert!(
+        inbox.join("uploads/ayse/brackets.zip").exists(),
+        "the archive is kept"
+    );
+
+    let queued: Vec<(String, String)> = sqlx::query_as(
+        "SELECT payload ->> 'inbox', payload ->> 'path' FROM job \
+         WHERE batch_id = $1 AND kind = 'ingest_inbox' AND payload ->> 'inbox' <> 'uploads/ayse/brackets.zip' \
+         ORDER BY created_at, id",
+    )
+    .bind(batch.as_uuid())
+    .fetch_all(&pool)
+    .await
+    .expect("reads the queued jobs");
+    assert_eq!(
+        queued,
+        [
+            (
+                format!("uploads/ayse/brackets/lp-1042/{BRACKET}"),
+                format!("brackets/lp-1042/{BRACKET}")
+            ),
+            (
+                format!("uploads/ayse/brackets/{CARRIER}"),
+                format!("brackets/{CARRIER}")
+            ),
+        ]
+    );
+    for (path, source_path) in &queued {
+        let child = JobPayload::IngestInbox {
+            path: path.clone(),
+            source_path: source_path.clone(),
+        };
+        assert_eq!(
+            handler.handle(&row(&child)).await.expect("indexes"),
+            Outcome::Ingested
+        );
+    }
+    assert_eq!(part_count(&pool).await, 2);
+
+    stage(&inbox, "uploads/ayse/spares.rar", b"Rar!");
+    let rar = JobPayload::IngestInbox {
+        path: "uploads/ayse/spares.rar".to_owned(),
+        source_path: "spares.rar".to_owned(),
+    };
+    match handler.handle(&row(&rar)).await {
+        Err(HandlerError::Permanent { message }) => assert!(message.contains("RAR"), "{message}"),
+        other => panic!("a RAR upload should be refused by name, got {other:?}"),
+    }
+}

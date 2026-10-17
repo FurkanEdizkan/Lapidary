@@ -348,7 +348,8 @@ export const strings = {
       n === 1 ? 'Removed, with its 1 model. Its files stay where they are.' : `Removed, with its ${n} models. Its files stay where they are.`,
     whole: 'The whole models folder',
     otherWays: 'Or:',
-    upload: 'Upload files from this computer',
+    upload: 'Upload files',
+    uploadFolder: 'Upload a folder',
     fromLink: 'Import from a model’s page',
   },
   importLink: {
@@ -377,7 +378,13 @@ export const strings = {
     view: 'View',
     library: 'Library',
     layout: 'Layout',
-    upload: 'Upload a folder',
+    upload: 'Upload',
+    uploadFolder: 'Upload a folder',
+    /** The Upload menu's two ways in (A10): files, archives among them, or a whole folder. */
+    uploadFiles: 'Files…',
+    uploadFilesHint: 'stl, obj, 3mf, or a zip or 7z of them',
+    uploadAFolder: 'A folder…',
+    uploadAFolderHint: 'Its subfolders become categories',
     /** A bundle exported from Lapidary, its parts and their history (Phase 4 slice 2). */
     importBundle: 'Import a bundle',
     importFailed: 'Could not import the bundle. Check that the api service is running, then try again.',

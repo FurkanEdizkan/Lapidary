@@ -8,6 +8,9 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# An uploaded archive, opened (A10): `archive.rs`. tests/handler.rs also builds a hostile zip with it.
+sevenz-rust2.workspace = true
+zip.workspace = true
 lapidary-core.workspace = true
 lapidary-db.workspace = true
 lapidary-storage.workspace = true
@@ -45,9 +48,8 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 uuid.workspace = true
-# tests/handler.rs builds a hostile zip (a single deflate entry expanding past the ratio
-# cap) in memory -- a fixture that is genuinely hostile is not something to commit.
-zip.workspace = true
+# `archive.rs`'s tests pack a 7z to open.
+sevenz-rust2 = { workspace = true, features = ["compress", "util"] }
 
 [lints]
 workspace = true

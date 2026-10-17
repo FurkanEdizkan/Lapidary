@@ -555,6 +555,64 @@ impl InboxWriter {
         })
     }
 
+    /// A file unpacked from an uploaded archive (A10): `from` at `rel`, or at the first free
+    /// `name (2).ext` beside it. **Never over a different file**, and the same bytes already at one of
+    /// those names are that file, so a retried unpack reuses what the first one wrote. An error from
+    /// `from` — the caller's size limit, a corrupt entry — places nothing.
+    pub fn put_or_reuse(
+        &self,
+        rel: &str,
+        from: &mut dyn std::io::Read,
+    ) -> Result<Placed, StorageError> {
+        let first = resolve(&self.root, rel)?;
+        let (tmp, hash, _) = stage(&first, |file| {
+            let mut reader = HashingReader {
+                inner: from,
+                hasher: blake3::Hasher::new(),
+            };
+            std::io::copy(&mut reader, file)?;
+            Ok(BlobHash::from_bytes(*reader.hasher.finalize().as_bytes()))
+        })?;
+        for n in 1..=MAX_ALTERNATIVES {
+            let candidate = if n == 1 {
+                rel.to_owned()
+            } else {
+                alternative(rel, n)
+            };
+            let path = resolve(&self.root, &candidate)?;
+            if path.exists() {
+                let same = std::fs::File::open(&path).and_then(|file| {
+                    let mut there = HashingReader {
+                        inner: std::io::BufReader::new(file),
+                        hasher: blake3::Hasher::new(),
+                    };
+                    std::io::copy(&mut there, &mut std::io::sink())?;
+                    Ok(BlobHash::from_bytes(*there.hasher.finalize().as_bytes()) == hash)
+                });
+                if same.unwrap_or(false) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Ok(Placed {
+                        path: candidate,
+                        stat: stat(&path)?,
+                    });
+                }
+                continue;
+            }
+            place(&tmp, &path, false).map_err(io(&path))?;
+            return Ok(Placed {
+                path: candidate,
+                stat: stat(&path)?,
+            });
+        }
+        let _ = std::fs::remove_file(&tmp);
+        Err(StorageError::PathRefused {
+            detail: format!(
+                "The inbox already holds {rel} and {MAX_ALTERNATIVES} other files named after it, \
+                 so this file was not unpacked."
+            ),
+        })
+    }
+
     /// `bytes` at `rel` in Lapidary's own part of the inbox — a link import, an imported bundle's
     /// part or a seeded example — replacing what is there. The same bytes already there are left
     /// alone, so a re-import of an unchanged model keeps its file, and its recorded modification
@@ -646,6 +704,49 @@ fn alternative(rel: &str, n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unpacked_file_reuses_the_same_bytes_and_never_writes_over_different_ones() {
+        let root = tempfile::tempdir().expect("a folder");
+        let inbox = InboxWriter::open(root.path());
+        let first = inbox
+            .put_or_reuse("uploads/a/pack/bracket.stl", &mut &b"solid one"[..])
+            .expect("placed");
+        assert_eq!(first.path, "uploads/a/pack/bracket.stl");
+        // A retry: the same bytes are the same file.
+        let again = inbox
+            .put_or_reuse("uploads/a/pack/bracket.stl", &mut &b"solid one"[..])
+            .expect("reused");
+        assert_eq!(again.path, first.path);
+        // Different bytes go beside it, and the first is untouched.
+        let other = inbox
+            .put_or_reuse("uploads/a/pack/bracket.stl", &mut &b"solid two"[..])
+            .expect("beside");
+        assert_eq!(other.path, "uploads/a/pack/bracket (2).stl");
+        assert_eq!(
+            std::fs::read(root.path().join(&first.path)).expect("read"),
+            b"solid one"
+        );
+        // A reader that fails places nothing.
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("too big"))
+            }
+        }
+        assert!(
+            inbox
+                .put_or_reuse("uploads/a/pack/x.stl", &mut Broken)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("uploads/a/pack"))
+                .expect("dir")
+                .count(),
+            2
+        );
+        assert!(inbox.put_or_reuse("../x.stl", &mut &b""[..]).is_err());
+    }
 
     #[test]
     fn a_removed_file_is_moved_beside_the_others_never_over_one_and_never_deleted() {

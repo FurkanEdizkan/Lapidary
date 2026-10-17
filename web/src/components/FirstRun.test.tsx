@@ -7,7 +7,7 @@ test('an empty library offers Upload, and the button opens the picker', () => {
   const onUpload = vi.fn()
   render(<FirstRun onUpload={onUpload} />)
   const section = screen.getByRole('region', { name: strings.emptyLibrary.title })
-  fireEvent.click(screen.getByRole('button', { name: strings.toolbar.upload }))
+  fireEvent.click(screen.getByRole('button', { name: strings.toolbar.uploadFolder }))
   expect(onUpload).toHaveBeenCalledTimes(1)
   expect(section.textContent).toContain(strings.emptyLibrary.dropHint)
 })

@@ -450,6 +450,7 @@ export function Index({
   // Owned here rather than inside `DropTarget`, because two controls open the same picker
   // now: the drop strip's link, and the toolbar's Upload button.
   const picker = useRef<HTMLInputElement>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
   const bundlePicker = useRef<HTMLInputElement>(null)
   const instance = useQuery({
     queryKey: ['instance-storage', measure],
@@ -862,7 +863,12 @@ export function Index({
           >
             {strings.addModels.button}
           </button>
-          <UploadButton onUpload={() => picker.current?.click()} busy={upload.isPending} progress={uploading} />
+          <UploadButton
+            onFiles={() => filePicker.current?.click()}
+            onFolder={() => picker.current?.click()}
+            busy={upload.isPending}
+            progress={uploading}
+          />
         </>
       }
       rail={
@@ -990,7 +996,7 @@ export function Index({
           the two things a person on a phone most needs to see, and the rail hides both behind a button.
         */}
         {intro}
-        <DropOverlay onFiles={startUpload} picker={picker} />
+        <DropOverlay onFiles={startUpload} picker={picker} filePicker={filePicker} />
         {upload.isPending && uploading !== undefined ? (
           <p role="status" className="mb-4 text-sm text-[var(--color-muted)]">
             {progressLine(uploading)}
@@ -1017,6 +1023,10 @@ export function Index({
             onClose={() => setAdding(false)}
             onScan={() => scanNow.mutate()}
             onUpload={() => {
+              setAdding(false)
+              filePicker.current?.click()
+            }}
+            onUploadFolder={() => {
               setAdding(false)
               picker.current?.click()
             }}
