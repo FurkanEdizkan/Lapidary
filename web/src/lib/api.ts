@@ -1,5 +1,11 @@
 import type { Sort } from './preferences'
 import type {
+  NewPassword,
+  NewPerson,
+  PasswordChange,
+  Person,
+  Shares,
+  UserId,
   BrowseListing,
   ImportSettings,
   LibrarySource,
@@ -1514,4 +1520,72 @@ export async function describePart(part: PartId, url: string): Promise<ScanAccep
   })
   if (!response.ok) throw await sentence(response, `fetching details returned ${response.status}`)
   return (await response.json()) as ScanAccepted
+}
+
+/** `GET /api/people` — everybody on the install (A4). */
+export async function fetchPeople(): Promise<Person[]> {
+  const response = await fetch('/api/people')
+  if (!response.ok) throw new Error(`people returned ${response.status}`)
+  return (await response.json()) as Person[]
+}
+
+/** `POST /api/people` — admin only: a new account. */
+export async function createPerson(person: NewPerson): Promise<Person> {
+  const response = await fetch('/api/people', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(person),
+  })
+  if (!response.ok) throw await sentence(response, `making an account returned ${response.status}`)
+  return (await response.json()) as Person
+}
+
+/** `PUT /api/people/{id}/password` — admin only. */
+export async function resetPassword(person: UserId, password: string): Promise<void> {
+  const response = await fetch(`/api/people/${encodeURIComponent(person)}/password`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password } satisfies NewPassword),
+  })
+  if (!response.ok) throw await sentence(response, `the reset returned ${response.status}`)
+}
+
+/** `DELETE /api/people/{id}` — admin only; their libraries become the admin's. */
+export async function deletePerson(person: UserId): Promise<void> {
+  const response = await fetch(`/api/people/${encodeURIComponent(person)}`, { method: 'DELETE' })
+  if (!response.ok) throw await sentence(response, `deleting returned ${response.status}`)
+}
+
+/** `PUT /api/profile/password` — your own, given the current one. */
+export async function changePassword(change: PasswordChange): Promise<void> {
+  const response = await fetch('/api/profile/password', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(change),
+  })
+  if (!response.ok) throw await sentence(response, `the change returned ${response.status}`)
+}
+
+/** `GET /api/parts/{id}/shares` — the owner's answer to who sees it. */
+export async function fetchShares(part: PartId): Promise<Shares> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/shares`)
+  if (!response.ok) throw new Error(`shares returned ${response.status}`)
+  return (await response.json()) as Shares
+}
+
+/** `PUT /api/parts/{id}/shares` — share it with exactly these. */
+export async function saveShares(part: PartId, shares: Shares): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/shares`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(shares),
+  })
+  if (!response.ok) throw await sentence(response, `sharing returned ${response.status}`)
+}
+
+/** `GET /api/shared` — what other people shared with you. */
+export async function fetchShared(): Promise<PartsPage> {
+  const response = await fetch('/api/shared')
+  if (!response.ok) throw new Error(`shared returned ${response.status}`)
+  return (await response.json()) as PartsPage
 }

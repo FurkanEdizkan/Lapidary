@@ -14,6 +14,7 @@ import { ShowInFolder, hostRootsOf } from '../components/ShowInFolder'
 import { Menu } from '../components/Menu'
 import { closeMenu } from '../components/Dialog'
 import { ConfirmDelete } from '../components/ConfirmDelete'
+import { ShareDialog } from '../components/ShareDialog'
 import { strings } from '../lib/strings'
 import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
@@ -83,7 +84,13 @@ export function PartPage({ partId }: { partId: string }) {
             // line `actions` draws below.
             recordable
             layout="page"
-            actions={<PartActions part={part.data} />}
+            actions={
+              part.data.yours ? (
+                <PartActions part={part.data} />
+              ) : (
+                <p className="max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.readOnly(null)}</p>
+              )
+            }
           />
         )}
       </section>
@@ -114,6 +121,7 @@ function PartActions({ part }: { part: PartDetail }) {
   const navigate = useNavigate()
   const [moving, setMoving] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [sharing, setSharing] = useState(false)
   // The host's own view of the store, so the path this page prints is one a person can
   // paste. `false` because the walk behind `onDisk` is the expensive figure and this page
   // wants only the root.
@@ -147,6 +155,16 @@ function PartActions({ part }: { part: PartDetail }) {
           >
             {strings.folders.moveTo}
           </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              closeMenu(event.currentTarget)
+              setSharing(true)
+            }}
+            className={ITEM}
+          >
+            {strings.sharing.action}
+          </button>
         </div>
         <ShowInFolder part={part} hostRoots={hostRootsOf(instance.data)} />
         <div className="border-t border-[var(--color-border)] pt-2">
@@ -178,6 +196,7 @@ function PartActions({ part }: { part: PartDetail }) {
       {moving ? (
         <MovePartDialog part={{ id: part.id, name: part.name }} library={part.library} onClose={() => setMoving(false)} />
       ) : null}
+      {sharing ? <ShareDialog parts={[part.id]} onClose={() => setSharing(false)} /> : null}
     </>
   )
 }

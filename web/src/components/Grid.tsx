@@ -246,6 +246,7 @@ export function SelectionBar({
   onMove,
   onRemove,
   onExport,
+  onShare,
   note,
   onClear,
 }: {
@@ -253,6 +254,8 @@ export function SelectionBar({
   bulk: BulkProgress | null
   onMove: () => void
   onRemove: () => void
+  /** Share the selection (A4). Absent where the parts are not the viewer's to share. */
+  onShare?: () => void
   /** A bundle of the selection: planned, then downloaded. */
   onExport: () => void
   /** What the last export said: what it holds, or why the server refused it. */
@@ -290,6 +293,11 @@ export function SelectionBar({
         <button type="button" className={button} disabled={count === 0 || busy} onClick={onExport}>
           {strings.selection.exportBundle}
         </button>
+        {onShare === undefined ? null : (
+          <button type="button" className={button} disabled={count === 0 || busy} onClick={onShare}>
+            {strings.sharing.action}
+          </button>
+        )}
         <button type="button" className={button} disabled={count === 0 || busy} onClick={onClear}>
           {strings.selection.clear}
         </button>
