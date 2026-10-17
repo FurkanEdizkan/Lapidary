@@ -45,7 +45,8 @@ area — these encode decisions that are expensive to reverse.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
   ingested bytes — as long as the file on disk has not changed since it was indexed; a changed
   file is refused with a sentence, never served. Anything we produced is named `*.lapidary.*`.
-- **One models folder, read where it is** (owner, 2026-10-17, A2). A library holds the files and
+- **One models folder, read where it is** (owner, 2026-10-17, A2; chosen in the wizard or Settings since A6,
+  `bin/lapidary-server/src/models_dir.rs`, and never changed while a model is read from the old one). A library holds the files and
   folders a person adds from it; a scan reads each model in place and never copies, renames or
   writes one. Lapidary writes only new files (uploads, imports, examples) under its own folders
   there, and moves a removed model's file into `_removed/`, which nothing scans. A category is the
