@@ -113,6 +113,19 @@ pub enum JobPayload {
     ImportLink {
         url: String,
     },
+    /// Describe a part already in the library from its model's page, downloading nothing (A2):
+    /// "Fetch details". `path` is the part's source path, which is also what a failure is listed
+    /// under.
+    DescribePage {
+        path: String,
+        url: String,
+    },
+}
+
+#[derive(Deserialize)]
+struct DescribePagePayload {
+    path: String,
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +171,7 @@ impl JobPayload {
     pub const IMPORT_BUNDLE: &'static str = "import_bundle";
     pub const IMPORT_PART: &'static str = "import_part";
     pub const IMPORT_LINK: &'static str = "import_link";
+    pub const DESCRIBE_PAGE: &'static str = "describe_page";
 
     pub fn kind(&self) -> &'static str {
         match self {
@@ -168,6 +182,7 @@ impl JobPayload {
             JobPayload::ImportBundle { .. } => Self::IMPORT_BUNDLE,
             JobPayload::ImportPart { .. } => Self::IMPORT_PART,
             JobPayload::ImportLink { .. } => Self::IMPORT_LINK,
+            JobPayload::DescribePage { .. } => Self::DESCRIBE_PAGE,
         }
     }
 
@@ -193,6 +208,9 @@ impl JobPayload {
                 serde_json::json!({ "bundle": bundle, "part": part, "path": path })
             }
             JobPayload::ImportLink { url } => serde_json::json!({ "url": url, "path": url }),
+            JobPayload::DescribePage { path, url } => {
+                serde_json::json!({ "path": path, "url": url })
+            }
         }
     }
 
@@ -253,6 +271,15 @@ impl JobPayload {
                 }),
             Self::IMPORT_LINK => serde_json::from_value::<ImportLinkPayload>(payload.clone())
                 .map(|p| JobPayload::ImportLink { url: p.url })
+                .map_err(|source| CoreError::MalformedJobPayload {
+                    kind: kind.to_owned(),
+                    detail: source.to_string(),
+                }),
+            Self::DESCRIBE_PAGE => serde_json::from_value::<DescribePagePayload>(payload.clone())
+                .map(|p| JobPayload::DescribePage {
+                    path: p.path,
+                    url: p.url,
+                })
                 .map_err(|source| CoreError::MalformedJobPayload {
                     kind: kind.to_owned(),
                     detail: source.to_string(),

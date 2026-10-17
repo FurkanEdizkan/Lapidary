@@ -393,6 +393,7 @@ fn append_chunk(path: &std::path::Path, offset: u64, body: &[u8]) -> Result<u64,
 /// batch's total equal to the number of files the user actually dropped.
 pub async fn commit(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(library): Path<LibraryId>,
     Json(manifest): Json<UploadManifest>,
 ) -> Response {
@@ -414,7 +415,7 @@ pub async fn commit(
         return refusal;
     }
 
-    let jobs = match place_all(&state, library, &manifest.files).await {
+    let jobs = match place_all(&state, library, &manifest.files, &user.username).await {
         Ok(jobs) => jobs,
         Err(response) => return response,
     };
@@ -430,6 +431,7 @@ async fn place_all(
     state: &AppState,
     library: LibraryId,
     files: &[UploadFile],
+    owner: &str,
 ) -> Result<Vec<JobPayload>, Response> {
     let mut by_hash: Vec<(BlobHash, Vec<String>)> = Vec::new();
     for file in files {
@@ -463,7 +465,8 @@ async fn place_all(
         }
         let staged = staged_path(&state.upload_dir, library, &hash);
         let inbox = state.inbox_dir.clone();
-        running.spawn_blocking(move || place_staged(&inbox, &staged, &hash, &paths));
+        let under = format!("uploads/{owner}");
+        running.spawn_blocking(move || place_staged(&inbox, &under, &staged, &hash, &paths));
     }
     while let Some(result) = running.join_next().await {
         collect(result, &mut placed, &mut refused);
@@ -511,11 +514,12 @@ fn collect(
     }
 }
 
-/// One staged file into the inbox at each of `paths` — `uploads/<path>`, or the next free name
-/// beside it — verified against `hash` on the way, then the staged file removed. Answers each
-/// `(source path, inbox path)`.
+/// One staged file into the inbox at each of `paths` — `<under>/<path>`, where `under` is
+/// `uploads/<the uploader>` (A2), or the next free name beside it — verified against `hash` on the
+/// way, then the staged file removed. Answers each `(source path, inbox path)`.
 fn place_staged(
     inbox: &std::path::Path,
+    under: &str,
     staged: &std::path::Path,
     hash: &BlobHash,
     paths: &[String],
@@ -526,7 +530,7 @@ fn place_staged(
     let writer = InboxWriter::open(inbox);
     let mut placed = Vec::with_capacity(paths.len());
     for path in paths {
-        match writer.put_new_file(&format!("uploads/{path}"), staged, hash) {
+        match writer.put_new_file(&format!("{under}/{path}"), staged, hash) {
             Ok(at) => placed.push((path.clone(), at.path)),
             // The staged bytes are not the file the browser hashed: they go, so the retry
             // sends them again.

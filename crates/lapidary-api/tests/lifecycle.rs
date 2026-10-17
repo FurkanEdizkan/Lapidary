@@ -150,8 +150,9 @@ async fn deleting_a_part_takes_it_off_every_read_path_and_leaves_no_row(pool: sq
     assert_eq!(source_bytes(&pool).await, 91_204 * 2);
 
     let (status, body) = call(pool.clone(), "DELETE", &format!("/api/parts/{gone}")).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(body, serde_json::Value::Null, "204 carries no body");
+    assert_eq!(status, StatusCode::OK);
+    // A content-addressed source moves nowhere: the answer lists no file (A2).
+    assert_eq!(body, serde_json::json!({ "moved": [], "stayed": [] }));
 
     // Four read paths, asserted one at a time.
     assert_eq!(grid_names(&pool).await, vec!["Impeller, LP-5501-02"]);
@@ -207,7 +208,7 @@ async fn a_second_delete_is_a_404_and_restore_and_purge_are_gone(pool: sqlx::PgP
         call(pool.clone(), "DELETE", &format!("/api/parts/{part}"))
             .await
             .0,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     let (status, json) = call(pool.clone(), "DELETE", &format!("/api/parts/{part}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -229,9 +230,9 @@ async fn a_second_delete_is_a_404_and_restore_and_purge_are_gone(pool: sqlx::PgP
     }
 }
 
-/// **The model file stays.** A part filed in the folder tree has its file at `storage_path`
-/// under the storage root; deleting the part leaves that file byte for byte where it was, and
-/// writes no `quarantined_file` row that would let the hourly sweep take it later.
+/// **A file in Lapidary's own store stays.** A part filed before M4 has its file at `storage_path`
+/// under the storage root; deleting the part leaves that file byte for byte where it was: only a
+/// model file in the models folder is moved into `_removed/` (A2), and this is not one.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn deleting_a_part_never_touches_its_model_file(pool: sqlx::PgPool) {
     let root = tempfile::tempdir().expect("a storage root");
@@ -276,7 +277,7 @@ async fn deleting_a_part_never_touches_its_model_file(pool: sqlx::PgPool) {
         &format!("/api/parts/{part}"),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::OK);
 
     assert_eq!(
         std::fs::read(&on_disk).expect("the model file is still there"),
@@ -350,12 +351,64 @@ async fn deleting_one_of_two_parts_over_the_same_blob_leaves_the_other_whole(poo
         call(pool.clone(), "DELETE", &format!("/api/parts/{first}"))
             .await
             .0,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     assert_eq!(grid_names(&pool).await, vec!["Bracket, LP-1042-03 (spare)"]);
     let (_, clock) = blob_state(&pool, 0xc1).await;
     assert!(
         !clock,
         "the bytes the spare still needs are never queued for removal"
+    );
+}
+
+/// **A removed model's file is moved, never deleted** (A2): out of its folder into
+/// `_removed/<who removed it>/<its path>` in the models folder, byte for byte, and the answer says
+/// where it went.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn deleting_a_part_moves_its_model_file_into_removed(pool: sqlx::PgPool) {
+    let models = tempfile::tempdir().expect("a models folder");
+    let source_path = "brackets/bracket-lp-1042-03.stl";
+    let on_disk = models.path().join(source_path);
+    std::fs::create_dir_all(on_disk.parent().expect("a folder")).expect("mkdir");
+    let bytes = b"solid bracket_lp_1042_03\nendsolid bracket_lp_1042_03\n";
+    std::fs::write(&on_disk, bytes).expect("the model file");
+    let part = PgIngest(pool.clone())
+        .record(IngestRequest {
+            origin: lapidary_core::RevisionOrigin::Ingest,
+            library: library(),
+            name: "Bracket, LP-1042-03",
+            source_path,
+            folder: None,
+            storage_path: Some(source_path),
+            root: lapidary_core::FileRoot::Library,
+            mtime_ns: Some(1),
+            blob: &StoredBlobRow {
+                hash: BlobHash::from_bytes(*blake3::hash(bytes).as_bytes()),
+                size_bytes: bytes.len() as u64,
+                stored_bytes: bytes.len() as u64,
+                zstd_level: 0,
+            },
+            measurements: &MeshMeasurements {
+                bbox_mm: [61.0, 42.0, 18.5],
+                triangle_count: 48_112,
+                surface_area_mm2: 9_804.25,
+                volume_mm3: Some(21_478.5),
+                is_watertight: true,
+            },
+            provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
+            format: "stl",
+        })
+        .await
+        .expect("a filed part");
+    let mut state = state(pool.clone());
+    state.ingest_dir = models.path().to_path_buf();
+    let (status, body) = call_with(state, "DELETE", &format!("/api/parts/{part}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let moved = format!("_removed/{}/{source_path}", common::USERNAME);
+    assert_eq!(body["moved"], serde_json::json!([moved]));
+    assert!(!on_disk.exists(), "out of its folder");
+    assert_eq!(
+        std::fs::read(models.path().join(&moved)).expect("kept, not deleted"),
+        bytes
     );
 }

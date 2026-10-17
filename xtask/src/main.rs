@@ -536,16 +536,14 @@ fn check_deploy() -> Result<()> {
     let containerfile = read("deploy/Containerfile")?;
 
     let mut violations = deploy::check_volume_ownership(&[&compose], &containerfile);
-    violations.extend(deploy::check_ingest_read_only(&[&compose]));
     let api_sources = collect_api_sources(&root)?;
     violations.extend(deploy::check_open_path_boundary(&api_sources));
 
     if violations.is_empty() {
         println!(
             "deploy check OK — every named volume a lapidary-server service mounts is a directory \
-             the image makes for lapidary, the owner's folders are mounted read-only, and \
-             lapidary-api names the inbox writer only in its upload route ({} source file(s) \
-             checked)",
+             the image makes for lapidary, and lapidary-api writes, moves and deletes model files \
+             only in the routes allowed to ({} source file(s) checked)",
             api_sources.len()
         );
         Ok(())

@@ -309,3 +309,52 @@ pub async fn import(
     )
     .await
 }
+
+/// `POST /api/parts/{id}/describe {url}` — "Fetch details" (A2): fill a part from its model's page —
+/// source, tags, pictures — and download nothing. `202` with the batch, or the same refusals an import
+/// gives before anything is queued.
+pub async fn describe(
+    State(state): State<AppState>,
+    Path(part): Path<lapidary_core::PartId>,
+    body: Result<Json<ImportLink>, JsonRejection>,
+) -> Response {
+    if !enabled(&state.db).await {
+        return switched_off();
+    }
+    let Ok(Json(body)) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "Send the model's page as `{\"url\": \"…\"}`.",
+        );
+    };
+    let site = match identify(&body.url) {
+        Ok((site, _)) => site,
+        Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
+    };
+    if site.needs_key() {
+        match PgSiteKeys(state.db.clone()).secret(site.slug()).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return refused(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    &SiteError::NoKey { site }.to_string(),
+                );
+            }
+            Err(err) => return internal_error(&err, "site key read failed"),
+        }
+    }
+    let detail = match PgParts(state.db.clone()).detail(part).await {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return crate::derive::no_such_part(),
+        Err(err) => return internal_error(&err, "part lookup failed"),
+    };
+    accept(
+        state.db,
+        detail.library,
+        &[JobPayload::DescribePage {
+            path: detail.source_path,
+            url: body.url.trim().to_owned(),
+        }],
+    )
+    .await
+}

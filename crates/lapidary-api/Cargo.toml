@@ -24,6 +24,8 @@ blake3.workspace = true
 image.workspace = true
 reqwest.workspace = true
 url.workspace = true
+# A library source's id (A2).
+uuid.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true

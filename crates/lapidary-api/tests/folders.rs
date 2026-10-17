@@ -344,6 +344,7 @@ async fn the_tree_counts_every_model_under_a_category_and_no_deleted_one(pool: s
             .delete(lapidary_core::PartId::from_uuid(scree))
             .await
             .expect("deletes one")
+            .is_some()
     );
 
     let rows = tree(&pool).await;

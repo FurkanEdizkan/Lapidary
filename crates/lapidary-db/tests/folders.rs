@@ -100,7 +100,7 @@ async fn deleting_a_folder_cascades_through_subfolders(pool: sqlx::PgPool) {
         .await
         .expect("Cliffs");
 
-    let (folders, _parts) = f.delete_subtree(terrain).await.expect("deletes");
+    let (folders, _parts, _files) = f.delete_subtree(terrain).await.expect("deletes");
     assert_eq!(folders, 3, "Terrain, Rocks and Cliffs — not just Terrain");
     assert!(
         f.tree(library()).await.expect("tree").is_empty(),
@@ -113,7 +113,7 @@ async fn deleting_a_folder_cascades_through_subfolders(pool: sqlx::PgPool) {
     assert_eq!(left, 0, "the rows are gone, not hidden");
     assert_eq!(
         f.delete_subtree(terrain).await.expect("asks again"),
-        (0, 0),
+        (0, 0, Vec::new()),
         "a second delete finds nothing, so the route answers 404"
     );
 }
@@ -415,7 +415,7 @@ async fn deleting_a_deep_category_hides_the_models_below_the_old_walk_cap(pool: 
     .await
     .expect("a model filed under the deepest category");
 
-    let (folders, parts) = PgFolders(pool)
+    let (folders, parts, _files) = PgFolders(pool)
         .delete_subtree(chain[0])
         .await
         .expect("deletes");
@@ -495,7 +495,10 @@ async fn deleting_a_folder_keeps_a_part_moved_out_of_it(pool: sqlx::PgPool) {
     .await
     .expect("it was moved out of Terrain");
 
-    assert_eq!(f.delete_subtree(terrain).await.expect("deletes"), (1, 0));
+    assert_eq!(
+        f.delete_subtree(terrain).await.expect("deletes"),
+        (1, 0, Vec::new())
+    );
     let (parts, moves): (i64, i64) =
         sqlx::query_as("SELECT (SELECT count(*) FROM part), (SELECT count(*) FROM part_move)")
             .fetch_one(&pool)

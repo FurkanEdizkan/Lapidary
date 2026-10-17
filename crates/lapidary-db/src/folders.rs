@@ -385,7 +385,10 @@ impl PgFolders {
     /// are. Move-trail rows of other parts that passed through one of these folders are
     /// deleted too: `part_move` references `folder`, and a trail entry naming a category that
     /// no longer exists has nothing left to say.
-    pub async fn delete_subtree(&self, folder: FolderId) -> Result<(u64, u64), DbError> {
+    pub async fn delete_subtree(
+        &self,
+        folder: FolderId,
+    ) -> Result<(u64, u64, Vec<(lapidary_core::FileRoot, String)>), DbError> {
         let mut tx = self.0.begin().await?;
 
         let folders: Vec<Uuid> = sqlx::query_scalar(
@@ -400,7 +403,7 @@ impl PgFolders {
         .fetch_all(&mut *tx)
         .await?;
         if folders.is_empty() {
-            return Ok((0, 0));
+            return Ok((0, 0, Vec::new()));
         }
 
         let parts: Vec<Uuid> =
@@ -408,7 +411,7 @@ impl PgFolders {
                 .bind(&folders)
                 .fetch_all(&mut *tx)
                 .await?;
-        crate::repo::delete_parts(&mut tx, &parts).await?;
+        let orphaned = crate::repo::delete_parts(&mut tx, &parts).await?;
 
         sqlx::query("DELETE FROM part_move WHERE from_folder = ANY($1) OR to_folder = ANY($1)")
             .bind(&folders)
@@ -424,7 +427,7 @@ impl PgFolders {
             .rows_affected();
 
         tx.commit().await?;
-        Ok((deleted, parts.len() as u64))
+        Ok((deleted, parts.len() as u64, orphaned))
     }
 }
 

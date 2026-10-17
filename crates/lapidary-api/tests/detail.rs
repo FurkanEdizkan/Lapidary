@@ -213,6 +213,7 @@ async fn a_deleted_part_and_a_part_that_never_existed_answer_alike(pool: sqlx::P
             .delete(part)
             .await
             .expect("delete")
+            .is_some()
     );
 
     let (deleted, _) = get(pool.clone(), &part.to_string()).await;

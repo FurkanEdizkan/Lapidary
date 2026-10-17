@@ -978,13 +978,26 @@ async fn recount(
 /// a `blob.ref_count` that stays above the true count for those bytes, which only ever errs
 /// towards keeping them. Gallery images (`part_image.blake3`) are not recounted either, as
 /// before: `recount` has never counted them.
+///
+/// **Answers the files nobody points at any more** (A2): each model file of these parts that is
+/// still on disk under the models folder and that no other part's row — in any library — names. Those
+/// are the ones the caller moves into `_removed/`; this function touches no file itself.
 pub(crate) async fn delete_parts(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     parts: &[Uuid],
-) -> Result<(), DbError> {
+) -> Result<Vec<(lapidary_core::FileRoot, String)>, DbError> {
     if parts.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    // Before the rows go: where these parts' files are. `store` rows are Lapidary's own blobs, not
+    // a model file in anybody's folder.
+    let files: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT f.root, f.storage_path FROM file f JOIN revision r ON r.id = f.revision_id \
+         WHERE r.part_id = ANY($1) AND f.on_disk AND f.root <> 'store' AND f.storage_path IS NOT NULL",
+    )
+    .bind(parts)
+    .fetch_all(&mut **tx)
+    .await?;
     let derived: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT d.blake3 FROM derivative d \
          JOIN revision r ON r.id = d.revision_id \
@@ -1011,7 +1024,21 @@ pub(crate) async fn delete_parts(
     }
 
     recount(tx, &derived).await?;
-    Ok(())
+    // After: of those, the ones no remaining row names. `library` and `inbox` are one folder since
+    // A2, so a path is compared across both.
+    let paths: Vec<&str> = files.iter().map(|(_, path)| path.as_str()).collect();
+    let still_named: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT f.storage_path FROM file f \
+         WHERE f.storage_path = ANY($1) AND f.root <> 'store' AND f.on_disk",
+    )
+    .bind(&paths)
+    .fetch_all(&mut **tx)
+    .await?;
+    files
+        .into_iter()
+        .filter(|(_, path)| !still_named.contains(path))
+        .map(|(root, path)| Ok((file_root(&root)?, path)))
+        .collect()
 }
 
 async fn insert_part_chain(
@@ -1854,15 +1881,6 @@ impl PgParts {
         )
     }
 
-    /// The library's own folder, relative to the ingest mount (`0062`): `''` is the whole mount.
-    /// `None` when there is no such library.
-    pub async fn library_root(&self, library: LibraryId) -> Result<Option<String>, DbError> {
-        Ok(sqlx::query_scalar("SELECT root FROM library WHERE id = $1")
-            .bind(library.as_uuid())
-            .fetch_optional(&self.0)
-            .await?)
-    }
-
     /// Delete the part, for good: its revisions, files, derivatives, pictures, sources and
     /// move trail, in one transaction. There is no undo (owner, 2026-10-17: "if it is deleted
     /// it is deleted").
@@ -1871,8 +1889,12 @@ impl PgParts {
     /// else: the file at a `storage_path`, and a content-addressed source blob, stay exactly where
     /// they are. See [`delete_parts`] for which blob counts are recomputed and which are not.
     ///
-    /// Returns whether there was such a part, so a second delete of the same id is a `404`.
-    pub async fn delete(&self, part: PartId) -> Result<bool, DbError> {
+    /// `None` when there was no such part, so a second delete of the same id is a `404`; otherwise
+    /// the model files nothing points at any more, which the caller moves into `_removed/` (A2).
+    pub async fn delete(
+        &self,
+        part: PartId,
+    ) -> Result<Option<Vec<(lapidary_core::FileRoot, String)>>, DbError> {
         let mut tx = self.0.begin().await?;
         // `FOR UPDATE` holds the row for the whole transaction, so a revision being recorded
         // against this part (which takes the same lock) and this delete cannot interleave.
@@ -1882,11 +1904,11 @@ impl PgParts {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some(found) = found else {
-            return Ok(false);
+            return Ok(None);
         };
-        delete_parts(&mut tx, &[found]).await?;
+        let orphaned = delete_parts(&mut tx, &[found]).await?;
         tx.commit().await?;
-        Ok(true)
+        Ok(Some(orphaned))
     }
 
     /// The number a person gave this part, or `None` to clear it. Only a live part: a deleted
@@ -3579,8 +3601,8 @@ impl PgParts {
     /// two entries called `Terrain` is a switcher nobody can use, and the cost of finding
     /// that out later is a rename plus an explanation.
     ///
-    /// `root` is the library's folder under the ingest mount, `''` for the whole of it. The
-    /// caller has refused one that escapes the mount.
+    /// `root`, when not `''`, is a folder under the models folder the library starts with, as its
+    /// first source (A2). The caller has refused one that escapes the mount.
     pub async fn create_library(&self, name: &str, root: &str) -> Result<LibraryId, DbError> {
         let id = LibraryId::new();
         // Derived here and never sent by a client, exactly as a category's is: `slugify` is
@@ -3588,12 +3610,12 @@ impl PgParts {
         // the directory could name one outside the store. Lowercased because that is what
         // `library_slug` has always returned and what every existing directory is called.
         let slug = lapidary_core::slug::slugify(name).to_lowercase();
-        sqlx::query("INSERT INTO library (id, name, slug, root) VALUES ($1, $2, $3, $4)")
+        let mut tx = self.0.begin().await?;
+        sqlx::query("INSERT INTO library (id, name, slug) VALUES ($1, $2, $3)")
             .bind(id.as_uuid())
             .bind(name)
             .bind(&slug)
-            .bind(root)
-            .execute(&self.0)
+            .execute(&mut *tx)
             .await
             .map_err(|err| match constraint_of(&err).as_deref() {
                 Some("library_name_unique") => DbError::LibraryNameTaken {
@@ -3607,6 +3629,17 @@ impl PgParts {
                 },
                 _ => DbError::Query(err),
             })?;
+        if !root.is_empty() {
+            sqlx::query(
+                "INSERT INTO library_source (id, library_id, path, kind) VALUES ($1, $2, $3, 'folder')",
+            )
+            .bind(Uuid::now_v7())
+            .bind(id.as_uuid())
+            .bind(root)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(id)
     }
 }

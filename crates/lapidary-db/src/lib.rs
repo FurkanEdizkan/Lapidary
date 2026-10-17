@@ -13,6 +13,7 @@ mod repo;
 mod revisions;
 mod saved_filters;
 mod site_keys;
+mod sources;
 mod tags;
 mod touches;
 
@@ -36,6 +37,7 @@ pub use repo::{
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};
 pub use site_keys::{PgSiteKeys, SiteKeyRow};
+pub use sources::{PgSources, SourceRow, covers};
 pub use sqlx::PgPool;
 pub use tags::PgTags;
 pub use touches::Touches;

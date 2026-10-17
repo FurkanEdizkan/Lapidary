@@ -25,6 +25,26 @@ use lapidary_db::{NewPartSource, PgParts, PgRevisions, PgSiteKeys};
 use lapidary_jobs::HandlerError;
 use lapidary_sites::{Site, SiteError, identify};
 use lapidary_storage::InboxWriter;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// A model's page as read once: the site, its description and its pictures (A2). A folder added
+/// with a page link describes every part in it from one read, so the read is kept for a while.
+pub(crate) struct Page {
+    site: Site,
+    model: lapidary_sites::Model,
+    pictures: Vec<(String, Vec<u8>)>,
+}
+
+/// How long a read page is reused, and how many are kept.
+///
+/// `ponytail:` a process-wide map with a ten-minute life and a cap of 16, evicted on use. Long enough
+/// for a scan of one added folder, short enough that a page edited on its site is read again; a
+/// cache with its own owner is the upgrade if two workers ever need to share one.
+const PAGE_LIFE: Duration = Duration::from_secs(600);
+const PAGES_KEPT: usize = 16;
+static PAGES: OnceLock<Mutex<HashMap<String, (Instant, Arc<Page>)>>> = OnceLock::new();
 
 /// The most tags a page gives a part; past this a creator's tag list is a keyword dump.
 const MAX_TAGS: usize = 20;
@@ -32,22 +52,91 @@ const MAX_TAGS: usize = 20;
 const MAX_PICTURES: usize = 12;
 
 impl WorkerHandler {
+    /// `describe_page`: a part already in the library described from its page — source row, tags,
+    /// pictures — and nothing downloaded (A2). What "Fetch details" asks for, and what a file added
+    /// with a page link gets once it is filed.
+    pub(crate) async fn describe_one(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        url: &str,
+    ) -> Result<Outcome, HandlerError> {
+        let page = self.page(url).await?;
+        self.describe_from_page(library, source_path, page.site, &page.model, &page.pictures)
+            .await;
+        Ok(Outcome::Described)
+    }
+
+    /// The page at `url`, read through the site's key, from the cache when it was read lately.
+    async fn page(&self, url: &str) -> Result<Arc<Page>, HandlerError> {
+        let pages = PAGES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(mut kept) = pages.lock() {
+            kept.retain(|_, (read, _)| read.elapsed() < PAGE_LIFE);
+            if let Some((_, page)) = kept.get(url) {
+                return Ok(page.clone());
+            }
+        }
+        let (site, id) = identify(url).map_err(permanent)?;
+        let key = self.site_key(site).await?;
+        let model = self
+            .sites
+            .model(site, &id, key.as_deref())
+            .await
+            .map_err(classify)?;
+        let pictures = self.pictures(site, &model).await;
+        let page = Arc::new(Page {
+            site,
+            model,
+            pictures,
+        });
+        if let Ok(mut kept) = pages.lock() {
+            if kept.len() >= PAGES_KEPT
+                && let Some(oldest) = kept
+                    .iter()
+                    .min_by_key(|(_, (read, _))| *read)
+                    .map(|(url, _)| url.clone())
+            {
+                kept.remove(&oldest);
+            }
+            kept.insert(url.to_owned(), (Instant::now(), page.clone()));
+        }
+        Ok(page)
+    }
+
+    async fn site_key(&self, site: Site) -> Result<Option<String>, HandlerError> {
+        if !site.needs_key() {
+            return Ok(None);
+        }
+        PgSiteKeys(self.db.clone())
+            .secret(site.slug())
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })
+    }
+
+    /// The page's pictures, to [`MAX_PICTURES`], each fetched once. One that fails is left out and
+    /// said in the log; the rest still come.
+    async fn pictures(&self, site: Site, model: &lapidary_sites::Model) -> Vec<(String, Vec<u8>)> {
+        let mut pictures = Vec::new();
+        for url in model.images.iter().take(MAX_PICTURES) {
+            match self.sites.image(url).await {
+                Ok(bytes) => pictures.push((url.clone(), bytes)),
+                Err(error) => {
+                    tracing::warn!(site = site.slug(), %url, %error, "could not fetch one of the model's pictures; its parts go without it");
+                }
+            }
+        }
+        pictures
+    }
+
     pub(crate) async fn import_link(
         &self,
         library: LibraryId,
         url: &str,
     ) -> Result<Outcome, HandlerError> {
         let (site, id) = identify(url).map_err(permanent)?;
-        let key = if site.needs_key() {
-            PgSiteKeys(self.db.clone())
-                .secret(site.slug())
-                .await
-                .map_err(|e| HandlerError::Transient {
-                    message: e.to_string(),
-                })?
-        } else {
-            None
-        };
+        let key = self.site_key(site).await?;
         let model = self
             .sites
             .model(site, &id, key.as_deref())
@@ -81,15 +170,7 @@ impl WorkerHandler {
         }
 
         // Fetched once, each attached to every part of the set (M5).
-        let mut pictures = Vec::new();
-        for url in model.images.iter().take(MAX_PICTURES) {
-            match self.sites.image(url).await {
-                Ok(bytes) => pictures.push((url.clone(), bytes)),
-                Err(error) => {
-                    tracing::warn!(site = site.slug(), %url, %error, "could not fetch one of the model's pictures; its parts go without it");
-                }
-            }
-        }
+        let pictures = self.pictures(site, &model).await;
 
         let folder = format!(
             "{}/{}/{}",
