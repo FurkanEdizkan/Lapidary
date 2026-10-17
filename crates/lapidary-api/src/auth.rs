@@ -234,18 +234,18 @@ pub async fn setup(
     }
     let username = match username(&body.username) {
         Ok(name) => name,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if let Err(response) = password_ok(&body.password) {
-        return response;
+        return *response;
     }
     let display_name = match display_name(body.display_name.as_deref()) {
         Ok(name) => name,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let hash = match hash_password(body.password).await {
         Ok(hash) => hash,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let user = match accounts
         .create_first_admin(&username, display_name.as_deref(), &hash)
@@ -355,7 +355,7 @@ pub fn new_password() -> String {
 
 /// A password as the database keeps it: an argon2id PHC string. Off the async threads, because it is
 /// deliberately slow.
-pub async fn hash_password(password: String) -> Result<String, Response> {
+pub async fn hash_password(password: String) -> Result<String, Box<Response>> {
     let hashed = tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
@@ -367,27 +367,27 @@ pub async fn hash_password(password: String) -> Result<String, Response> {
         Ok(Ok(hash)) => Ok(hash),
         _ => {
             tracing::error!("hashing a password failed");
-            Err(answer(
+            Err(Box::new(answer(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
                 "Could not save the password. Try again; if it keeps failing, the server log says why.",
-            ))
+            )))
         }
     }
 }
 
 /// The same checks the wizard makes, for every other place that takes a new password.
-pub fn password_ok(password: &str) -> Result<(), Response> {
+pub fn password_ok(password: &str) -> Result<(), Box<Response>> {
     let length = password.chars().count();
     if length < MIN_PASSWORD {
-        return Err(refused(&format!(
+        return Err(Box::new(refused(&format!(
             "A password needs at least {MIN_PASSWORD} characters. Choose a longer one."
-        )));
+        ))));
     }
     if length > MAX_PASSWORD {
-        return Err(refused(&format!(
+        return Err(Box::new(refused(&format!(
             "A password is at most {MAX_PASSWORD} characters. Choose a shorter one."
-        )));
+        ))));
     }
     Ok(())
 }
@@ -494,7 +494,7 @@ async fn code_matches(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbE
     Ok(want == Some(blake3::hash(typed.as_bytes()).to_hex().as_str()))
 }
 
-fn username(raw: &str) -> Result<String, Response> {
+fn username(raw: &str) -> Result<String, Box<Response>> {
     let name = raw.trim().to_lowercase();
     let mut chars = name.chars();
     let first_ok = chars
@@ -503,19 +503,19 @@ fn username(raw: &str) -> Result<String, Response> {
     let rest_ok =
         chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'));
     if !first_ok || !rest_ok || name.len() > 40 {
-        return Err(refused(
+        return Err(Box::new(refused(
             "A username is 1 to 40 letters, digits, dots, dashes or underscores, starting with a letter or digit.",
-        ));
+        )));
     }
     Ok(name)
 }
 
-fn display_name(raw: Option<&str>) -> Result<Option<String>, Response> {
+fn display_name(raw: Option<&str>) -> Result<Option<String>, Box<Response>> {
     let name = raw.map(str::trim).filter(|name| !name.is_empty());
     if name.is_some_and(|name| name.chars().count() > 80) {
-        return Err(refused(
+        return Err(Box::new(refused(
             "A display name is at most 80 characters. Shorten it and try again.",
-        ));
+        )));
     }
     Ok(name.map(str::to_owned))
 }
