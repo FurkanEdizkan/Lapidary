@@ -21,10 +21,11 @@ area — these encode decisions that are expensive to reverse.
 - **We never edit geometry.** Editing happens in Rhino, Fusion, FreeCAD, Blender, Orca.
   We catalogue, picture, search, route, version. *(Was "we visualize, measure, route, version"
   until the pivot of 2026-10-03 — measuring B-rep geometry is no longer a thing this product does.)*
-- **Delete is delete.** Deleting removes a part from the library at once — its rows, pictures and
-  tags — and never touches the model file on disk. No restore, no purge (owner, 2026-10-17).
-  Derivative cache eviction is a different action with different wording and must never read as
-  data loss.
+- **Remove is remove; a file is moved, never deleted.** Removing takes a part out of the library at
+  once — its rows, pictures and tags — and moves its model file into `_removed/<who>/` in the models
+  folder, unless another part still uses it. No restore in the app, no purge, and no unlink of a
+  model file anywhere (owner, 2026-10-17). Derivative cache eviction is a different action with
+  different wording and must never read as data loss.
 - **Meshes in, meshes out.** The library takes `stl`, `obj` and `3mf`. A STEP or IGES file is
   **refused at ingest, by name**, in a sentence that says what to export instead — never skipped in
   silence. Slicers still get 3MF or STL through the `Target` negotiation. *(Until 2026-10-03 this read
@@ -44,10 +45,11 @@ area — these encode decisions that are expensive to reverse.
 - **Downloads are never silently converted.** `variant=original` returns byte-identical
   ingested bytes — as long as the file on disk has not changed since it was indexed; a changed
   file is refused with a sentence, never served. Anything we produced is named `*.lapidary.*`.
-- **Your folders are read where they are** (owner, 2026-10-17). A scan never copies, renames,
-  moves, writes or deletes anything under the ingest mount, which is mounted read-only; uploads
-  and imports are written once into the inbox. A category is the library's own grouping, and a
-  move is a database change.
+- **One models folder, read where it is** (owner, 2026-10-17, A2). A library holds the files and
+  folders a person adds from it; a scan reads each model in place and never copies, renames or
+  writes one. Lapidary writes only new files (uploads, imports, examples) under its own folders
+  there, and moves a removed model's file into `_removed/`, which nothing scans. A category is the
+  library's own grouping, and a move is a database change.
 
 ## Non-negotiable technical rules
 
