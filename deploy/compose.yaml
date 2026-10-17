@@ -136,8 +136,9 @@ services:
       # The browse root (A6), the whole machine unless LAPIDARY_BROWSE_ROOT narrows it. Read-write so
       # the folder chosen inside it can take uploads and `_removed/`; uid 10001 writes only where the
       # host lets it. **No `z`**: relabelling `/` would relabel the machine. On an SELinux-enforcing
-      # host, set LAPIDARY_BROWSE_ROOT to a folder you have labelled, or use LAPIDARY_MODELS_DIR.
-      - ${LAPIDARY_BROWSE_ROOT:-/}:/host
+      # host, set LAPIDARY_BROWSE_ROOT to a folder you have labelled, or use LAPIDARY_MODELS_DIR. `rslave`
+      # so a drive mounted after start shows up too.
+      - ${LAPIDARY_BROWSE_ROOT:-/}:/host:rslave
       # Partial uploads. A named volume and not part of the storage root, so a half-transferred
       # file is never inside a directory whose contract is that everything in it is complete.
       - lapidary-uploads:/var/lib/lapidary-uploads:Z

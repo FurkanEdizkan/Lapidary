@@ -259,6 +259,12 @@ function Wizard({ status }: { status: SetupStatus }) {
                   ? strings.settings.modelsFolderFixed
                   : strings.setup.modelsFolderHint}
             </p>
+            {folder.isError ? (
+              // A stale setup code, most often: the server's sentence says so.
+              <p role="alert" className="text-sm text-[var(--color-text)]">
+                {folder.error.message}
+              </p>
+            ) : null}
             {folder.data?.canChoose ? (
               picking ? (
                 <FolderPicker
