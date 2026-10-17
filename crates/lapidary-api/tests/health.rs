@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path

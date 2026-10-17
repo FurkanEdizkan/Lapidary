@@ -10,6 +10,7 @@
 use axum::body::{Body, BodyDataStream};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
+mod common;
 use lapidary_api::events::Hub;
 use lapidary_core::{AppEvent, BatchId, JobId, LibraryId, PartId};
 use std::time::Duration;
@@ -41,7 +42,13 @@ const LONG_ENOUGH: Duration = Duration::from_millis(1_200);
 async fn hub(pool: &sqlx::PgPool) -> (axum::Router, CancellationToken) {
     let shutdown = CancellationToken::new();
     let hub = Hub::spawn(pool.clone(), shutdown.clone()).await;
-    (lapidary_api::events::router(hub), shutdown)
+    (
+        common::signed_in(
+            lapidary_api::events::router(hub, pool.clone()),
+            pool.clone(),
+        ),
+        shutdown,
+    )
 }
 
 /// Ends the hub and waits until the database agrees its listener has gone.
@@ -465,21 +472,24 @@ async fn a_lost_listener_becomes_a_resync(pool: sqlx::PgPool) {
 async fn both_streams_ask_not_to_be_buffered(pool: sqlx::PgPool) {
     let shutdown = CancellationToken::new();
     let hub = Hub::spawn(pool.clone(), shutdown.clone()).await;
-    let app = lapidary_api::router(
-        lapidary_api::AppState {
-            db: pool.clone(),
-            blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
-            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
-            host_storage_root: None,
-            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
-            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
-            host_ingest_root: None,
-            host_inbox_root: None,
-            touches: Default::default(),
-        },
-        lapidary_api::Role::Api,
-    )
-    .merge(lapidary_api::events::router(hub));
+    let app = common::signed_in(
+        lapidary_api::router(
+            lapidary_api::AppState {
+                db: pool.clone(),
+                blob_root: std::path::PathBuf::from("/nonexistent-blob-root"),
+                upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+                host_storage_root: None,
+                ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+                inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+                host_ingest_root: None,
+                host_inbox_root: None,
+                touches: Default::default(),
+            },
+            lapidary_api::Role::Api,
+        )
+        .merge(lapidary_api::events::router(hub, pool.clone())),
+        pool.clone(),
+    );
 
     let response = open(&app).await;
     assert_eq!(response.status(), StatusCode::OK);

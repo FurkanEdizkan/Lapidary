@@ -8,7 +8,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use lapidary_core::{BlobHash, LibraryId, ScanAccepted};
 use tower::ServiceExt;
 

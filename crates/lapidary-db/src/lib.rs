@@ -1,6 +1,7 @@
 //! Every SQL statement in Lapidary lives in this crate. Other crates go through the
 //! repository traits below.
 
+mod accounts;
 mod custom_fields;
 mod dashboard;
 mod densities;
@@ -15,6 +16,7 @@ mod site_keys;
 mod tags;
 mod touches;
 
+pub use accounts::{PgAccounts, PgSettings, UserRow};
 pub use custom_fields::{
     CustomFieldPatch, CustomFieldRow, MAX_FIELDS, MAX_INDEXED, PgCustomFields, ValueSet,
 };

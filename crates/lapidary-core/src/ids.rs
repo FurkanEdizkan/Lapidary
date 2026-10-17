@@ -53,6 +53,10 @@ macro_rules! uuid_newtype {
 }
 
 uuid_newtype!(LibraryId, "Identifies a library.");
+uuid_newtype!(
+    UserId,
+    "Identifies a person with an account on this install (A1)."
+);
 uuid_newtype!(PartId, "Identifies a part across all of its revisions.");
 uuid_newtype!(RevisionId, "Identifies one immutable revision of a part.");
 uuid_newtype!(JobId, "Identifies one unit of queued work.");

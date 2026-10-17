@@ -82,9 +82,13 @@ pub struct ImportLink {
     pub url: String,
 }
 
-/// Whether this install imports from model sites at all.
-fn enabled() -> bool {
-    !matches!(
+/// The `instance_setting` key the setup wizard writes (A1). Absent means on.
+pub(crate) const IMPORT_LINKS: &str = "import_links";
+
+/// `LAPIDARY_IMPORT_LINKS=false`: off whatever the wizard said, for an install that must make no
+/// outbound request.
+pub(crate) fn forced_off() -> bool {
+    matches!(
         std::env::var("LAPIDARY_IMPORT_LINKS")
             .as_deref()
             .map(str::trim),
@@ -92,10 +96,29 @@ fn enabled() -> bool {
     )
 }
 
+/// Whether this install imports from model sites at all: not forced off, and not switched off in
+/// setup. A setting that cannot be read counts as off — the side that contacts nobody.
+async fn enabled(db: &lapidary_db::PgPool) -> bool {
+    if forced_off() {
+        return false;
+    }
+    match lapidary_db::PgSettings(db.clone()).get(IMPORT_LINKS).await {
+        Ok(value) => value.and_then(|v| v.as_bool()).unwrap_or(true),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not read the import switch; importing stays off until it can be");
+            false
+        }
+    }
+}
+
 fn switched_off() -> Response {
     refused(
         StatusCode::FORBIDDEN,
-        "Importing from model sites is switched off on this install (LAPIDARY_IMPORT_LINKS=false), so nothing here contacts them. Whoever runs the server can turn it on in deploy/.env.",
+        if forced_off() {
+            "Importing from model sites is switched off on this install (LAPIDARY_IMPORT_LINKS=false), so nothing here contacts them. Whoever runs the server can turn it on in deploy/.env."
+        } else {
+            "Importing from model sites was switched off when this install was set up, so nothing here contacts them."
+        },
     )
 }
 
@@ -112,7 +135,7 @@ fn unknown_site() -> Response {
 
 /// `GET /api/settings/sites`
 pub async fn list(State(state): State<AppState>) -> Response {
-    let rows = match PgSiteKeys(state.db).list().await {
+    let rows = match PgSiteKeys(state.db.clone()).list().await {
         Ok(rows) => rows,
         Err(err) => return internal_error(&err, "site key list failed"),
     };
@@ -133,7 +156,7 @@ pub async fn list(State(state): State<AppState>) -> Response {
         })
         .collect();
     Json(SiteSettings {
-        enabled: enabled(),
+        enabled: enabled(&state.db).await,
         sites,
     })
     .into_response()
@@ -193,7 +216,7 @@ pub async fn check(
     Path(slug): Path<String>,
     body: Option<Json<CheckSiteKey>>,
 ) -> Response {
-    if !enabled() {
+    if !enabled(&state.db).await {
         return switched_off();
     }
     let Some(site) = Site::from_slug(&slug) else {
@@ -247,7 +270,7 @@ pub async fn import(
     Path(library): Path<LibraryId>,
     body: Result<Json<ImportLink>, JsonRejection>,
 ) -> Response {
-    if !enabled() {
+    if !enabled(&state.db).await {
         return switched_off();
     }
     let Ok(Json(body)) = body else {
