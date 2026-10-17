@@ -2,6 +2,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 // Not signed in: `/api/healthz` is public, and one of these runs against a database that is gone.
 use lapidary_api::{AppState, Role, router};
+// Signed in, for the two that reach a guarded route.
+mod common;
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path
@@ -179,7 +181,7 @@ async fn the_scan_trigger_is_on_the_api_role_and_only_there(pool: sqlx::PgPool) 
         (Role::Api, StatusCode::ACCEPTED),
         (Role::Worker, StatusCode::NOT_FOUND),
     ] {
-        let app = router(
+        let app = common::router(
             AppState {
                 db: pool.clone(),
                 blob_root: blob_root(),
@@ -245,7 +247,7 @@ async fn the_worker_role_does_not_serve_the_grid(pool: sqlx::PgPool) {
 // freshly migrated pool, so an empty page is the correct response, not an error.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn the_api_role_serves_the_grid(pool: sqlx::PgPool) {
-    let app = router(
+    let app = common::router(
         AppState {
             db: pool,
             blob_root: blob_root(),
