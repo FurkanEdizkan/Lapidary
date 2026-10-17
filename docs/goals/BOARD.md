@@ -24,7 +24,7 @@ Status: `open` → `claimed (lane n)` → `ready` → `merged <sha>`.
 | [L3](L3.md) | Mass and materials leftovers | 3 | Rust + web | B0, G2 | `lapidary-api/src/densities.rs`, the part page's mass section, `repo.rs` (wave 3 only), a re-derive path in `lapidary-ingest` | 0051 | merged `3866a62` | `fix/mass-and-materials` |
 | [L4](L4.md) | A query that gave up stops running | 3 | Rust (small) | G4 | `lapidary-db/src/lib.rs`'s pool (`statement_timeout`, `lock_timeout`) | — | merged `fd5c7dd` | `fix/statement-timeouts` |
 | [P3](P3.md) | Tags as places | 3 | web | W0 | `web/src/routes/tags*.tsx`, the tags read, `tags` strings block | — | merged `bd362e4` | `feat/tag-browse` |
-| [P1](P1.md) | Creator releases and packs | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
+| [P1](P1.md) | Creator releases and packs (A10 opens uploaded zip and 7z; scanned and link-imported archives stay P1's) | 4 | Rust (ingest) | G2, L3 | `lapidary-ingest/src/import.rs`, `lapidary-targets/src/bundle.rs`, the release rows | 0053 | open | `feat/release-import` |
 | [P2](P2.md) | Browse by creator | 4 | Rust + web | W0, P1 | the creator read and facet, `web/src/routes/creators*.tsx`, `creators` strings block | — | open | `feat/creator-browse` |
 | [P4](P4.md) | The explore landing | 5 | web | G3, G4, G5, P2, P3 | `web/src/routes/explore.tsx`, `explore` strings block | — | open | `feat/explore-landing` |
 | [R1](R1.md) | The card shows a picture; the viewer loads the original | 4 | web (+ one db read) | — | the page query's card picture, `Card.tsx`, `Viewer.tsx`, the engine half of the frontend | — | merged `c96a5a1` | `feat/picture-first` |
@@ -126,6 +126,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A7](A7.md) | Lapidary runs as the person who installed it | 12 | deploy + Rust | A6 | see [A7.md](A7.md) | — | merged `201bfb9` | `feat/run-as-owner` |
 | [A8](A8.md) | One-command install, and Lapidary's own files chosen in the wizard | 12 | deploy + Rust + web | A7 | see [A8.md](A8.md) | — | merged `d9436ac` | `feat/install-and-store` |
 | [A9](A9.md) | A folder browser worth the name, and New folder | 12 | Rust + web | A8 | see [A9.md](A9.md) | — | merged `30aca80` | `feat/folder-browser` |
+| [A10](A10.md) | Upload single files, and zip and 7z archives | 12 | Rust + web | A9 | see [A10.md](A10.md) | — | open | `feat/upload-archives` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
