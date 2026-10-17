@@ -68,6 +68,8 @@ RUN install -d -o lapidary -g lapidary -m 0755 /var/lib/lapidary \
 COPY example/parts/*.stl /usr/share/lapidary/example-parts/
 COPY --from=web /src/dist /usr/share/lapidary/web
 COPY --from=build /src/target/release/lapidary-server /usr/local/bin/lapidary-server
-USER lapidary
+# Starts as root only to choose the user to run as, the person who installed Lapidary, and drops to
+# them with setpriv before the server starts (A7). `lapidary` (10001) is the fallback.
+COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/lapidary-entrypoint
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/lapidary-server"]
+ENTRYPOINT ["/usr/local/bin/lapidary-entrypoint"]

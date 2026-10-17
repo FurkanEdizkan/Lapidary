@@ -457,7 +457,7 @@ verify_ports() {
   the usual cause."
   LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB LAPIDARY_PORT_API=$LAPIDARY_PORT_API \
     LAPIDARY_PORT_WORKER=$LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER=$LAPIDARY_PORT_PEER \
-    STORE=$STORE INGEST=$INGEST INBOX=$INBOX python3 -c '
+    STORE=$STORE INGEST=$INGEST INBOX=$INBOX DEPLOY=$ROOT/deploy python3 -c '
 import json, os, sys
 
 resolved = json.load(sys.stdin)
@@ -473,6 +473,9 @@ for name, service in resolved.get("services", {}).items():
         published.add(str(port.get("published")))
     for volume in service.get("volumes") or []:
         if volume.get("type") == "bind":
+            # deploy/ itself, read-only, only so the entrypoint sees who owns it (A7).
+            if volume["source"] == os.environ["DEPLOY"] and volume.get("read_only"):
+                continue
             mounts.setdefault(volume["source"], set()).add(name)
 
 problems = []
@@ -616,7 +619,8 @@ cmd_up() {
   verify_ports
   mkdir -p "$STORE" "$INGEST" "$INBOX" "$RUNS"
   tag_borrowed_images
-  chown_store 10001:10001
+  # Lapidary runs as the owner of deploy/ (A7), which is this user, so its folders are this user's.
+  chown_store "$(id -u):$(id -g)"
 
   note "up"
   local began=$SECONDS

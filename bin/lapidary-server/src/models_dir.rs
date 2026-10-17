@@ -312,13 +312,15 @@ fn writable(dir: &Path) -> bool {
 
 fn cannot_open(shown: &str) -> String {
     format!(
-        "Lapidary can't open {shown}. It runs as user 10001; give it access with `sudo setfacl -m u:10001:rx \"{shown}\"` (and on each folder above it that it can't enter), then reload."
+        "Lapidary can't open {shown}. It runs as user {uid}; give it access with `sudo setfacl -m u:{uid}:rx \"{shown}\"` (and on each folder above it that it can't enter), then reload.",
+        uid = rustix::process::getuid().as_raw()
     )
 }
 
 fn cannot_write(shown: &str) -> String {
     format!(
-        "Lapidary can't write to {shown}, so it can't be the models folder: uploads go there, and removed models into its _removed. To use this folder, run `sudo setfacl -R -m u:10001:rwX -m d:u:10001:rwX \"{shown}\"`, then reload."
+        "Lapidary can't write to {shown}, so it can't be the models folder: uploads go there, and removed models into its _removed. To use this folder, run `sudo setfacl -R -m u:{uid}:rwX -m d:u:{uid}:rwX \"{shown}\"`, then reload.",
+        uid = rustix::process::getuid().as_raw()
     )
 }
 
