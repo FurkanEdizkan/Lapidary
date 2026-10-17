@@ -21,6 +21,7 @@ vi.mock('three', async (original) => {
     domElement = document.createElement('canvas')
     setPixelRatio() {}
     setSize() {}
+    clear() {}
     render() {}
     dispose() {}
   }

@@ -320,7 +320,8 @@ function Readouts({ tools, readout }: { tools: Tools; readout: Readout }) {
       {tools.grid && step !== null ? (
         <p>
           {strings.viewer.gridStep}
-          <Length mm={step} />
+          {/* Not a measurement: the step the grid was drawn at, so no ≈. */}
+          {strings.viewer.mm(String(Number(step.toPrecision(3))))}
         </p>
       ) : null}
       {tools.size && size !== null ? (
@@ -489,6 +490,10 @@ function createView(node: HTMLElement, onFirstFrame: () => void, onReadout: (rea
 
   const draw = (withAids: boolean) => {
     for (const aid of [grid, outline, ...pickMarks]) if (aid !== null) aid.visible = withAids
+    // Cleared once, here: the gizmo renders into its corner with a second `render`, and an automatic
+    // clear there would wipe the part drawn a line above.
+    renderer.autoClear = false
+    renderer.clear()
     renderer.render(scene, camera)
     if (withAids && model !== null) gizmo.render(renderer)
   }
