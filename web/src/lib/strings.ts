@@ -114,7 +114,7 @@ export const strings = {
    */
   settings: {
     title: 'Settings',
-    lead: 'Keys for the sites Lapidary imports models from. A key stays on this server: it is shown here by its last four characters, and sent only to its own site.',
+    lead: 'Your keys for the sites Lapidary imports models from, how adding models starts, and the port this server answers on. A key stays on this server: it is shown here by its last four characters, and sent only to its own site.',
     sitesHeading: 'Model sites',
     switchedOff:
       'Importing from model sites is switched off on this install (LAPIDARY_IMPORT_LINKS=false). Whoever runs the server can turn it on in deploy/.env.',
