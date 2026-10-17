@@ -327,7 +327,7 @@ fn make_in(host: &Host, parent: &str, name: &str) -> Result<HostFolders, (Status
     let listing = read(host, &inner)?;
     let real = host.inside(Path::new(&listing.path)).unwrap_or(inner);
     if off_limits(&listing.path) || !writable(&real) {
-        return Err((StatusCode::BAD_REQUEST, cannot_write(&listing.path)));
+        return Err((StatusCode::BAD_REQUEST, cannot_make(&listing.path)));
     }
     let made = real.join(name);
     match std::fs::create_dir(&made) {
@@ -339,7 +339,7 @@ fn make_in(host: &Host, parent: &str, name: &str) -> Result<HostFolders, (Status
                 listing.path
             ),
         )),
-        Err(_) => Err((StatusCode::BAD_REQUEST, cannot_write(&listing.path))),
+        Err(_) => Err((StatusCode::BAD_REQUEST, cannot_make(&listing.path))),
     }
 }
 
@@ -434,6 +434,14 @@ fn writable(dir: &Path) -> bool {
 fn cannot_open(shown: &str) -> String {
     format!(
         "Lapidary can't open {shown}. It runs as user {uid}; give it access with `sudo setfacl -m u:{uid}:rx \"{shown}\"` (and on each folder above it that it can't enter), then reload.",
+        uid = rustix::process::getuid().as_raw()
+    )
+}
+
+/// Not `cannot_write`'s recipe: that is for a folder somebody chose, never for `/` or `/proc`.
+fn cannot_make(shown: &str) -> String {
+    format!(
+        "Lapidary can't make a folder in {shown}. It runs as user {uid}; open a folder that user owns and make it there.",
         uid = rustix::process::getuid().as_raw()
     )
 }
@@ -786,6 +794,16 @@ mod tests {
             );
         }
         assert!(make_in(&host, "/../x", "y").is_err());
+        // Where it may not write, it says so, and never hands out a setfacl for the folder.
+        let shut = root.path().join("shut");
+        std::fs::create_dir(&shut).expect("shut");
+        std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o555))
+            .expect("read-only");
+        if !writable(&shut) {
+            let (status, said) = make_in(&host, "/shut", "x").expect_err("refused");
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(said.contains("can't make a folder in /shut") && !said.contains("setfacl"));
+        }
     }
 
     #[test]

@@ -92,6 +92,11 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
   // Listed, so it can be chosen.
   await screen.findByText(strings.folderPicker.empty)
   // New folder makes one inside it, with the setup code, and opens it.
+  // Escape leaves the name, not the whole picker.
+  fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.newFolder }))
+  fireEvent.keyDown(screen.getByLabelText(strings.folderPicker.newName), { key: 'Escape' })
+  expect(screen.queryByLabelText(strings.folderPicker.newName)).toBeNull()
+  expect(screen.getByRole('dialog')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.newFolder }))
   fireEvent.change(screen.getByLabelText(strings.folderPicker.newName), { target: { value: 'Benchy' } })
   fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.make }))

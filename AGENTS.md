@@ -51,7 +51,8 @@ area — these encode decisions that are expensive to reverse.
   `bin/lapidary-server/src/models_dir.rs`, and never changed while a model is read from the old one). A library holds the files and
   folders a person adds from it; a scan reads each model in place and never copies, renames or
   writes one. Lapidary writes only new files (uploads, imports, examples) under its own folders
-  there, and moves a removed model's file into `_removed/`, which nothing scans. A category is the
+  there, and moves a removed model's file into `_removed/`, which nothing scans. The folder picker's New folder (A9)
+  makes one empty folder where an admin asks, and nothing else. A category is the
   library's own grouping, and a move is a database change.
 
 ## Non-negotiable technical rules
