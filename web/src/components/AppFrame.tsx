@@ -6,7 +6,7 @@ import type { LibraryId } from '../lib/types'
 import { Icon } from './Icon'
 import { JumpSearch } from './Search'
 import { Menu } from './Menu'
-import { LOGIN_PATH, forgetSession, signOut } from '../lib/session'
+import { LOGIN_PATH, currentUser, forgetSession, signOut } from '../lib/session'
 
 /**
  * A square on its corner with a square inside it — the facet-and-table of a cut stone,
@@ -25,7 +25,7 @@ export function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'siteSettings' | 'profile'
+export type Place = 'parts' | 'dashboard' | 'sharedWithMe' | 'siteSettings' | 'profile' | 'people'
 
 /**
  * Out of the JSX on purpose: `no-bare-strings` reads any attribute literal that contains a strings.ts
@@ -33,6 +33,8 @@ export type Place = 'parts' | 'dashboard' | 'siteSettings' | 'profile'
  */
 const SETTINGS_PATH = '/settings'
 const PROFILE_PATH = '/profile'
+const PEOPLE_PATH = '/people'
+const SHARED_PATH = '/shared'
 
 const HOME =
   'ease-mechanical flex flex-none items-center gap-[9px] rounded-[var(--radius-ctl)] duration-[var(--duration-fast)] hover:opacity-80'
@@ -57,6 +59,7 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
   const search = library === undefined || library === DEFAULT_LIBRARY_ID ? undefined : { library }
   const inParts = current === 'parts'
   const inDashboard = current === 'dashboard'
+  const inShared = current === 'sharedWithMe'
   return (
     <nav
       aria-label={strings.frame.places}
@@ -89,6 +92,16 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
           {strings.dashboard.title}
         </Link>
       )}
+      {/* What other people shared with you (A4): theirs to change, yours to look at and download. */}
+      {inShared ? (
+        <span aria-current="page" className={HERE}>
+          {strings.sharing.place}
+        </span>
+      ) : (
+        <Link to={SHARED_PATH} className={THERE}>
+          {strings.sharing.place}
+        </Link>
+      )}
     </nav>
   )
 }
@@ -103,6 +116,9 @@ const MENU_ITEM =
 function UserMenu({ current }: { current?: Place }) {
   const inProfile = current === 'profile'
   const inSettings = current === 'siteSettings'
+  const inPeople = current === 'people'
+  // The admin's accounts page (A4), for an admin only.
+  const admin = currentUser()?.isAdmin ?? false
   return (
     <Menu id="user-menu" label={strings.user.menu} icon="user">
       {inProfile ? (
@@ -121,6 +137,15 @@ function UserMenu({ current }: { current?: Place }) {
       ) : (
         <Link to={SETTINGS_PATH} className={MENU_ITEM}>
           {strings.settings.title}
+        </Link>
+      )}
+      {!admin ? null : inPeople ? (
+        <span aria-current="page" className={`${MENU_ITEM} font-semibold`}>
+          {strings.user.people}
+        </span>
+      ) : (
+        <Link to={PEOPLE_PATH} className={MENU_ITEM}>
+          {strings.user.people}
         </Link>
       )}
       {/* A full load to the sign-in page, so nothing cached for this person outlives the session (A1). */}

@@ -1,9 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { fetchProfile, saveProfile } from '../lib/api'
+import { changePassword, fetchProfile, saveProfile } from '../lib/api'
 import { strings } from '../lib/strings'
-import { HEADLINE, LEAD } from '../components/Page'
+import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
+import { Field, INPUT } from '../components/Doorway'
 import { AppFrame } from '../components/AppFrame'
 
 export const Route = createFileRoute('/profile')({
@@ -28,6 +29,7 @@ export function ProfilePage() {
         ) : (
           <NameForm key={profile.data.displayName ?? ''} initial={profile.data.displayName ?? ''} />
         )}
+        <PasswordForm />
       </section>
     </AppFrame>
   )
@@ -78,5 +80,56 @@ function NameForm({ initial }: { initial: string }) {
         ) : null}
       </div>
     </form>
+  )
+}
+
+/** Your own password (A4), given the one you have now. Your other sessions are signed out. */
+function PasswordForm() {
+  const [current, setCurrent] = useState('')
+  const [password, setPassword] = useState('')
+  const change = useMutation({
+    mutationFn: () => changePassword({ current, password }),
+    onSuccess: () => {
+      setCurrent('')
+      setPassword('')
+    },
+  })
+  return (
+    <section className={SECTION}>
+      <h3 className={SECTION_TITLE}>{strings.profile.passwordHeading}</h3>
+      <form
+        className="mt-4 flex max-w-md flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!change.isPending) change.mutate()
+        }}
+      >
+        <Field label={strings.profile.currentPassword}>
+          <input type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} className={INPUT} />
+        </Field>
+        <Field label={strings.profile.newPassword} hint={strings.setup.passwordHint}>
+          <input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className={INPUT} />
+        </Field>
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={change.isPending || current === '' || password === ''}
+            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+          >
+            {strings.profile.changePassword}
+          </button>
+          {change.isSuccess ? (
+            <span role="status" className="text-sm text-[var(--color-muted)]">
+              {strings.profile.passwordChanged}
+            </span>
+          ) : null}
+          {change.isError ? (
+            <span role="alert" className="text-sm text-[var(--color-text)]">
+              {change.error.message}
+            </span>
+          ) : null}
+        </div>
+      </form>
+    </section>
   )
 }

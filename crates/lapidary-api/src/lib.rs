@@ -24,6 +24,7 @@ mod lifecycle;
 mod moves;
 mod part_number;
 mod parts;
+mod people;
 mod profile;
 // `pub` for `Retired`, the shape a delete answers with.
 pub mod retire;
@@ -245,6 +246,17 @@ fn guarded(db: PgPool) -> Router<AppState> {
         // This install's display name (M2). See `profile.rs`.
         .route("/api/profile", get(profile::get).put(profile::set))
         .route("/api/settings/sites", get(site_settings::list))
+        // The people on the install, the admin's account management, and sharing (A4). See
+        // `people.rs`.
+        .route("/api/people", get(people::list).post(people::create))
+        .route("/api/people/{id}", axum::routing::delete(people::delete))
+        .route("/api/people/{id}/password", put(people::reset_password))
+        .route("/api/profile/password", put(people::change_password))
+        .route(
+            "/api/parts/{id}/shares",
+            get(people::shares).put(people::set_shares),
+        )
+        .route("/api/shared", get(people::shared_with_me))
         .route(
             "/api/settings/import",
             get(profile::import_settings).put(profile::set_import_settings),

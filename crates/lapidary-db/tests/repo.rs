@@ -1884,6 +1884,7 @@ async fn every_table_referencing_the_part_chain_is_one_delete_deletes_from(pool:
         "file",
         "part_image",
         "part_move",
+        "part_share",
         "part_source",
         "revision",
     ];

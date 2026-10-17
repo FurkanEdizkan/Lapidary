@@ -463,7 +463,7 @@ pub fn password_ok(password: &str) -> Result<(), Box<Response>> {
     Ok(())
 }
 
-async fn verify_password(password: String, hash: String) -> bool {
+pub(crate) async fn verify_password(password: String, hash: String) -> bool {
     tokio::task::spawn_blocking(move || {
         PasswordHash::new(&hash).is_ok_and(|parsed| {
             Argon2::default()
@@ -513,6 +513,11 @@ fn token(headers: &HeaderMap) -> Option<[u8; 32]> {
         .filter_map(|pair| pair.trim().split_once('='))
         .find(|(name, _)| *name == COOKIE)
         .and_then(|(_, value)| unhex(value))
+}
+
+/// The hash of this request's own session token, so changing a password can keep this session.
+pub(crate) fn session_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
+    token(headers).map(|token| hash(&token))
 }
 
 fn hash(token: &[u8; 32]) -> [u8; 32] {
@@ -565,7 +570,7 @@ async fn code_matches(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbE
     Ok(want == Some(blake3::hash(typed.as_bytes()).to_hex().as_str()))
 }
 
-fn username(raw: &str) -> Result<String, Box<Response>> {
+pub(crate) fn username(raw: &str) -> Result<String, Box<Response>> {
     let name = raw.trim().to_lowercase();
     let mut chars = name.chars();
     let first_ok = chars
@@ -581,7 +586,7 @@ fn username(raw: &str) -> Result<String, Box<Response>> {
     Ok(name)
 }
 
-fn display_name(raw: Option<&str>) -> Result<Option<String>, Box<Response>> {
+pub(crate) fn display_name(raw: Option<&str>) -> Result<Option<String>, Box<Response>> {
     let name = raw.map(str::trim).filter(|name| !name.is_empty());
     if name.is_some_and(|name| name.chars().count() > 80) {
         return Err(Box::new(refused(

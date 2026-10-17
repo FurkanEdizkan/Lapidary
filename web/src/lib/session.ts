@@ -68,20 +68,25 @@ export async function signOut(): Promise<void> {
  * person is remembered, so moving between pages costs no request; a session that ends is caught by
  * {@link watchSession}.
  */
-let signedIn = false
+let signedIn: SessionUser | null = null
 export async function gate(path: string): Promise<string | null> {
   if (path === SETUP_PATH || path === LOGIN_PATH) return null
-  if (signedIn) return null
+  if (signedIn !== null) return null
   const session = await fetchSession()
   if (session === 'setup') return SETUP_PATH
   if (session === 'signedOut') return LOGIN_PATH
-  signedIn = true
+  signedIn = session
   return null
+}
+
+/** Who is signed in, once the gate has asked; `null` before that, and in a page's own tests. */
+export function currentUser(): SessionUser | null {
+  return signedIn
 }
 
 /** Forget the remembered answer: after signing out, the next page asks again. */
 export function forgetSession() {
-  signedIn = false
+  signedIn = null
 }
 
 /**

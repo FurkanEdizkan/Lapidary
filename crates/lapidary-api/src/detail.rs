@@ -118,6 +118,9 @@ pub struct PartDetail {
     pub file_root: Option<lapidary_core::FileRoot>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    /// `false` for a model somebody shared with this person (A4): they may look and download, and
+    /// the page offers nothing that changes it.
+    pub yours: bool,
 }
 
 /// `GET /api/parts/{id}` — one part, in full.
@@ -126,12 +129,21 @@ pub struct PartDetail {
 /// undistinguished. That is the same answer `derive.rs`'s `no_such_part` gives and for the
 /// same reason: distinguishing them would confirm that a part exists to someone who
 /// cannot see it.
-pub async fn detail(State(state): State<AppState>, Path(part): Path<PartId>) -> Response {
+pub async fn detail(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    Path(part): Path<PartId>,
+) -> Response {
+    let yours = matches!(
+        PgParts(state.db.clone()).part_access(part, user.id).await,
+        Ok(Some(lapidary_db::Access::Owner))
+    );
     match PgParts(state.db.clone()).detail(part).await {
         Ok(Some(row)) => {
             // Opening a part no longer touches a derivative: it has none to touch. An export's
             // read is recorded by the blob route that serves it.
             let mut detail = to_detail(row);
+            detail.yours = yours;
             // One more `part` row read, not a source file: still the open path. `of_part` answers
             // only where the part holds exactly one material with a density, which is the only
             // case a single mass means anything at all.
@@ -205,6 +217,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         file_root: row.root,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        yours: true,
     }
 }
 

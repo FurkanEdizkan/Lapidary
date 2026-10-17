@@ -206,6 +206,136 @@ impl PgAccounts {
         Ok(())
     }
 
+    /// Everybody with an account, by username (A4).
+    pub async fn list(&self) -> Result<Vec<UserRow>, DbError> {
+        let rows: Vec<UserTuple> = sqlx::query_as(
+            "SELECT id, username, display_name, is_admin FROM app_user ORDER BY username",
+        )
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows.into_iter().map(user).collect())
+    }
+
+    /// One person, by id.
+    pub async fn get(&self, id: UserId) -> Result<Option<UserRow>, DbError> {
+        let row: Option<UserTuple> = sqlx::query_as(
+            "SELECT id, username, display_name, is_admin FROM app_user WHERE id = $1",
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(row.map(user))
+    }
+
+    /// A new account, made by an admin (A4). `Ok(None)` when the username is taken.
+    pub async fn create(
+        &self,
+        username: &str,
+        display_name: Option<&str>,
+        password_hash: &str,
+        is_admin: bool,
+    ) -> Result<Option<UserRow>, DbError> {
+        let row: Option<UserTuple> = sqlx::query_as(
+            "INSERT INTO app_user (id, username, display_name, password_hash, is_admin) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (username) DO NOTHING \
+             RETURNING id, username, display_name, is_admin",
+        )
+        .bind(UserId::new().as_uuid())
+        .bind(username)
+        .bind(display_name)
+        .bind(password_hash)
+        .bind(is_admin)
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(row.map(user))
+    }
+
+    /// A person's password hash, for checking the current one before a change.
+    pub async fn password_hash(&self, id: UserId) -> Result<Option<String>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT password_hash FROM app_user WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(&self.0)
+                .await?,
+        )
+    }
+
+    /// A new password for a person by id, and every session of theirs but `keep` ended. `false` when
+    /// there is no such person.
+    pub async fn set_password_by_id(
+        &self,
+        id: UserId,
+        password_hash: &str,
+        keep: Option<&[u8; 32]>,
+    ) -> Result<bool, DbError> {
+        let mut tx = self.0.begin().await?;
+        let done = sqlx::query("UPDATE app_user SET password_hash = $2 WHERE id = $1")
+            .bind(id.as_uuid())
+            .bind(password_hash)
+            .execute(&mut *tx)
+            .await?;
+        if done.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM session WHERE user_id = $1 AND token_hash IS DISTINCT FROM $2")
+            .bind(id.as_uuid())
+            .bind(keep.map(|token| &token[..]))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Delete an account, and give its libraries and models to `heir` (A4): nothing a person added is
+    /// lost with their account. A library whose name the heir already uses gets the old owner's name
+    /// beside it. Sessions, site keys and shares *with* the deleted person go with the account.
+    /// `false` when there is no such person.
+    pub async fn delete_into(&self, id: UserId, heir: UserId) -> Result<bool, DbError> {
+        let mut tx = self.0.begin().await?;
+        let username: Option<String> =
+            sqlx::query_scalar("SELECT username FROM app_user WHERE id = $1 FOR UPDATE")
+                .bind(id.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(username) = username else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        sqlx::query(
+            "UPDATE library l SET owner_id = $2, \
+               name = CASE WHEN EXISTS (SELECT 1 FROM library o WHERE o.owner_id = $2 AND o.name = l.name) \
+                      THEN l.name || ' (' || $3 || ')' ELSE l.name END, \
+               slug = CASE WHEN EXISTS (SELECT 1 FROM library o WHERE o.owner_id = $2 AND o.slug = l.slug) \
+                      THEN l.slug || '-' || $3 ELSE l.slug END \
+             WHERE l.owner_id = $1",
+        )
+        .bind(id.as_uuid())
+        .bind(heir.as_uuid())
+        .bind(&username)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE part SET owner_id = $2 WHERE owner_id = $1")
+            .bind(id.as_uuid())
+            .bind(heir.as_uuid())
+            .execute(&mut *tx)
+            .await?;
+        // A share with the heir of what is now the heir's own says nothing.
+        sqlx::query(
+            "DELETE FROM part_share s USING part p \
+             WHERE s.part_id = p.id AND s.user_id = $1 AND p.owner_id = $1",
+        )
+        .bind(heir.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM app_user WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Set a person's display name; `None` clears it.
     pub async fn set_display_name(&self, user: UserId, name: Option<&str>) -> Result<(), DbError> {
         sqlx::query("UPDATE app_user SET display_name = $2 WHERE id = $1")

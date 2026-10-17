@@ -72,6 +72,7 @@ import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import { ImportLinkDialog } from '../components/ImportLink'
 import { ImportDialog } from '../components/ImportDialog'
+import { ShareDialog } from '../components/ShareDialog'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -756,6 +757,8 @@ export function Index({
   const [linking, setLinking] = useState(false)
   // The Import dialog over the models folder (A2).
   const [adding, setAdding] = useState(false)
+  // Sharing the selection (A4).
+  const [sharingSelection, setSharingSelection] = useState(false)
   const [linkNote, setLinkNote] = useState<string | null>(null)
   const fromLink = useMutation({
     mutationFn: (url: string) => importLink(library, url),
@@ -1104,9 +1107,13 @@ export function Index({
                 onMove={() => setPicking(true)}
                 onRemove={() => setConfirmingDelete(true)}
                 onExport={() => void exportSelected()}
+                onShare={() => setSharingSelection(true)}
                 note={exportNote}
                 onClear={() => setSelected(new Set())}
               />
+            ) : null}
+            {sharingSelection ? (
+              <ShareDialog parts={[...selected]} onClose={() => setSharingSelection(false)} />
             ) : null}
             {confirmingDelete ? (
               <ConfirmDelete

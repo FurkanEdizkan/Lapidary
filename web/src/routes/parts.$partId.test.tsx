@@ -24,6 +24,7 @@ import type { PartDetail } from '../lib/types'
  */
 
 const PART: PartDetail = {
+  yours: true,
   id: '01931b6e-0000-7000-8000-00000000aaaa',
   library: '01931b6e-0000-7000-8000-000000000001',
   revision: '01931b6e-0000-7000-8000-00000000bbbb',

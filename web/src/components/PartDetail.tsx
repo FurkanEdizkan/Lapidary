@@ -1015,7 +1015,8 @@ export function Detail({
     </>
   )
   const gallery = (
-    <Gallery part={part.id} name={part.name} />
+    // A shared model's pictures are shown and not added to (A4); the owner adds them.
+    <Gallery part={part.id} name={part.name} editable={recordable} />
   )
   const about = (
     <>
@@ -1477,7 +1478,7 @@ function Row({ label, children, figure = false }: { label: string; children: Rea
  * Rendered inside `Detail`, so it appears on the page and in the grid's quick-look from one
  * definition. That is the same reason `Detail` is shared at all.
  */
-function Gallery({ part, name }: { part: PartId; name: string }) {
+function Gallery({ part, name, editable = true }: { part: PartId; name: string; editable?: boolean }) {
   const queryClient = useQueryClient()
   const picker = useRef<HTMLInputElement>(null)
   /** The server's own sentence about a refused file — it names the limit that was broken. */
@@ -1533,7 +1534,7 @@ function Gallery({ part, name }: { part: PartId; name: string }) {
           ))}
         </ul>
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className={editable ? 'flex flex-wrap items-center gap-2' : 'hidden'}>
         {/*
           Hidden, and driven by the button beside it: a bare file input is unstyleable across
           browsers and announces itself as "Choose file", which is not what this does. The

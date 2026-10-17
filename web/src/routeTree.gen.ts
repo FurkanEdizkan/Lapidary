@@ -12,9 +12,11 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PeopleRouteImport } from './routes/people'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SetupRouteImport } from './routes/setup'
+import { Route as SharedRouteImport } from './routes/shared'
 import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 import { Route as TagsTagRouteImport } from './routes/tags_.$tag'
@@ -34,6 +36,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PeopleRoute = PeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -47,6 +54,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const SetupRoute = SetupRouteImport.update({
   id: '/setup',
   path: '/setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SharedRoute = SharedRouteImport.update({
+  id: '/shared',
+  path: '/shared',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TagsRoute = TagsRouteImport.update({
@@ -69,9 +81,11 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
+  '/people': typeof PeopleRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
+  '/shared': typeof SharedRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
@@ -80,9 +94,11 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
+  '/people': typeof PeopleRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
+  '/shared': typeof SharedRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags/$tag': typeof TagsTagRoute
@@ -92,9 +108,11 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
+  '/people': typeof PeopleRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
+  '/shared': typeof SharedRoute
   '/tags': typeof TagsRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/tags_/$tag': typeof TagsTagRoute
@@ -105,9 +123,11 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/login'
+    | '/people'
     | '/profile'
     | '/settings'
     | '/setup'
+    | '/shared'
     | '/tags'
     | '/parts/$partId'
     | '/tags/$tag'
@@ -116,9 +136,11 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/login'
+    | '/people'
     | '/profile'
     | '/settings'
     | '/setup'
+    | '/shared'
     | '/tags'
     | '/parts/$partId'
     | '/tags/$tag'
@@ -127,9 +149,11 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/login'
+    | '/people'
     | '/profile'
     | '/settings'
     | '/setup'
+    | '/shared'
     | '/tags'
     | '/parts/$partId'
     | '/tags_/$tag'
@@ -139,9 +163,11 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRoute: typeof DashboardRoute
   LoginRoute: typeof LoginRoute
+  PeopleRoute: typeof PeopleRoute
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   SetupRoute: typeof SetupRoute
+  SharedRoute: typeof SharedRoute
   TagsRoute: typeof TagsRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
   TagsTagRoute: typeof TagsTagRoute
@@ -170,6 +196,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/people': {
+      id: '/people'
+      path: '/people'
+      fullPath: '/people'
+      preLoaderRoute: typeof PeopleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/profile': {
       id: '/profile'
       path: '/profile'
@@ -189,6 +222,13 @@ declare module '@tanstack/react-router' {
       path: '/setup'
       fullPath: '/setup'
       preLoaderRoute: typeof SetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shared': {
+      id: '/shared'
+      path: '/shared'
+      fullPath: '/shared'
+      preLoaderRoute: typeof SharedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tags': {
@@ -219,9 +259,11 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
   LoginRoute: LoginRoute,
+  PeopleRoute: PeopleRoute,
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   SetupRoute: SetupRoute,
+  SharedRoute: SharedRoute,
   TagsRoute: TagsRoute,
   PartsPartIdRoute: PartsPartIdRoute,
   TagsTagRoute: TagsTagRoute,
