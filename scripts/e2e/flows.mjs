@@ -884,6 +884,47 @@ const FLOWS = [
     },
   },
   {
+    name: 'view-tools',
+    // A12: the view's grid, the part's box and a measurement between two clicked points, each figure with its ≈.
+    async run(page, ctx) {
+      const part = await ctx.partLike(/alike\/flange-dn40-lp-3310-02\.stl$/)
+      const detail = await ctx.get(`/api/parts/${part.id}`)
+      await page.go(`/parts/${part.id}`, `document.querySelector('h1, h2') !== null`)
+      const at = await page.byText('button', T.viewButton, { exact: true })
+      expect(at !== null, `no button reads "${T.viewButton}"`)
+      await page.click(at.x, at.y)
+      expect((await firstFrame(page, 60_000)) > 0, 'the view never drew')
+      for (const tool of ['Grid', 'Size', 'Measure']) {
+        const button = await page.byText('[role="toolbar"] button', tool, { exact: true })
+        expect(button !== null, `the view has no "${tool}" tool`)
+        await page.click(button.x, button.y)
+      }
+      const readout = () => page.evaluate(`document.querySelector(${JSON.stringify(S.viewer)})?.parentElement?.querySelector('[aria-live="polite"]')?.textContent ?? ''`)
+      const sized = await page.settle(readout, (t) => t.includes('Size') && t.includes('Grid squares'), { timeout: 5000 })
+      expect(sized.includes('≈'), `the size and grid read without their ≈: ${JSON.stringify(sized)}`)
+      // The box the view states is the box the part's figures state.
+      const bbox = detail.bboxMm?.value ?? null
+      expect(Array.isArray(bbox), `the part states no box to hold the view to: ${JSON.stringify(detail.bboxMm)}`)
+      const shown = [...sized.matchAll(/([0-9.]+) mm/g)].map((m) => Number(m[1]))
+      expect(bbox.every((v) => shown.some((s) => Math.abs(s - v) < 0.06)), `the view's size ${JSON.stringify(shown)} is not the part's ${JSON.stringify(bbox)}`)
+      // Two clicks on the model. The flange has a bore at its centre, so the clicks walk out from it until
+      // one lands on metal; a drag would turn the view instead.
+      const box = await page.rect(`${S.viewer} canvas`)
+      const offsets = [[0.18, 0], [0, 0.18], [-0.18, 0], [0, -0.18], [0.25, 0.1], [-0.25, -0.1], [0.12, 0.12], [-0.12, -0.12]]
+      let picked = 0
+      for (const [dx, dy] of offsets) {
+        if (picked === 2) break
+        await page.click(box.left + box.width * (0.5 + dx), box.top + box.height * (0.5 + dy))
+        await sleep(400)
+        const text = await readout()
+        picked = text.includes('Distance') ? 2 : text.includes('A ') ? 1 : 0
+      }
+      const measured = await readout()
+      expect(measured.includes('Distance'), `two clicks on the flange made no measurement: ${JSON.stringify(measured)}`)
+      return `size, grid and a measurement shown with their ≈: ${JSON.stringify(measured.replace(/\s+/g, ' ').slice(0, 220))}`
+    },
+  },
+  {
     name: 'delete',
     // Delete is final (owner, 2026-10-17): no restore, no removed list. So the victim is a part this
     // flow uploads itself, stamped so every run sends new bytes, and Sweep is never touched.

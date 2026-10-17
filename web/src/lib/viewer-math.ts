@@ -55,3 +55,30 @@ export function hasWebGL(): boolean {
   }
   return webgl
 }
+
+/**
+ * The grid's spacing for a part `span` millimetres across its floor (A12): 1, 2 or 5 × 10ⁿ, the step that
+ * puts about ten squares across the part, so a 40 mm bracket sits on 5 mm squares and a 700 mm terrain
+ * board on 50 mm ones.
+ */
+export function gridStep(span: number): number {
+  if (!Number.isFinite(span) || span <= 0) return 1
+  const rough = span / 10
+  const power = 10 ** Math.floor(Math.log10(rough))
+  const scaled = rough / power
+  const nice = scaled < 1.5 ? 1 : scaled < 3.5 ? 2 : scaled < 7.5 ? 5 : 10
+  return nice * power
+}
+
+/** A length in millimetres as the view writes it: three significant figures, never an exponent. */
+export function millimetres(value: number): string {
+  const size = Math.abs(value)
+  const places = size >= 100 ? 1 : size >= 10 ? 2 : size >= 1 ? 2 : 3
+  return value.toFixed(places)
+}
+
+/** Two picks' distance and their difference on each axis, second minus first. */
+export function between(a: Vec3, b: Vec3): { distance: number; delta: Vec3 } {
+  const delta: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+  return { distance: Math.hypot(...delta), delta }
+}

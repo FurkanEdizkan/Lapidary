@@ -1,29 +1,54 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Box3,
+  Box3Helper,
+  BufferGeometry,
+  Color,
+  GridHelper,
+  Line,
+  LineBasicMaterial,
   Mesh,
+  MeshBasicMaterial,
   OrthographicCamera,
+  Raycaster,
   Scene,
+  SphereGeometry,
+  Vector2,
+  Vector3,
   WebGLRenderer,
   type MeshStandardMaterial,
-  type MeshBasicMaterial,
   type Object3D,
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'
 import { downloadUrl } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { PartDetail } from '../lib/types'
-import { frameBox, type Vec3 } from '../lib/viewer-math'
+import { between, frameBox, gridStep, millimetres, type Vec3 } from '../lib/viewer-math'
+import { Figure } from './Figure'
 import { Unviewable, loadMesh, meshFrom } from './mesh'
 import { contactShadow, disposeModel, partMaterial, shadowMaterial, studioLights } from './studio'
 
 /** What a view can be told. One part, shown once; everything else about it is the pointer's. */
 type View = {
   show: (model: Object3D) => void
+  /** The grid, the box and measuring, on or off (A12). */
+  setTools: (tools: Tools) => void
   /** The view as it is on screen now, as a PNG. `null` when the browser will not hand the canvas over. */
   snapshot: () => Promise<Blob | null>
   dispose: () => void
 }
+
+/** The view's three aids (A12). */
+type Tools = { grid: boolean; size: boolean; measure: boolean }
+const NO_TOOLS: Tools = { grid: false, size: false, measure: false }
+const TOOL_NAMES = Object.keys(NO_TOOLS) as (keyof Tools)[]
+
+/** What the view tells the page about the part on screen: its box, the grid's step, and the picks. */
+type Readout = { size: Vec3 | null; step: number | null; picks: Vec3[] }
+
+/** A click that moved less than this is a pick; more is a turn of the view. */
+const CLICK_PX = 4
 
 /** What a view draws with. Everything here holds GPU state; the lights do not, so they are not here. */
 type Kit = {
@@ -59,16 +84,16 @@ let sessionInUse = false
  * - **A large mesh is a large download.** There is no coarse rung to paint first, so a 200 MB STL
  *   is 200 MB before anything appears. The picture holds the frame until it does, and a failure
  *   says to download the file and open it in a real tool.
- * - **No measuring, no section, no explode, no PMI.** Every one of those needed geometry we had
- *   produced — the B-rep-aligned L2 for a pick to snap to, `extras.parts` for a part to be hidden
- *   or moved, the entity list for a label to be placed. A stock loader provides none of it, and
- *   measuring a mesh "approximately" against entities that were never placed would be exactly the
- *   lie `CLAUDE.md` forbids. Measurement lives in the tool the part is opened in.
+ * - **Measuring is on the mesh, and says so** (A12, owner 2026-10-18). The pivot took out the measuring
+ *   that snapped to CAD entities; what came back is a grid, the part's box, and the distance between two
+ *   points clicked on the drawn triangles, which are the file's own. Every figure carries its ≈ through
+ *   `Figure`. No section, no explode, no PMI: those needed geometry we no longer produce.
  * - **A STEP part has no view here at all.** `Preview` offers the button only for the three mesh
  *   formats; a CAD part keeps its download and its figures, which is what it had before.
  *
- * Drawn on demand, never in a loop: a frame when the camera moves, the box resizes or the model
- * arrives, and nothing otherwise. Nothing spins or eases on its own, so there is no motion for
+ * Drawn on demand, never in a loop: a frame when the camera moves, the box resizes, the model
+ * arrives or an aid changes, and nothing otherwise — except while the axis gizmo turns the view, which
+ * is instant under `prefers-reduced-motion`. Nothing spins or eases on its own, so there is no motion for
  * `prefers-reduced-motion` to take away.
  *
  * Shaded flat, one normal per face, as the thumbnail was (`raster.rs`): averaging normals across a
@@ -104,9 +129,19 @@ export default function Viewer({
     return () => clearTimeout(timer)
   }, [painted])
   const [failed, setFailed] = useState<string | null>(null)
+  const [tools, setTools] = useState<Tools>(NO_TOOLS)
+  const [readout, setReadout] = useState<Readout>({ size: null, step: null, picks: [] })
+  useEffect(() => {
+    view.current?.setTools(tools)
+  }, [tools])
+  const toggle = (tool: keyof Tools) => setTools((now) => ({ ...now, [tool]: !now[tool] }))
   const [keeping, setKeeping] = useState<'idle' | 'saving' | 'kept' | string>('idle')
   const keepLabel =
-    keeping === 'saving' ? strings.viewer.keepingView : keeping === 'kept' ? strings.viewer.keptView : strings.viewer.keepView
+    keeping === 'saving'
+      ? strings.viewer.keepingView
+      : keeping === 'kept'
+        ? strings.viewer.keptView
+        : strings.viewer.keepView
   const keepNote = keeping === 'idle' || keeping === 'saving' || keeping === 'kept' ? null : keeping
 
   const format = part.sourceFormat
@@ -123,7 +158,7 @@ export default function Viewer({
       setFailed(strings.viewer.failed)
       return
     }
-    if (view.current === null) view.current = createView(node, () => setPainted(true))
+    if (view.current === null) view.current = createView(node, () => setPainted(true), setReadout)
     const current = view.current
     // The model last drawn is kept (A11): the quick look, then the part's page, read it once.
     if (lastDrawn?.revision === revision) {
@@ -197,6 +232,28 @@ export default function Viewer({
             {poster}
           </div>
         )}
+        {painted && failed === null ? (
+          <>
+            <div
+              role="toolbar"
+              aria-label={strings.viewer.tools}
+              className="absolute top-2 left-2 flex gap-1 rounded-[var(--radius-ctl)] bg-[var(--color-surface)]/80 p-0.5"
+            >
+              {TOOL_NAMES.map((tool) => (
+                <button
+                  key={tool}
+                  type="button"
+                  aria-pressed={tools[tool]}
+                  onClick={() => toggle(tool)}
+                  className={`${TOOL} ${tools[tool] ? 'bg-[var(--color-raised)] text-[var(--color-bright)]' : 'text-[var(--color-muted)]'}`}
+                >
+                  {strings.viewer.tool[tool]}
+                </button>
+              ))}
+            </div>
+            <Readouts tools={tools} readout={readout} />
+          </>
+        ) : null}
         {failed === null ? (
           painted ? null : (
             <p aria-live="polite" className="absolute bottom-2 left-2 text-xs text-[var(--color-muted)]">
@@ -241,6 +298,72 @@ export default function Viewer({
   )
 }
 
+const TOOL =
+  'ease-mechanical rounded-[var(--radius-ctl)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
+
+/** A length with its ≈: every figure here is read from the mesh. */
+function Length({ mm }: { mm: number }) {
+  return <Figure figure={{ value: mm, approximate: true }} render={(v) => strings.viewer.mm(millimetres(v))} />
+}
+
+/** What the aids that are on say, in the view's lower left, above nothing the gizmo needs. */
+function Readouts({ tools, readout }: { tools: Tools; readout: Readout }) {
+  const { size, step, picks } = readout
+  if (!tools.grid && !tools.size && !tools.measure) return null
+  const [a, b] = picks
+  const measured = a !== undefined && b !== undefined ? between(a, b) : null
+  return (
+    <div
+      aria-live="polite"
+      className="tabular absolute bottom-2 left-2 flex max-w-[calc(100%-9rem)] flex-col gap-0.5 rounded-[var(--radius-ctl)] bg-[var(--color-surface)]/85 px-2 py-1.5 text-xs text-[var(--color-text)]"
+    >
+      {tools.grid && step !== null ? (
+        <p>
+          {strings.viewer.gridStep}
+          <Length mm={step} />
+        </p>
+      ) : null}
+      {tools.size && size !== null ? (
+        <p>
+          {strings.viewer.size}
+          <Length mm={size[0]} />
+          {strings.viewer.by}
+          <Length mm={size[1]} />
+          {strings.viewer.by}
+          <Length mm={size[2]} />
+        </p>
+      ) : null}
+      {tools.measure ? (
+        <>
+          {picks.length < 2 ? (
+            <p className="text-[var(--color-muted)]">
+              {picks.length === 0 ? strings.viewer.measureFirst : strings.viewer.measureSecond}
+            </p>
+          ) : null}
+          {picks.map((point, i) => (
+            <p key={i}>
+              {strings.viewer.point(i)}
+              <Length mm={point[0]} />, <Length mm={point[1]} />, <Length mm={point[2]} />
+            </p>
+          ))}
+          {measured === null ? null : (
+            <>
+              <p className="font-semibold text-[var(--color-bright)]">
+                {strings.viewer.distance}
+                <Length mm={measured.distance} />
+              </p>
+              <p className="text-[var(--color-muted)]">
+                {strings.viewer.delta}
+                <Length mm={measured.delta[0]} />, <Length mm={measured.delta[1]} />, <Length mm={measured.delta[2]} />
+              </p>
+            </>
+          )}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * The positions of the last model drawn, by revision (A11). One model, because a large one is hundreds of
  * megabytes. ponytail: a single slot; a small cache of several is the upgrade if people flick between parts.
@@ -252,7 +375,7 @@ export function forgetLastDrawn() {
   lastDrawn = null
 }
 
-function createView(node: HTMLElement, onFirstFrame: () => void): View {
+function createView(node: HTMLElement, onFirstFrame: () => void, onReadout: (readout: Readout) => void): View {
   const own = sessionInUse
   const { renderer, material, shadowMaterial: shadowSurface } = own ? kit() : (session ??= kit())
   sessionInUse = true
@@ -284,8 +407,93 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
   let first = true
   let model: Object3D | null = null
   let shadow: Mesh | null = null
-  const render = () => {
+
+  // The aids (A12). Drawn over the part in the accent, so a measurement reads against any surface.
+  const accent = new Color(
+    getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() || '#3b82f6',
+  )
+  const aids = new LineBasicMaterial({ color: accent, depthTest: false, transparent: true })
+  const marker = new MeshBasicMaterial({ color: accent, depthTest: false, transparent: true })
+  let tools: Tools = NO_TOOLS
+  let box: Box3 | null = null
+  let radius = 1
+  let grid: GridHelper | null = null
+  let outline: Box3Helper | null = null
+  let picks: Vec3[] = []
+  const pickMarks: Object3D[] = []
+  const gizmo = new ViewHelper(camera, renderer.domElement)
+  gizmo.setLabels(strings.viewer.axisX, strings.viewer.axisY, strings.viewer.axisZ)
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+
+  const readout = () =>
+    onReadout({
+      size: box === null ? null : (box.getSize(new Vector3()).toArray() as Vec3),
+      step: grid === null || box === null ? null : gridStep(floorSpan(box)),
+      picks,
+    })
+  const clearPicks = () => {
+    for (const mark of pickMarks) {
+      scene.remove(mark)
+      if (mark instanceof Mesh || mark instanceof Line) mark.geometry.dispose()
+    }
+    pickMarks.length = 0
+    picks = []
+  }
+  const placeAids = () => {
+    if (grid !== null) {
+      scene.remove(grid)
+      grid.dispose()
+      grid = null
+    }
+    if (outline !== null) {
+      scene.remove(outline)
+      outline.geometry.dispose()
+      outline = null
+    }
+    if (box === null) return
+    if (tools.grid) {
+      const step = gridStep(floorSpan(box))
+      const cells = Math.ceil((floorSpan(box) * 1.6) / step / 2) * 2
+      grid = new GridHelper(cells * step, cells, accent, 0x4a5160)
+      // three's grid lies in XZ; the part's floor is XY, Z up, as the file has it.
+      grid.rotation.x = Math.PI / 2
+      const centre = box.getCenter(new Vector3())
+      grid.position.set(centre.x, centre.y, box.min.z)
+      for (const material of [grid.material].flat()) {
+        material.transparent = true
+        material.opacity = 0.55
+        material.depthWrite = false
+      }
+      scene.add(grid)
+    }
+    if (tools.size) {
+      outline = new Box3Helper(box, accent)
+      outline.material = aids
+      scene.add(outline)
+    }
+    if (!tools.measure) clearPicks()
+  }
+  const mark = (point: Vec3) => {
+    const dot = new Mesh(new SphereGeometry(radius * 0.012, 12, 8), marker)
+    dot.position.set(...point)
+    dot.renderOrder = 10
+    scene.add(dot)
+    pickMarks.push(dot)
+    if (picks.length === 2) {
+      const line = new Line(new BufferGeometry().setFromPoints(picks.map((p) => new Vector3(...p))), aids)
+      line.renderOrder = 10
+      scene.add(line)
+      pickMarks.push(line)
+    }
+  }
+
+  const draw = (withAids: boolean) => {
+    for (const aid of [grid, outline, ...pickMarks]) if (aid !== null) aid.visible = withAids
     renderer.render(scene, camera)
+    if (withAids && model !== null) gizmo.render(renderer)
+  }
+  const render = () => {
+    draw(true)
     // The first frame with the part in it, not the resize observer's first call on an empty scene.
     if (first && model !== null) {
       first = false
@@ -294,6 +502,49 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
     }
   }
   controls.addEventListener('change', render)
+
+  // A click is a pick, or a turn on the gizmo; a drag is the controls' and nothing else's.
+  const pointer = new Vector2()
+  const raycaster = new Raycaster()
+  let down: { x: number; y: number } | null = null
+  let turning = false
+  const turn = (last: number) => {
+    const now = performance.now()
+    gizmo.update(reduced ? 1e9 : (now - last) / 1000)
+    render()
+    if (gizmo.animating) requestAnimationFrame(() => turn(now))
+    else {
+      turning = false
+      controls.update()
+    }
+  }
+  const onDown = (event: PointerEvent) => {
+    down = { x: event.clientX, y: event.clientY }
+  }
+  const onUp = (event: PointerEvent) => {
+    const from = down
+    down = null
+    if (from === null || Math.hypot(event.clientX - from.x, event.clientY - from.y) > CLICK_PX) return
+    if (!turning && gizmo.handleClick(event)) {
+      turning = true
+      requestAnimationFrame(() => turn(performance.now()))
+      return
+    }
+    if (!tools.measure || model === null) return
+    const rect = renderer.domElement.getBoundingClientRect()
+    pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
+    raycaster.setFromCamera(pointer, camera)
+    const hit = raycaster.intersectObject(model, true)[0]
+    if (hit === undefined) return
+    // A third pick starts the next measurement.
+    if (picks.length === 2) clearPicks()
+    picks = [...picks, hit.point.toArray() as Vec3]
+    mark(picks[picks.length - 1]!)
+    readout()
+    render()
+  }
+  renderer.domElement.addEventListener('pointerdown', onDown)
+  renderer.domElement.addEventListener('pointerup', onUp)
   const resize = new ResizeObserver(() => {
     renderer.setSize(node.clientWidth, node.clientHeight, false)
     fit()
@@ -315,14 +566,16 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       // A loader's own axes, untouched. `glb.rs` swapped nothing either, so a Z-up STL stands
       // here exactly as it stood in the rung this replaced — and `mesh.test.ts` is what says the
       // box the browser arrives at is the box the part's figures state.
-      const box = new Box3().setFromObject(next)
+      const box3 = new Box3().setFromObject(next)
+      let framed: Box3 | null = null
       const bounds: { min: Vec3; max: Vec3 } = {
-        min: box.min.toArray() as Vec3,
-        max: box.max.toArray() as Vec3,
+        min: box3.min.toArray() as Vec3,
+        max: box3.max.toArray() as Vec3,
       }
       // An empty or non-finite box frames to nothing and leaves the camera at the origin, so a
       // mesh that parsed to no geometry is a failure of the parse rather than a blank canvas.
-      if (!box.isEmpty() && Number.isFinite(box.min.length()) && Number.isFinite(box.max.length())) {
+      if (!box3.isEmpty() && Number.isFinite(box3.min.length()) && Number.isFinite(box3.max.length())) {
+        framed = box3
         shadow = contactShadow(bounds.min, bounds.max, shadowSurface)
         scene.add(shadow)
         const frame = frameBox(bounds.min, bounds.max)
@@ -333,16 +586,39 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
         fit()
         controls.target.set(...frame.target)
         controls.update()
+        gizmo.center.set(...frame.target)
+        radius = frame.halfHeight
       }
+      box = framed
+      clearPicks()
+      placeAids()
+      readout()
+      render()
+    },
+    setTools(next) {
+      tools = next
+      placeAids()
+      readout()
       render()
     },
     snapshot() {
       // Drawn and read in one task: without `preserveDrawingBuffer` the browser may clear the
-      // buffer once a frame is shown, so a read on its own later would be a blank picture.
-      render()
-      return new Promise((resolve) => renderer.domElement.toBlob(resolve, 'image/png'))
+      // buffer once a frame is shown, so a read on its own later would be a blank picture. The aids
+      // are left out: the picture is the part's, not a measurement of it.
+      draw(false)
+      const shot = new Promise<Blob | null>((resolve) => renderer.domElement.toBlob(resolve, 'image/png'))
+      draw(true)
+      return shot
     },
     dispose() {
+      clearPicks()
+      grid?.dispose()
+      outline?.geometry.dispose()
+      aids.dispose()
+      marker.dispose()
+      gizmo.dispose()
+      renderer.domElement.removeEventListener('pointerdown', onDown)
+      renderer.domElement.removeEventListener('pointerup', onUp)
       shadow?.geometry.dispose()
       resize.disconnect()
       controls.dispose()
@@ -356,4 +632,9 @@ function createView(node: HTMLElement, onFirstFrame: () => void): View {
       }
     },
   }
+}
+
+/** The part's floor: the longer of its two sides on the XY plane, which the grid lies on. */
+function floorSpan(box: Box3): number {
+  return Math.max(box.max.x - box.min.x, box.max.y - box.min.y)
 }

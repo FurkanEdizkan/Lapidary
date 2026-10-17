@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import { VIEW_DIR, frameBox, hasWebGL } from './viewer-math'
+import { VIEW_DIR, frameBox, hasWebGL, between, gridStep, millimetres } from './viewer-math'
 
 test('the camera frames a box from the thumbnail direction, without perspective, holding it whole', () => {
   // The 22 mm fixture cylinder, 30 mm long.
@@ -42,4 +42,22 @@ test('asking whether the browser can draw lets the probe context go', async () =
   expect(loseContext).toHaveBeenCalledTimes(1)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+test('the grid takes the 1, 2 or 5 step that puts about ten squares across the part', () => {
+  expect(gridStep(40)).toBe(5)
+  expect(gridStep(721.6)).toBe(50)
+  expect(gridStep(18.5)).toBe(2)
+  expect(gridStep(0.4)).toBeCloseTo(0.05)
+  expect(gridStep(3000)).toBe(200)
+  expect(gridStep(0)).toBe(1)
+})
+
+test('a measurement is the straight line between two picks and its run along each axis', () => {
+  const { distance, delta } = between([0, 0, 0], [3, -4, 12])
+  expect(distance).toBe(13)
+  expect(delta).toEqual([3, -4, 12])
+  expect(millimetres(721.619)).toBe('721.6')
+  expect(millimetres(18.48)).toBe('18.48')
+  expect(millimetres(0.4567)).toBe('0.457')
 })
