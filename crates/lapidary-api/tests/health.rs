@@ -1,8 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-mod common;
-use common::router;
-use lapidary_api::{AppState, Role};
+// Not signed in: `/api/healthz` is public, and one of these runs against a database that is gone.
+use lapidary_api::{AppState, Role, router};
 use tower::ServiceExt;
 
 /// These tests never read a blob; the field is required to build the state, and a path
