@@ -2,7 +2,7 @@
  * Icons, drawn by Phosphor rather than by hand.
  *
  * Vendored from `@phosphor-icons/core` 2.1.1, regular weight (MIT, Copyright (c) 2023
- * Phosphor Icons), path data unchanged (`close` is `x`, `caretDown` is `caret-down`, `search` is `magnifying-glass`, `upload` is `upload-simple`, `more` is `dots-three`, `user` is `user`). Vendored and not installed: the React package
+ * Phosphor Icons), path data unchanged (`close` is `x`, `caretDown` is `caret-down`, `search` is `magnifying-glass`, `upload` is `upload-simple`, `more` is `dots-three`, `user` is `user`, `folder`, `folderPlus` is `folder-plus`, `arrowUp` is `arrow-up`). Vendored and not installed: the React package
  * carries some 9,000 glyphs to use a handful, and an air-gapped build should not need a
  * registry for an `×`. Add a glyph by copying its `assets/regular/<name>.svg` path here.
  *
@@ -10,6 +10,12 @@
  * label, so a screen reader hears "Close" and never "image".
  */
 const GLYPHS = {
+  folder:
+    'M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40ZM216,200H40V88H216Z',
+  folderPlus:
+    'M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM92.69,56l16,16H40V56ZM216,200H40V88H216Zm-88-88a8,8,0,0,1,8,8v16h16a8,8,0,0,1,0,16H136v16a8,8,0,0,1-16,0V152H104a8,8,0,0,1,0-16h16V120A8,8,0,0,1,128,112Z',
+  arrowUp:
+    'M205.66,117.66a8,8,0,0,1-11.32,0L136,59.31V216a8,8,0,0,1-16,0V59.31L61.66,117.66a8,8,0,0,1-11.32-11.32l72-72a8,8,0,0,1,11.32,0l72,72A8,8,0,0,1,205.66,117.66Z',
   user: 'M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z',
   caretDown:
     'M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z',
