@@ -121,7 +121,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A2](A2.md) | One storage location: browse, add, remove to `_removed/` | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | 0064 | merged `13feff4` | `feat/one-storage` |
 | [A3](A3.md) | Models per person | 11 | Rust + web | A2 | see [ACCOUNTS.md](ACCOUNTS.md) | 0065 | merged `e71a5ee` | `feat/models-per-person` |
 | [A4](A4.md) | Sharing and the accounts admin | 11 | Rust + web | A3 | see [ACCOUNTS.md](ACCOUNTS.md) | 0066 | merged `ad97e81` | `feat/sharing-users` |
-| [A5](A5.md) | The port, moved live, and skeleton pages | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | — | open | `feat/live-port` |
+| [A5](A5.md) | The port, moved live, and skeleton pages | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | — | merged `d23e3ca` | `feat/live-port` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
