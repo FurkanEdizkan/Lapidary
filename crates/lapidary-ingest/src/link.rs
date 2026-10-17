@@ -44,7 +44,9 @@ pub(crate) struct Page {
 /// cache with its own owner is the upgrade if two workers ever need to share one.
 const PAGE_LIFE: Duration = Duration::from_secs(600);
 const PAGES_KEPT: usize = 16;
-static PAGES: OnceLock<Mutex<HashMap<String, (Instant, Arc<Page>)>>> = OnceLock::new();
+/// Each read page by its URL, with when it was read.
+type Pages = Mutex<HashMap<String, (Instant, Arc<Page>)>>;
+static PAGES: OnceLock<Pages> = OnceLock::new();
 
 /// The most tags a page gives a part; past this a creator's tag list is a keyword dump.
 const MAX_TAGS: usize = 20;

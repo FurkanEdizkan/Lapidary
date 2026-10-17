@@ -101,7 +101,7 @@ pub struct NewSourceRequest {
 pub async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     let path = query.path.trim_matches('/').to_owned();
     if let Err(refusal) = inside(&path) {
-        return refusal;
+        return *refusal;
     }
     let dir = state.ingest_dir.join(&path);
     let listed = tokio::task::spawn_blocking(move || list(&dir)).await;
@@ -179,7 +179,7 @@ pub async fn add_source(
     }
     let path = body.path.trim_matches('/').to_owned();
     if let Err(refusal) = inside(&path) {
-        return refusal;
+        return *refusal;
     }
     let full = state.ingest_dir.join(&path);
     let kind = if full.is_dir() {
@@ -253,26 +253,29 @@ pub async fn remove_source(
 }
 
 /// A path in the models folder a person may look at or add: not out of it, and not into `_removed/`.
-fn inside(path: &str) -> Result<(), Response> {
+fn inside(path: &str) -> Result<(), Box<Response>> {
     if !path.is_empty() && lapidary_core::path_escapes(path) {
-        return Err(refused(
+        return Err(Box::new(refused(
             StatusCode::BAD_REQUEST,
             "That path leaves your models folder. Choose a folder from the list.",
-        ));
+        )));
     }
     if path == lapidary_storage::REMOVED_DIR
         || path.starts_with(&format!("{}/", lapidary_storage::REMOVED_DIR))
     {
-        return Err(refused(
+        return Err(Box::new(refused(
             StatusCode::BAD_REQUEST,
             "_removed holds the files of models you removed. Move one out of it to add it again.",
-        ));
+        )));
     }
     Ok(())
 }
 
 /// A folder's folders and model files: `(name, is_folder, size)`, folders first, each by name.
-fn list(dir: &std::path::Path) -> std::io::Result<(Vec<(String, bool, Option<u64>)>, bool)> {
+/// A listed entry: its name, whether it is a folder, and a file's size.
+type Listed = (String, bool, Option<u64>);
+
+fn list(dir: &std::path::Path) -> std::io::Result<(Vec<Listed>, bool)> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let Ok(entry) = entry else { continue };
