@@ -43,24 +43,23 @@ pub fn signed_in(app: Router, pool: PgPool) -> Router {
     }))
 }
 
-/// The account and its session, made once per test database.
+/// The account and its session, made once per test database. A write that fails is left to fail: a test
+/// that closed its pool on purpose is testing what the server says then, and the guard says it.
 pub async fn ensure_session(pool: &PgPool) {
-    sqlx::query(
+    let _ = sqlx::query(
         "INSERT INTO app_user (id, username, display_name, password_hash, is_admin) \
          VALUES ($1, $2, 'Lena Kowalski', 'not-a-password-hash', true) ON CONFLICT DO NOTHING",
     )
     .bind(USER)
     .bind(USERNAME)
     .execute(pool)
-    .await
-    .expect("the test account");
-    sqlx::query(
+    .await;
+    let _ = sqlx::query(
         "INSERT INTO session (token_hash, user_id, expires_at) \
          VALUES ($1, $2, now() + interval '1 day') ON CONFLICT DO NOTHING",
     )
     .bind(&blake3::hash(&TOKEN).as_bytes()[..])
     .bind(USER)
     .execute(pool)
-    .await
-    .expect("the test session");
+    .await;
 }
