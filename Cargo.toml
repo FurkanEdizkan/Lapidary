@@ -48,6 +48,9 @@ argon2 = "0.5.3"
 # argon2 0.5 already links, with the one feature that reaches the OS.
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 axum = "0.8.9"
+# `access(W_OK)` for the models-folder picker (A6): whether this process may write a folder, ACLs
+# included, without creating a file to find out. The version tempfile already links.
+rustix = { version = "1.1.4", features = ["fs"] }
 base64 = "0.22.1"
 blake3 = "1.8.7"
 crc32fast = "1.5.1"

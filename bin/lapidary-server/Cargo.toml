@@ -26,6 +26,8 @@ figment.workspace = true
 serde.workspace = true
 # The port setting and the port routes' refusals (A5).
 serde_json.workspace = true
+# Whether the models-folder picker may write a folder (A6).
+rustix.workspace = true
 # `time` for the five-minute flush of which blobs were read (DATA.md §1.4).
 tokio = { workspace = true, features = ["time", "sync", "net"] }
 # CancellationToken: one shutdown path for the listener, the job loop and the sweep.

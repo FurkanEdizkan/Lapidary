@@ -1316,6 +1316,7 @@ dependencies = [
  "lapidary-ingest",
  "lapidary-jobs",
  "lapidary-sites",
+ "rustix",
  "serde",
  "serde_json",
  "sqlx",

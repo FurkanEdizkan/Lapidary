@@ -1,5 +1,8 @@
-import type { Sort } from './preferences'
+import type { Sort } from "./preferences";
 import type {
+  ChooseModelsFolder,
+  HostFolders,
+  ModelsFolder,
   MovePort,
   ServerPort,
   NewPassword,
@@ -69,20 +72,20 @@ import type {
   SetSiteKey,
   SiteCheck,
   SiteSettings,
-} from './types'
-import { strings } from './strings'
+} from "./types";
+import { strings } from "./strings";
 
 export interface Health {
-  status: string
-  database: { major: number; reachable: boolean }
+  status: string;
+  database: { major: number; reachable: boolean };
 }
 
 export async function fetchHealth(): Promise<Health> {
-  const response = await fetch('/api/healthz')
+  const response = await fetch("/api/healthz");
   if (!response.ok) {
-    throw new Error(`healthz returned ${response.status}`)
+    throw new Error(`healthz returned ${response.status}`);
   }
-  return (await response.json()) as Health
+  return (await response.json()) as Health;
 }
 
 /**
@@ -90,7 +93,8 @@ export async function fetchHealth(): Promise<Health> {
  * no route parameter to read one from, so the grid addresses the seeded library
  * directly rather than inventing a selection UI the API cannot yet serve.
  */
-export const DEFAULT_LIBRARY_ID: LibraryId = '01931b6e-0000-7000-8000-000000000001'
+export const DEFAULT_LIBRARY_ID: LibraryId =
+  "01931b6e-0000-7000-8000-000000000001";
 
 /**
  * `GET /api/libraries/{id}/parts` — the grid's one read. Thumbnails arrive inline as
@@ -125,31 +129,39 @@ export async function fetchParts(
   // as "from the top", and `after=` would be a parse error. `folderId` follows the same
   // rule for the reason above it: an absent parameter is what the route reads as "the
   // whole library".
-  const query = new URLSearchParams()
-  if (after !== undefined) query.set('after', after)
-  if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
+  const query = new URLSearchParams();
+  if (after !== undefined) query.set("after", after);
+  if (typeof folderId === "string" && folderId.length > 0)
+    query.set("folderId", folderId);
   // Same rule again: omitted rather than sent empty. The route reads `q=` as no filter, so
   // an empty one would work — but a URL carrying a parameter that means nothing is a URL
   // that reads as a search nobody ran.
-  if (typeof q === 'string' && q.length > 0) query.set('q', q)
+  if (typeof q === "string" && q.length > 0) query.set("q", q);
   // Always sent when the caller has one, including the value that happens to match the
   // route's own default. Omitting it there would mean this client knowing what the server's
   // default is — a second copy of a number, in a different language, that goes wrong
   // silently the day somebody changes one of them. The grid has a page size; it says so.
-  if (typeof limit === 'number') query.set('limit', String(limit))
-  if (typeof format === 'string' && format.length > 0) query.set('format', format)
+  if (typeof limit === "number") query.set("limit", String(limit));
+  if (typeof format === "string" && format.length > 0)
+    query.set("format", format);
   // Omitted for newest, the way an absent category is the whole library: newest is the grid
   // with no order asked for, so every URL the grid sent before sorting existed keeps its shape.
-  if (sort !== undefined && sort !== 'newest') query.set('sort', sort)
-  if (typeof material === 'string' && material.length > 0) query.set('material', material)
-  if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
-  setField(query, field, fieldValue, fieldMin, fieldMax)
-  const suffix = query.size === 0 ? '' : `?${query}`
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/parts${suffix}`)
+  if (sort !== undefined && sort !== "newest") query.set("sort", sort);
+  if (typeof material === "string" && material.length > 0)
+    query.set("material", material);
+  if (typeof tag === "string" && tag.length > 0) query.set("tag", tag);
+  setField(query, field, fieldValue, fieldMin, fieldMax);
+  const suffix = query.size === 0 ? "" : `?${query}`;
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/parts${suffix}`,
+  );
   if (!response.ok) {
-    throw new RefusedError(`parts returned ${response.status}`, await refusalReason(response))
+    throw new RefusedError(
+      `parts returned ${response.status}`,
+      await refusalReason(response),
+    );
   }
-  return (await response.json()) as PartsPage
+  return (await response.json()) as PartsPage;
 }
 
 /**
@@ -169,21 +181,29 @@ export async function fetchFacets(
   fieldMin?: string,
   fieldMax?: string,
 ): Promise<Facets> {
-  const query = new URLSearchParams()
-  if (typeof folderId === 'string' && folderId.length > 0) query.set('folderId', folderId)
-  if (typeof q === 'string' && q.length > 0) query.set('q', q)
+  const query = new URLSearchParams();
+  if (typeof folderId === "string" && folderId.length > 0)
+    query.set("folderId", folderId);
+  if (typeof q === "string" && q.length > 0) query.set("q", q);
   // Both choices, so each list can be narrowed by the other's. The server keeps each list from
   // obeying its own, which would show every other value as zero.
-  if (typeof format === 'string' && format.length > 0) query.set('format', format)
-  if (typeof material === 'string' && material.length > 0) query.set('material', material)
-  if (typeof tag === 'string' && tag.length > 0) query.set('tag', tag)
-  setField(query, field, fieldValue, fieldMin, fieldMax)
-  const suffix = query.size === 0 ? '' : `?${query}`
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/facets${suffix}`)
+  if (typeof format === "string" && format.length > 0)
+    query.set("format", format);
+  if (typeof material === "string" && material.length > 0)
+    query.set("material", material);
+  if (typeof tag === "string" && tag.length > 0) query.set("tag", tag);
+  setField(query, field, fieldValue, fieldMin, fieldMax);
+  const suffix = query.size === 0 ? "" : `?${query}`;
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/facets${suffix}`,
+  );
   if (!response.ok) {
-    throw new RefusedError(`facets returned ${response.status}`, await refusalReason(response))
+    throw new RefusedError(
+      `facets returned ${response.status}`,
+      await refusalReason(response),
+    );
   }
-  return (await response.json()) as Facets
+  return (await response.json()) as Facets;
 }
 
 /**
@@ -198,54 +218,66 @@ function setField(
   fieldMax?: string,
 ): void {
   const given = Object.entries({ fieldValue, fieldMin, fieldMax }).filter(
-    (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
-  )
-  if (typeof field !== 'string' || field.length === 0 || given.length === 0) return
-  query.set('field', field)
-  for (const [name, value] of given) query.set(name, value)
+    (entry): entry is [string, string] =>
+      typeof entry[1] === "string" && entry[1].length > 0,
+  );
+  if (typeof field !== "string" || field.length === 0 || given.length === 0)
+    return;
+  query.set("field", field);
+  for (const [name, value] of given) query.set(name, value);
 }
 
 /** `GET /api/libraries/{id}/fields` — the library's custom fields, oldest first. */
 export async function fetchFields(library: LibraryId): Promise<CustomField[]> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/fields`)
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/fields`,
+  );
   if (!response.ok) {
-    throw new Error(`fields returned ${response.status}`)
+    throw new Error(`fields returned ${response.status}`);
   }
-  return (await response.json()) as CustomField[]
+  return (await response.json()) as CustomField[];
 }
 
 /** A field write the route answered rather than failed: saved, or refused in its own words. */
-export type FieldWritten = { kind: 'saved' } | { kind: 'refused'; message: string; reason?: string }
+export type FieldWritten =
+  { kind: "saved" } | { kind: "refused"; message: string; reason?: string };
 
 async function fieldWritten(
   response: Response,
   fallback: string = strings.fields.refusedWithoutReason,
 ): Promise<FieldWritten> {
-  if (response.ok) return { kind: 'saved' }
-  if (response.status === 400 || response.status === 404 || response.status === 409) {
-    const answer: unknown = await response.json().catch(() => null)
+  if (response.ok) return { kind: "saved" };
+  if (
+    response.status === 400 ||
+    response.status === 404 ||
+    response.status === 409
+  ) {
+    const answer: unknown = await response.json().catch(() => null);
     const { message, reason } =
-      answer !== null && typeof answer === 'object'
+      answer !== null && typeof answer === "object"
         ? (answer as { message?: unknown; reason?: unknown })
-        : ({} as { message?: unknown; reason?: unknown })
+        : ({} as { message?: unknown; reason?: unknown });
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : fallback,
-      ...(typeof reason === 'string' ? { reason } : {}),
-    }
+      kind: "refused",
+      message: typeof message === "string" ? message : fallback,
+      ...(typeof reason === "string" ? { reason } : {}),
+    };
   }
-  throw new Error(`write returned ${response.status}`)
+  throw new Error(`write returned ${response.status}`);
 }
 
 /** `POST /api/libraries/{id}/fields` — define a field. */
-export async function createField(library: LibraryId, field: NewCustomField): Promise<FieldWritten> {
+export async function createField(
+  library: LibraryId,
+  field: NewCustomField,
+): Promise<FieldWritten> {
   return fieldWritten(
     await fetch(`/api/libraries/${encodeURIComponent(library)}/fields`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(field),
     }),
-  )
+  );
 }
 
 /** `PATCH /api/libraries/{library}/fields/{key}` — relabel a field, change its options or filter. */
@@ -255,53 +287,79 @@ export async function updateField(
   change: CustomFieldChange,
 ): Promise<FieldWritten> {
   return fieldWritten(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(change),
-    }),
-  )
+    await fetch(
+      `/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(change),
+      },
+    ),
+  );
 }
 
 /** `DELETE /api/libraries/{library}/fields/{key}` — the definition only; every part keeps its value. */
-export async function removeField(library: LibraryId, key: string): Promise<FieldWritten> {
+export async function removeField(
+  library: LibraryId,
+  key: string,
+): Promise<FieldWritten> {
   return fieldWritten(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-    }),
-  )
+    await fetch(
+      `/api/libraries/${encodeURIComponent(library)}/fields/${encodeURIComponent(key)}`,
+      {
+        method: "DELETE",
+      },
+    ),
+  );
 }
 
 /** `GET /api/libraries/{id}/densities` — a library's density per material, in kg/m³. */
-export async function fetchDensities(library: LibraryId): Promise<MaterialDensity[]> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/densities`)
+export async function fetchDensities(
+  library: LibraryId,
+): Promise<MaterialDensity[]> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/densities`,
+  );
   if (!response.ok) {
-    throw new Error(`densities returned ${response.status}`)
+    throw new Error(`densities returned ${response.status}`);
   }
-  return (await response.json()) as MaterialDensity[]
+  return (await response.json()) as MaterialDensity[];
 }
 
 /** `PUT /api/libraries/{library}/densities/{material}` — a material's density in kg/m³, replacing its old one. */
-export async function setDensity(library: LibraryId, material: string, densityKgM3: number): Promise<FieldWritten> {
-  const body: SetDensity = { densityKgM3 }
+export async function setDensity(
+  library: LibraryId,
+  material: string,
+  densityKgM3: number,
+): Promise<FieldWritten> {
+  const body: SetDensity = { densityKgM3 };
   return fieldWritten(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }),
+    await fetch(
+      `/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
     strings.densities.refusedWithoutReason,
-  )
+  );
 }
 
 /** `DELETE /api/libraries/{library}/densities/{material}` — a material's density; its parts then have no mass. */
-export async function removeDensity(library: LibraryId, material: string): Promise<FieldWritten> {
+export async function removeDensity(
+  library: LibraryId,
+  material: string,
+): Promise<FieldWritten> {
   return fieldWritten(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`, {
-      method: 'DELETE',
-    }),
+    await fetch(
+      `/api/libraries/${encodeURIComponent(library)}/densities/${encodeURIComponent(material)}`,
+      {
+        method: "DELETE",
+      },
+    ),
     strings.densities.refusedWithoutReason,
-  )
+  );
 }
 
 /** `PUT /api/parts/{id}/fields/{key}` — one part's value, or `null` to clear it. */
@@ -310,14 +368,17 @@ export async function setFieldValue(
   key: string,
   value: string | number | null,
 ): Promise<FieldWritten> {
-  const body: SetFieldValue = { value }
+  const body: SetFieldValue = { value };
   return fieldWritten(
-    await fetch(`/api/parts/${encodeURIComponent(part)}/fields/${encodeURIComponent(key)}`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    }),
-  )
+    await fetch(
+      `/api/parts/${encodeURIComponent(part)}/fields/${encodeURIComponent(key)}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  );
 }
 
 /**
@@ -328,9 +389,11 @@ export async function setFieldValue(
  * says both halves — see `strings.removal`.
  */
 export async function removePart(part: PartId): Promise<void> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, { method: 'DELETE' })
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, {
+    method: "DELETE",
+  });
   if (!response.ok) {
-    throw new Error(`delete returned ${response.status}`)
+    throw new Error(`delete returned ${response.status}`);
   }
 }
 
@@ -350,38 +413,44 @@ export async function removePart(part: PartId): Promise<void> {
  * parameter is asking for exactly that.
  */
 export function downloadUrl(revision: RevisionId): string {
-  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`
+  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=original`;
 }
 
 /**
  * `GET /api/parts/{id}/file` — the part's current file, one link that keeps working when a new
  * revision is recorded. Absolute, because it is for pasting somewhere that is not this page.
  */
-export function fileLink(part: PartId, origin: string = window.location.origin): string {
-  return `${origin}/api/parts/${encodeURIComponent(part)}/file`
+export function fileLink(
+  part: PartId,
+  origin: string = window.location.origin,
+): string {
+  return `${origin}/api/parts/${encodeURIComponent(part)}/file`;
 }
 
 /** The 3MF Lapidary wrote from a revision's mesh, for a slicer, named `*.lapidary.3mf`: once `requestExport` says it exists. */
 export function exportUrl(revision: RevisionId): string {
-  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`
+  return `/api/revisions/${encodeURIComponent(revision)}/download?variant=3mf`;
 }
 
 /** `GET /api/profile` — this install's display name (M2). */
 export async function fetchProfile(): Promise<Profile> {
-  const response = await fetch('/api/profile')
-  if (!response.ok) throw new Error(`profile returned ${response.status}`)
-  return (await response.json()) as Profile
+  const response = await fetch("/api/profile");
+  if (!response.ok) throw new Error(`profile returned ${response.status}`);
+  return (await response.json()) as Profile;
 }
 
 /** `PUT /api/profile` — a blank name clears it. */
 export async function saveProfile(displayName: string): Promise<Profile> {
-  const response = await fetch('/api/profile', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ displayName: displayName.trim() === '' ? null : displayName } satisfies Profile),
-  })
-  if (!response.ok) throw new Error(`saving the profile returned ${response.status}`)
-  return (await response.json()) as Profile
+  const response = await fetch("/api/profile", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      displayName: displayName.trim() === "" ? null : displayName,
+    } satisfies Profile),
+  });
+  if (!response.ok)
+    throw new Error(`saving the profile returned ${response.status}`);
+  return (await response.json()) as Profile;
 }
 
 /**
@@ -389,44 +458,66 @@ export async function saveProfile(displayName: string): Promise<Profile> {
  * characters, never the key) and what its last check said.
  */
 export async function fetchSiteSettings(): Promise<SiteSettings> {
-  const response = await fetch('/api/settings/sites')
-  if (!response.ok) throw new Error(`site settings returned ${response.status}`)
-  return (await response.json()) as SiteSettings
+  const response = await fetch("/api/settings/sites");
+  if (!response.ok)
+    throw new Error(`site settings returned ${response.status}`);
+  return (await response.json()) as SiteSettings;
 }
 
 /** `PUT /api/settings/sites/{site}` — save a key, replacing the one there. */
 export async function saveSiteKey(site: string, key: string): Promise<void> {
-  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ key } satisfies SetSiteKey),
-  })
-  if (!response.ok) throw new Error(`saving a site key returned ${response.status}`)
+  const response = await fetch(
+    `/api/settings/sites/${encodeURIComponent(site)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key } satisfies SetSiteKey),
+    },
+  );
+  if (!response.ok)
+    throw new Error(`saving a site key returned ${response.status}`);
 }
 
 /** `DELETE /api/settings/sites/{site}` — forget the key. */
 export async function clearSiteKey(site: string): Promise<void> {
-  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}`, { method: 'DELETE' })
-  if (!response.ok) throw new Error(`removing a site key returned ${response.status}`)
+  const response = await fetch(
+    `/api/settings/sites/${encodeURIComponent(site)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok)
+    throw new Error(`removing a site key returned ${response.status}`);
 }
 
 /**
  * `POST /api/settings/sites/{site}/check` — whether a key works: the one typed, unsaved, or the
  * saved one when none is given. "It does not work" is an answer, not a failure.
  */
-export async function checkSiteKey(site: string, key?: string): Promise<SiteCheck> {
-  const response = await fetch(`/api/settings/sites/${encodeURIComponent(site)}/check`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify((key === undefined ? {} : { key }) satisfies CheckSiteKey),
-  })
+export async function checkSiteKey(
+  site: string,
+  key?: string,
+): Promise<SiteCheck> {
+  const response = await fetch(
+    `/api/settings/sites/${encodeURIComponent(site)}/check`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        (key === undefined ? {} : { key }) satisfies CheckSiteKey,
+      ),
+    },
+  );
   if (response.ok || response.status === 403) {
-    const body: unknown = await response.json()
-    if (response.ok) return body as SiteCheck
-    const message = (body as { message?: unknown }).message
-    return { ok: false, account: null, message: typeof message === 'string' ? message : strings.settings.checkFailed }
+    const body: unknown = await response.json();
+    if (response.ok) return body as SiteCheck;
+    const message = (body as { message?: unknown }).message;
+    return {
+      ok: false,
+      account: null,
+      message:
+        typeof message === "string" ? message : strings.settings.checkFailed,
+    };
   }
-  throw new Error(`checking a site key returned ${response.status}`)
+  throw new Error(`checking a site key returned ${response.status}`);
 }
 
 /**
@@ -436,19 +527,36 @@ export async function checkSiteKey(site: string, key?: string): Promise<SiteChec
 export async function importLink(
   library: LibraryId,
   url: string,
-): Promise<{ kind: 'queued'; accepted: ScanAccepted } | { kind: 'refused'; message: string }> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/imports/link`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url } satisfies ImportLink),
-  })
-  if (response.ok) return { kind: 'queued', accepted: (await response.json()) as ScanAccepted }
+): Promise<
+  | { kind: "queued"; accepted: ScanAccepted }
+  | { kind: "refused"; message: string }
+> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/imports/link`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url } satisfies ImportLink),
+    },
+  );
+  if (response.ok)
+    return {
+      kind: "queued",
+      accepted: (await response.json()) as ScanAccepted,
+    };
   if ([400, 403, 404, 422].includes(response.status)) {
-    const body: unknown = await response.json().catch(() => null)
-    const message = body !== null && typeof body === 'object' ? (body as { message?: unknown }).message : undefined
-    return { kind: 'refused', message: typeof message === 'string' ? message : strings.importLink.failed }
+    const body: unknown = await response.json().catch(() => null);
+    const message =
+      body !== null && typeof body === "object"
+        ? (body as { message?: unknown }).message
+        : undefined;
+    return {
+      kind: "refused",
+      message:
+        typeof message === "string" ? message : strings.importLink.failed,
+    };
   }
-  throw new Error(`importing a link returned ${response.status}`)
+  throw new Error(`importing a link returned ${response.status}`);
 }
 
 /**
@@ -462,12 +570,16 @@ export async function importLink(
  * A 404 is a real answer: no library with that id. Deliberately not softened into zeroes
  * here — `0 B` for an id that names nothing is a number a person would believe.
  */
-export async function fetchLibraryStorage(library: LibraryId): Promise<LibraryStorage> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/storage`)
+export async function fetchLibraryStorage(
+  library: LibraryId,
+): Promise<LibraryStorage> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/storage`,
+  );
   if (!response.ok) {
-    throw new Error(`library storage returned ${response.status}`)
+    throw new Error(`library storage returned ${response.status}`);
   }
-  return (await response.json()) as LibraryStorage
+  return (await response.json()) as LibraryStorage;
 }
 
 /**
@@ -489,11 +601,11 @@ export async function fetchBatchStatus(
 ): Promise<BatchStatus> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}`,
-  )
+  );
   if (!response.ok) {
-    throw new Error(`batch status returned ${response.status}`)
+    throw new Error(`batch status returned ${response.status}`);
   }
-  return (await response.json()) as BatchStatus
+  return (await response.json()) as BatchStatus;
 }
 
 /**
@@ -507,11 +619,11 @@ export async function fetchFailures(
 ): Promise<FailurePage> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/failed?after=${encodeURIComponent(after)}`,
-  )
+  );
   if (!response.ok) {
-    throw new Error(`failure list returned ${response.status}`)
+    throw new Error(`failure list returned ${response.status}`);
   }
-  return (await response.json()) as FailurePage
+  return (await response.json()) as FailurePage;
 }
 
 /**
@@ -523,15 +635,15 @@ export async function retryFailed(
   batch: BatchId,
   job?: JobId,
 ): Promise<RetryAccepted> {
-  const suffix = job === undefined ? '' : `?job=${encodeURIComponent(job)}`
+  const suffix = job === undefined ? "" : `?job=${encodeURIComponent(job)}`;
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/retry${suffix}`,
-    { method: 'POST' },
-  )
+    { method: "POST" },
+  );
   if (!response.ok) {
-    throw new Error(`retry returned ${response.status}`)
+    throw new Error(`retry returned ${response.status}`);
   }
-  return (await response.json()) as RetryAccepted
+  return (await response.json()) as RetryAccepted;
 }
 
 /**
@@ -548,8 +660,10 @@ export async function retryFailed(
  */
 export async function startScan(library: LibraryId): Promise<ScanAccepted> {
   return accepted(
-    await fetch(`/api/libraries/${encodeURIComponent(library)}/scan`, { method: 'POST' }),
-  )
+    await fetch(`/api/libraries/${encodeURIComponent(library)}/scan`, {
+      method: "POST",
+    }),
+  );
 }
 
 /**
@@ -561,20 +675,26 @@ export async function startScan(library: LibraryId): Promise<ScanAccepted> {
  * confirmation name the number of models it affects without a second request per folder.
  */
 export async function fetchFolders(library: LibraryId): Promise<FolderNode[]> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/folders`)
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/folders`,
+  );
   if (!response.ok) {
-    throw new Error(`folders returned ${response.status}`)
+    throw new Error(`folders returned ${response.status}`);
   }
-  return (await response.json()) as FolderNode[]
+  return (await response.json()) as FolderNode[];
 }
 
 /** `GET /api/libraries/{id}/filters`: the library's saved filters, by name. */
-export async function fetchSavedFilters(library: LibraryId): Promise<SavedFilter[]> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/filters`)
+export async function fetchSavedFilters(
+  library: LibraryId,
+): Promise<SavedFilter[]> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/filters`,
+  );
   if (!response.ok) {
-    throw new Error(`saved filters returned ${response.status}`)
+    throw new Error(`saved filters returned ${response.status}`);
   }
-  return (await response.json()) as SavedFilter[]
+  return (await response.json()) as SavedFilter[];
 }
 
 /**
@@ -585,35 +705,51 @@ export async function fetchSavedFilters(library: LibraryId): Promise<SavedFilter
 export async function saveFilter(
   library: LibraryId,
   filter: NewSavedFilter,
-): Promise<{ kind: 'saved'; filter: SavedFilter } | { kind: 'refused'; message: string }> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/filters`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(filter),
-  })
-  if (response.ok) return { kind: 'saved', filter: (await response.json()) as SavedFilter }
-  if (response.status === 400 || response.status === 404 || response.status === 409) {
-    const answer: unknown = await response.json().catch(() => null)
+): Promise<
+  { kind: "saved"; filter: SavedFilter } | { kind: "refused"; message: string }
+> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/filters`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(filter),
+    },
+  );
+  if (response.ok)
+    return { kind: "saved", filter: (await response.json()) as SavedFilter };
+  if (
+    response.status === 400 ||
+    response.status === 404 ||
+    response.status === 409
+  ) {
+    const answer: unknown = await response.json().catch(() => null);
     const message =
-      answer !== null && typeof answer === 'object'
+      answer !== null && typeof answer === "object"
         ? (answer as { message?: unknown }).message
-        : undefined
+        : undefined;
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.savedFilters.refusedWithoutReason,
-    }
+      kind: "refused",
+      message:
+        typeof message === "string"
+          ? message
+          : strings.savedFilters.refusedWithoutReason,
+    };
   }
-  throw new Error(`saving a filter returned ${response.status}`)
+  throw new Error(`saving a filter returned ${response.status}`);
 }
 
 /** `DELETE /api/libraries/{library}/filters/{filter}`. One already gone counts as removed. */
-export async function removeSavedFilter(library: LibraryId, filter: SavedFilterId): Promise<void> {
+export async function removeSavedFilter(
+  library: LibraryId,
+  filter: SavedFilterId,
+): Promise<void> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}`,
-    { method: 'DELETE' },
-  )
+    { method: "DELETE" },
+  );
   if (!response.ok && response.status !== 404) {
-    throw new Error(`removing a saved filter returned ${response.status}`)
+    throw new Error(`removing a saved filter returned ${response.status}`);
   }
 }
 
@@ -625,25 +761,36 @@ export async function renameSavedFilter(
   library: LibraryId,
   filter: SavedFilterId,
   name: string,
-): Promise<{ kind: 'renamed' } | { kind: 'refused'; message: string }> {
-  const body: RenameSavedFilter = { name }
+): Promise<{ kind: "renamed" } | { kind: "refused"; message: string }> {
+  const body: RenameSavedFilter = { name };
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}`,
-    { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
-  )
-  if (response.ok) return { kind: 'renamed' }
-  if (response.status === 400 || response.status === 404 || response.status === 409) {
-    const answer: unknown = await response.json().catch(() => null)
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (response.ok) return { kind: "renamed" };
+  if (
+    response.status === 400 ||
+    response.status === 404 ||
+    response.status === 409
+  ) {
+    const answer: unknown = await response.json().catch(() => null);
     const message =
-      answer !== null && typeof answer === 'object'
+      answer !== null && typeof answer === "object"
         ? (answer as { message?: unknown }).message
-        : undefined
+        : undefined;
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.savedFilters.refusedWithoutReason,
-    }
+      kind: "refused",
+      message:
+        typeof message === "string"
+          ? message
+          : strings.savedFilters.refusedWithoutReason,
+    };
   }
-  throw new Error(`renaming a saved filter returned ${response.status}`)
+  throw new Error(`renaming a saved filter returned ${response.status}`);
 }
 
 /** `POST /api/libraries/{library}/filters/{filter}/move`: one place up or down the list. */
@@ -652,13 +799,17 @@ export async function moveSavedFilter(
   filter: SavedFilterId,
   direction: MoveDirection,
 ): Promise<void> {
-  const body: MoveSavedFilter = { direction }
+  const body: MoveSavedFilter = { direction };
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/filters/${encodeURIComponent(filter)}/move`,
-    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
-  )
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
   if (!response.ok) {
-    throw new Error(`moving a saved filter returned ${response.status}`)
+    throw new Error(`moving a saved filter returned ${response.status}`);
   }
 }
 
@@ -674,23 +825,20 @@ export async function moveSavedFilter(
  * that acknowledging can never fix.
  */
 export type MoveRefusalReason =
-  | 'crossLibrary'
-  | 'duplicateName'
-  | 'noSuchFolder'
-  | 'unknown'
+  "crossLibrary" | "duplicateName" | "noSuchFolder" | "unknown";
 
 const KNOWN_MOVE_REFUSAL_REASONS: readonly string[] = [
-  'crossLibrary',
-  'duplicateName',
-  'noSuchFolder',
-]
+  "crossLibrary",
+  "duplicateName",
+  "noSuchFolder",
+];
 
 /** A read the server answered with an error, and the `reason` its body named, if any. */
 export class RefusedError extends Error {
-  readonly reason: string | undefined
+  readonly reason: string | undefined;
   constructor(message: string, reason: string | undefined) {
-    super(message)
-    this.reason = reason
+    super(message);
+    this.reason = reason;
   }
 }
 
@@ -700,24 +848,30 @@ export class RefusedError extends Error {
  * both come off `folders.rs`'s one `refused` helper, and a client that reads the field on
  * one route and discards it on the other reports "already deleted" as a server outage.
  */
-export async function refusalReason(response: Response): Promise<string | undefined> {
+export async function refusalReason(
+  response: Response,
+): Promise<string | undefined> {
   try {
-    const body: unknown = await response.json()
+    const body: unknown = await response.json();
     const reason =
-      body !== null && typeof body === 'object' ? (body as { reason?: unknown }).reason : undefined
-    return typeof reason === 'string' ? reason : undefined
+      body !== null && typeof body === "object"
+        ? (body as { reason?: unknown }).reason
+        : undefined;
+    return typeof reason === "string" ? reason : undefined;
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
-async function moveRefusalReason(response: Response): Promise<MoveRefusalReason> {
-  const reason = await refusalReason(response)
+async function moveRefusalReason(
+  response: Response,
+): Promise<MoveRefusalReason> {
+  const reason = await refusalReason(response);
   // A `409` with an unrecognised reason, or none, or a body that is not JSON at all — no
   // more readable than each other, and none of them a reason to guess `duplicateName`.
   return reason !== undefined && KNOWN_MOVE_REFUSAL_REASONS.includes(reason)
     ? (reason as MoveRefusalReason)
-    : 'unknown'
+    : "unknown";
 }
 
 /**
@@ -742,19 +896,19 @@ export async function movePart(
   part: PartId,
   folderId: FolderId | null,
   acknowledgeDuplicate: boolean,
-): Promise<{ kind: 'moved' } | { kind: 'refused'; reason: MoveRefusalReason }> {
+): Promise<{ kind: "moved" } | { kind: "refused"; reason: MoveRefusalReason }> {
   const response = await fetch(`/api/parts/${encodeURIComponent(part)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ folderId, acknowledgeDuplicate } satisfies MovePart),
-  })
+  });
   if (response.status === 409) {
-    return { kind: 'refused', reason: await moveRefusalReason(response) }
+    return { kind: "refused", reason: await moveRefusalReason(response) };
   }
   if (!response.ok) {
-    throw new Error(`move returned ${response.status}`)
+    throw new Error(`move returned ${response.status}`);
   }
-  return { kind: 'moved' }
+  return { kind: "moved" };
 }
 
 /**
@@ -770,10 +924,10 @@ export async function movePart(
  * having done something other than what it warned about.
  */
 export type FolderDeleted = {
-  kind: 'deleted'
-  foldersDeleted: number | null
-  partsDeleted: number | null
-}
+  kind: "deleted";
+  foldersDeleted: number | null;
+  partsDeleted: number | null;
+};
 
 /**
  * `DELETE /api/folders/{id}` — delete a category and everything under it, for good.
@@ -793,27 +947,32 @@ export type FolderDeleted = {
  */
 export async function deleteFolder(
   folder: FolderId,
-): Promise<FolderDeleted | { kind: 'refused'; reason: 'noSuchFolder' }> {
-  const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, { method: 'DELETE' })
-  if (response.status === 404 && (await refusalReason(response)) === 'noSuchFolder') {
-    return { kind: 'refused', reason: 'noSuchFolder' }
+): Promise<FolderDeleted | { kind: "refused"; reason: "noSuchFolder" }> {
+  const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, {
+    method: "DELETE",
+  });
+  if (
+    response.status === 404 &&
+    (await refusalReason(response)) === "noSuchFolder"
+  ) {
+    return { kind: "refused", reason: "noSuchFolder" };
   }
   if (!response.ok) {
-    throw new Error(`folder delete returned ${response.status}`)
+    throw new Error(`folder delete returned ${response.status}`);
   }
   // Read defensively rather than cast: a `200` whose body is empty, null or not JSON is
   // still a delete that happened, and the counts are a bonus the caller can do without.
-  const body: unknown = await response.json().catch(() => null)
-  const counted = (field: 'foldersDeleted' | 'partsDeleted'): number | null => {
-    if (body === null || typeof body !== 'object') return null
-    const value = (body as Record<string, unknown>)[field]
-    return typeof value === 'number' ? value : null
-  }
+  const body: unknown = await response.json().catch(() => null);
+  const counted = (field: "foldersDeleted" | "partsDeleted"): number | null => {
+    if (body === null || typeof body !== "object") return null;
+    const value = (body as Record<string, unknown>)[field];
+    return typeof value === "number" ? value : null;
+  };
   return {
-    kind: 'deleted',
-    foldersDeleted: counted('foldersDeleted'),
-    partsDeleted: counted('partsDeleted'),
-  }
+    kind: "deleted",
+    foldersDeleted: counted("foldersDeleted"),
+    partsDeleted: counted("partsDeleted"),
+  };
 }
 
 /**
@@ -827,9 +986,14 @@ export async function deleteFolder(
  * `cannotMove` is absent: the route refuses a `parentId`, and `FolderPatch` has no such field
  * to send.
  */
-export type FolderWriteRefusal = 'nameTaken' | 'slugTaken' | 'emptyName' | 'gone' | 'unknown'
+export type FolderWriteRefusal =
+  "nameTaken" | "slugTaken" | "emptyName" | "gone" | "unknown";
 
-const KNOWN_FOLDER_REFUSALS: readonly string[] = ['nameTaken', 'slugTaken', 'emptyName']
+const KNOWN_FOLDER_REFUSALS: readonly string[] = [
+  "nameTaken",
+  "slugTaken",
+  "emptyName",
+];
 
 /**
  * `noSuchLibrary` and `noSuchFolder` both mean "the thing you named is not there any more",
@@ -837,15 +1001,16 @@ const KNOWN_FOLDER_REFUSALS: readonly string[] = ['nameTaken', 'slugTaken', 'emp
  * than as two reasons that would need two sentences saying the same thing.
  */
 async function folderRefusal(response: Response): Promise<FolderWriteRefusal> {
-  const reason = await refusalReason(response)
-  if (reason === 'noSuchLibrary' || reason === 'noSuchFolder') return 'gone'
+  const reason = await refusalReason(response);
+  if (reason === "noSuchLibrary" || reason === "noSuchFolder") return "gone";
   return reason !== undefined && KNOWN_FOLDER_REFUSALS.includes(reason)
     ? (reason as FolderWriteRefusal)
-    : 'unknown'
+    : "unknown";
 }
 
 /** A write that the route answered rather than failed. Both functions below return it. */
-export type FolderWritten = { kind: 'written' } | { kind: 'refused'; reason: FolderWriteRefusal }
+export type FolderWritten =
+  { kind: "written" } | { kind: "refused"; reason: FolderWriteRefusal };
 
 /**
  * `POST /api/libraries/{id}/folders` — create one category.
@@ -863,18 +1028,25 @@ export async function createFolder(
   parentId: FolderId | null,
   name: string,
 ): Promise<FolderWritten> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/folders`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ parentId, name } satisfies NewFolder),
-  })
-  if (response.status === 409 || response.status === 400 || response.status === 404) {
-    return { kind: 'refused', reason: await folderRefusal(response) }
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/folders`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parentId, name } satisfies NewFolder),
+    },
+  );
+  if (
+    response.status === 409 ||
+    response.status === 400 ||
+    response.status === 404
+  ) {
+    return { kind: "refused", reason: await folderRefusal(response) };
   }
   if (!response.ok) {
-    throw new Error(`folder create returned ${response.status}`)
+    throw new Error(`folder create returned ${response.status}`);
   }
-  return { kind: 'written' }
+  return { kind: "written" };
 }
 
 /**
@@ -890,19 +1062,26 @@ export async function createFolder(
  * dialog that calls this has to say so, because the store is meant to be opened in a file
  * manager and a person fixing a spelling will otherwise go looking for the fixed one.
  */
-export async function renameFolder(folder: FolderId, name: string): Promise<FolderWritten> {
+export async function renameFolder(
+  folder: FolderId,
+  name: string,
+): Promise<FolderWritten> {
   const response = await fetch(`/api/folders/${encodeURIComponent(folder)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name } satisfies FolderPatch),
-  })
-  if (response.status === 409 || response.status === 400 || response.status === 404) {
-    return { kind: 'refused', reason: await folderRefusal(response) }
+  });
+  if (
+    response.status === 409 ||
+    response.status === 400 ||
+    response.status === 404
+  ) {
+    return { kind: "refused", reason: await folderRefusal(response) };
   }
   if (!response.ok) {
-    throw new Error(`folder rename returned ${response.status}`)
+    throw new Error(`folder rename returned ${response.status}`);
   }
-  return { kind: 'written' }
+  return { kind: "written" };
 }
 
 /**
@@ -914,12 +1093,14 @@ export async function renameFolder(folder: FolderId, name: string): Promise<Fold
  * `onDisk` asks the server to walk the storage root for the number `du` would give. Off by
  * default because it costs a stat per file, and the four tracked figures are free.
  */
-export async function fetchInstanceStorage(onDisk = false): Promise<InstanceStorageView> {
-  const response = await fetch(`/api/storage${onDisk ? '?onDisk=true' : ''}`)
+export async function fetchInstanceStorage(
+  onDisk = false,
+): Promise<InstanceStorageView> {
+  const response = await fetch(`/api/storage${onDisk ? "?onDisk=true" : ""}`);
   if (!response.ok) {
-    throw new Error(`instance storage returned ${response.status}`)
+    throw new Error(`instance storage returned ${response.status}`);
   }
-  return (await response.json()) as InstanceStorageView
+  return (await response.json()) as InstanceStorageView;
 }
 
 /**
@@ -930,47 +1111,54 @@ export async function planBundle(
   library: LibraryId,
   parts: PartId[],
 ): Promise<{ plan: BundlePlan } | { refused: string | null }> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/bundle/plan`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ parts }),
-  })
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/bundle/plan`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ parts }),
+    },
+  );
   if (!response.ok) {
     // The server's own words when it gave any, and nothing otherwise: a status code is not a
     // sentence for the grid.
-    const body = (await response.json().catch(() => null)) as { message?: string } | null
-    return { refused: body?.message ?? null }
+    const body = (await response.json().catch(() => null)) as {
+      message?: string;
+    } | null;
+    return { refused: body?.message ?? null };
   }
-  return { plan: (await response.json()) as BundlePlan }
+  return { plan: (await response.json()) as BundlePlan };
 }
 
 /** The hidden frame a bundle downloads into, so a late refusal never replaces the grid. */
-const BUNDLE_FRAME = 'lapidary-bundle-download'
+const BUNDLE_FRAME = "lapidary-bundle-download";
 
 /**
  * `POST /api/libraries/{id}/bundle`, as a form the browser posts itself: the bundle streams to
  * disk under the name the server gives it, where a `fetch` would hold the whole archive in memory.
  */
 export function downloadBundle(library: LibraryId, parts: PartId[]): void {
-  let frame = document.querySelector<HTMLIFrameElement>(`iframe[name="${BUNDLE_FRAME}"]`)
+  let frame = document.querySelector<HTMLIFrameElement>(
+    `iframe[name="${BUNDLE_FRAME}"]`,
+  );
   if (frame === null) {
-    frame = document.createElement('iframe')
-    frame.name = BUNDLE_FRAME
-    frame.hidden = true
-    document.body.append(frame)
+    frame = document.createElement("iframe");
+    frame.name = BUNDLE_FRAME;
+    frame.hidden = true;
+    document.body.append(frame);
   }
-  const form = document.createElement('form')
-  form.method = 'post'
-  form.target = BUNDLE_FRAME
-  form.action = `/api/libraries/${encodeURIComponent(library)}/bundle`
-  const field = document.createElement('input')
-  field.type = 'hidden'
-  field.name = 'parts'
-  field.value = parts.join(',')
-  form.append(field)
-  document.body.append(form)
-  form.submit()
-  form.remove()
+  const form = document.createElement("form");
+  form.method = "post";
+  form.target = BUNDLE_FRAME;
+  form.action = `/api/libraries/${encodeURIComponent(library)}/bundle`;
+  const field = document.createElement("input");
+  field.type = "hidden";
+  field.name = "parts";
+  field.value = parts.join(",");
+  form.append(field);
+  document.body.append(form);
+  form.submit();
+  form.remove();
 }
 
 /**
@@ -978,20 +1166,20 @@ export function downloadBundle(library: LibraryId, parts: PartId[]): void {
  * parts nobody has opened in 90 days, into quarantine. Never a source file.
  */
 export async function freeRenderCache(): Promise<RenderCacheFreedView> {
-  const response = await fetch('/api/storage/render-cache', { method: 'POST' })
+  const response = await fetch("/api/storage/render-cache", { method: "POST" });
   if (!response.ok) {
-    throw new Error(`freeing the render cache returned ${response.status}`)
+    throw new Error(`freeing the render cache returned ${response.status}`);
   }
-  return (await response.json()) as RenderCacheFreedView
+  return (await response.json()) as RenderCacheFreedView;
 }
 
 /** `GET /api/parts/{id}/images` — the gallery, in order. */
 export async function fetchPartImages(part: PartId): Promise<PartImage[]> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images`)
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images`);
   if (!response.ok) {
-    throw new Error(`part images returned ${response.status}`)
+    throw new Error(`part images returned ${response.status}`);
   }
-  return (await response.json()) as PartImage[]
+  return (await response.json()) as PartImage[];
 }
 
 /**
@@ -1014,39 +1202,47 @@ export async function uploadPartImage(
   part: PartId,
   source: Blob | string,
   /** `snapshot` for the 3D viewer's own canvas, recorded as that rather than as a file somebody chose. */
-  from?: 'snapshot',
-): Promise<{ kind: 'stored'; stored: StoredImage } | { kind: 'refused'; message: string }> {
-  const base = `/api/parts/${encodeURIComponent(part)}/images`
+  from?: "snapshot",
+): Promise<
+  { kind: "stored"; stored: StoredImage } | { kind: "refused"; message: string }
+> {
+  const base = `/api/parts/${encodeURIComponent(part)}/images`;
   const response =
-    typeof source === 'string'
+    typeof source === "string"
       ? await fetch(`${base}/from-url`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          method: "POST",
+          headers: { "content-type": "application/json" },
           body: JSON.stringify({ url: source } satisfies FetchImageRequest),
         })
-      : await fetch(from === undefined ? base : `${base}?from=${from}`, { method: 'POST', body: source })
+      : await fetch(from === undefined ? base : `${base}?from=${from}`, {
+          method: "POST",
+          body: source,
+        });
   if (response.ok) {
     // The size it was stored at, which is how the caller can say so: an image over the
     // server's bound is scaled down on the way in, and that is not a thing to do to
     // somebody's photograph without telling them.
-    return { kind: 'stored', stored: (await response.json()) as StoredImage }
+    return { kind: "stored", stored: (await response.json()) as StoredImage };
   }
   // 413, 415 and 422 are what both routes use for "your file, not our fault"; 502 and 504
   // are the two only the fetch can answer — the address was fine and the other end did not
   // come back. Those carry a sentence too, and throwing past it would replace "that host
   // could not be found" with "something went wrong".
   if ([400, 413, 415, 422, 502, 504].includes(response.status)) {
-    const body: unknown = await response.json().catch(() => null)
+    const body: unknown = await response.json().catch(() => null);
     const message =
-      body !== null && typeof body === 'object'
+      body !== null && typeof body === "object"
         ? (body as { message?: unknown }).message
-        : undefined
+        : undefined;
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.images.refusedWithoutReason,
-    }
+      kind: "refused",
+      message:
+        typeof message === "string"
+          ? message
+          : strings.images.refusedWithoutReason,
+    };
   }
-  throw new Error(`image upload returned ${response.status}`)
+  throw new Error(`image upload returned ${response.status}`);
 }
 
 /**
@@ -1067,23 +1263,25 @@ export async function setImageFraming(
   const response = await fetch(
     `/api/parts/${encodeURIComponent(part)}/images/${encodeURIComponent(image)}`,
     {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(framing),
     },
-  )
+  );
   if (!response.ok) {
-    throw new Error(`re-framing returned ${response.status}`)
+    throw new Error(`re-framing returned ${response.status}`);
   }
 }
 
 /** `GET /api/parts/{id}/sources` — where a part came from, oldest first. */
 export async function fetchPartSources(part: PartId): Promise<PartSource[]> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/sources`)
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/sources`,
+  );
   if (!response.ok) {
-    throw new Error(`part sources returned ${response.status}`)
+    throw new Error(`part sources returned ${response.status}`);
   }
-  return (await response.json()) as PartSource[]
+  return (await response.json()) as PartSource[];
 }
 
 /**
@@ -1099,25 +1297,31 @@ export async function fetchPartSources(part: PartId): Promise<PartSource[]> {
 export async function addPartSource(
   part: PartId,
   source: NewSource,
-): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/sources`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(source),
-  })
-  if (response.ok) return { kind: 'saved' }
+): Promise<{ kind: "saved" } | { kind: "refused"; message: string }> {
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/sources`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(source),
+    },
+  );
+  if (response.ok) return { kind: "saved" };
   if (response.status === 422) {
-    const body: unknown = await response.json().catch(() => null)
+    const body: unknown = await response.json().catch(() => null);
     const message =
-      body !== null && typeof body === 'object'
+      body !== null && typeof body === "object"
         ? (body as { message?: unknown }).message
-        : undefined
+        : undefined;
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.sources.refusedWithoutReason,
-    }
+      kind: "refused",
+      message:
+        typeof message === "string"
+          ? message
+          : strings.sources.refusedWithoutReason,
+    };
   }
-  throw new Error(`recording a source returned ${response.status}`)
+  throw new Error(`recording a source returned ${response.status}`);
 }
 
 /**
@@ -1128,9 +1332,14 @@ export async function addPartSource(
 export async function setPartTags(
   part: PartId,
   tags: readonly string[],
-): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
-  const body: SetTags = { tags: [...tags] }
-  return putList(`/api/parts/${encodeURIComponent(part)}/tags`, body, strings.tags.refusedWithoutReason, 'tags')
+): Promise<{ kind: "saved" } | { kind: "refused"; message: string }> {
+  const body: SetTags = { tags: [...tags] };
+  return putList(
+    `/api/parts/${encodeURIComponent(part)}/tags`,
+    body,
+    strings.tags.refusedWithoutReason,
+    "tags",
+  );
 }
 
 /**
@@ -1141,14 +1350,14 @@ export async function setPartTags(
 export async function setPartMaterials(
   part: PartId,
   materials: readonly string[],
-): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
-  const body: SetMaterials = { materials: [...materials] }
+): Promise<{ kind: "saved" } | { kind: "refused"; message: string }> {
+  const body: SetMaterials = { materials: [...materials] };
   return putList(
     `/api/parts/${encodeURIComponent(part)}/materials`,
     body,
     strings.materials.refusedWithoutReason,
-    'materials',
-  )
+    "materials",
+  );
 }
 
 /**
@@ -1157,14 +1366,14 @@ export async function setPartMaterials(
  */
 export async function unsetPartMaterials(
   part: PartId,
-): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+): Promise<{ kind: "saved" } | { kind: "refused"; message: string }> {
   return putList(
     `/api/parts/${encodeURIComponent(part)}/materials`,
     undefined,
     strings.materials.refusedWithoutReason,
-    'materials',
-    'DELETE',
-  )
+    "materials",
+    "DELETE",
+  );
 }
 
 /** One whole list PUT to a part: saved, or refused in the server's own sentence, else `fallback`. */
@@ -1173,23 +1382,27 @@ async function putList(
   body: SetTags | SetMaterials | undefined,
   fallback: string,
   what: string,
-  method: 'PUT' | 'DELETE' = 'PUT',
-): Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }> {
+  method: "PUT" | "DELETE" = "PUT",
+): Promise<{ kind: "saved" } | { kind: "refused"; message: string }> {
   const response = await fetch(path, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers:
+      body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  if (response.ok) return { kind: 'saved' }
+  });
+  if (response.ok) return { kind: "saved" };
   if (response.status === 400 || response.status === 404) {
-    const answer: unknown = await response.json().catch(() => null)
+    const answer: unknown = await response.json().catch(() => null);
     const message =
-      answer !== null && typeof answer === 'object'
+      answer !== null && typeof answer === "object"
         ? (answer as { message?: unknown }).message
-        : undefined
-    return { kind: 'refused', message: typeof message === 'string' ? message : fallback }
+        : undefined;
+    return {
+      kind: "refused",
+      message: typeof message === "string" ? message : fallback,
+    };
   }
-  throw new Error(`saving ${what} returned ${response.status}`)
+  throw new Error(`saving ${what} returned ${response.status}`);
 }
 
 /**
@@ -1199,11 +1412,11 @@ async function putList(
  * paged would be a control nobody could scan.
  */
 export async function fetchLibraries(): Promise<LibrarySummary[]> {
-  const response = await fetch('/api/libraries')
+  const response = await fetch("/api/libraries");
   if (!response.ok) {
-    throw new Error(`libraries returned ${response.status}`)
+    throw new Error(`libraries returned ${response.status}`);
   }
-  return (await response.json()) as LibrarySummary[]
+  return (await response.json()) as LibrarySummary[];
 }
 
 /**
@@ -1214,35 +1427,44 @@ export async function fetchLibraries(): Promise<LibrarySummary[]> {
  */
 export async function createLibrary(
   body: NewLibrary,
-): Promise<{ kind: 'created'; library: LibrarySummary } | { kind: 'refused'; message: string }> {
-  const response = await fetch('/api/libraries', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+): Promise<
+  | { kind: "created"; library: LibrarySummary }
+  | { kind: "refused"; message: string }
+> {
+  const response = await fetch("/api/libraries", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  })
+  });
   if (response.ok) {
-    return { kind: 'created', library: (await response.json()) as LibrarySummary }
+    return {
+      kind: "created",
+      library: (await response.json()) as LibrarySummary,
+    };
   }
   if (response.status === 409 || response.status === 400) {
-    const parsed: unknown = await response.json().catch(() => null)
+    const parsed: unknown = await response.json().catch(() => null);
     const message =
-      parsed !== null && typeof parsed === 'object'
+      parsed !== null && typeof parsed === "object"
         ? (parsed as { message?: unknown }).message
-        : undefined
+        : undefined;
     return {
-      kind: 'refused',
-      message: typeof message === 'string' ? message : strings.libraries.refusedWithoutReason,
-    }
+      kind: "refused",
+      message:
+        typeof message === "string"
+          ? message
+          : strings.libraries.refusedWithoutReason,
+    };
   }
-  throw new Error(`library create returned ${response.status}`)
+  throw new Error(`library create returned ${response.status}`);
 }
 
 /** Every enqueue route answers alike, so they read the answer alike. */
 async function accepted(response: Response): Promise<ScanAccepted> {
   if (!response.ok) {
-    throw new Error(`enqueue returned ${response.status}`)
+    throw new Error(`enqueue returned ${response.status}`);
   }
-  return (await response.json()) as ScanAccepted
+  return (await response.json()) as ScanAccepted;
 }
 
 /**
@@ -1258,14 +1480,16 @@ export class UploadRefused extends Error {}
 /** The refusal's message, if this response is one. */
 async function refusal(response: Response): Promise<UploadRefused | undefined> {
   if (response.status !== 400) {
-    return undefined
+    return undefined;
   }
-  const parsed: unknown = await response.json().catch(() => null)
+  const parsed: unknown = await response.json().catch(() => null);
   const message =
-    parsed !== null && typeof parsed === 'object'
+    parsed !== null && typeof parsed === "object"
       ? (parsed as { message?: unknown }).message
-      : undefined
-  return typeof message === 'string' && message !== '' ? new UploadRefused(message) : undefined
+      : undefined;
+  return typeof message === "string" && message !== ""
+    ? new UploadRefused(message)
+    : undefined;
 }
 
 /**
@@ -1279,15 +1503,21 @@ export async function probeUpload(
   library: LibraryId,
   files: UploadFile[],
 ): Promise<UploadPlan> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/probe`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files } satisfies UploadManifest),
-  })
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/uploads/probe`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files } satisfies UploadManifest),
+    },
+  );
   if (!response.ok) {
-    throw (await refusal(response)) ?? new Error(`upload probe returned ${response.status}`)
+    throw (
+      (await refusal(response)) ??
+      new Error(`upload probe returned ${response.status}`)
+    );
   }
-  return (await response.json()) as UploadPlan
+  return (await response.json()) as UploadPlan;
 }
 
 /**
@@ -1309,12 +1539,12 @@ export async function putChunk(
 ): Promise<ChunkAccepted> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/uploads/${encodeURIComponent(blake3)}?offset=${offset}`,
-    { method: 'PUT', body: chunk },
-  )
+    { method: "PUT", body: chunk },
+  );
   if (response.ok || response.status === 409) {
-    return (await response.json()) as ChunkAccepted
+    return (await response.json()) as ChunkAccepted;
   }
-  throw new Error(`upload chunk returned ${response.status}`)
+  throw new Error(`upload chunk returned ${response.status}`);
 }
 
 /**
@@ -1330,18 +1560,21 @@ export async function commitUpload(
   library: LibraryId,
   files: UploadFile[],
 ): Promise<ScanAccepted> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/uploads/commit`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files } satisfies UploadManifest),
-  })
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/uploads/commit`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files } satisfies UploadManifest),
+    },
+  );
   // `refusal` reads the body only on a 400, which it then throws, so `accepted` still has one
   // to read on every other answer.
-  const refused = await refusal(response)
+  const refused = await refusal(response);
   if (refused !== undefined) {
-    throw refused
+    throw refused;
   }
-  return accepted(response)
+  return accepted(response);
 }
 
 /**
@@ -1355,11 +1588,11 @@ export async function startImport(
 ): Promise<ScanAccepted> {
   return accepted(
     await fetch(`/api/libraries/${encodeURIComponent(library)}/imports`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ blake3, name }),
     }),
-  )
+  );
 }
 
 /**
@@ -1374,11 +1607,11 @@ export async function startImport(
  * a part exists to someone who cannot see it.
  */
 export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`)
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}`);
   if (!response.ok) {
-    throw new Error(`part detail returned ${response.status}`)
+    throw new Error(`part detail returned ${response.status}`);
   }
-  return (await response.json()) as PartDetail
+  return (await response.json()) as PartDetail;
 }
 
 /**
@@ -1386,11 +1619,13 @@ export async function fetchPartDetail(part: PartId): Promise<PartDetail> {
  * thumbnails, so the open path; a deleted part 404s here as its page does.
  */
 export async function fetchRevisions(part: PartId): Promise<PartRevision[]> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/revisions`)
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/revisions`,
+  );
   if (!response.ok) {
-    throw new Error(`revision history returned ${response.status}`)
+    throw new Error(`revision history returned ${response.status}`);
   }
-  return (await response.json()) as PartRevision[]
+  return (await response.json()) as PartRevision[];
 }
 
 /**
@@ -1402,23 +1637,32 @@ export async function fetchRevisions(part: PartId): Promise<PartRevision[]> {
  */
 export async function requestExport(
   part: PartId,
-): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
-  return requestBuilt(`/api/parts/${encodeURIComponent(part)}/exports/3mf`)
+): Promise<
+  { kind: "ready"; hash: BlobHash } | { kind: "queued"; queued: ScanAccepted }
+> {
+  return requestBuilt(`/api/parts/${encodeURIComponent(part)}/exports/3mf`);
 }
 
 /** A file Lapidary builds when asked: its hash when it exists, else the batch building it. A refusal throws the server's message. */
 async function requestBuilt(
   path: string,
-): Promise<{ kind: 'ready'; hash: BlobHash } | { kind: 'queued'; queued: ScanAccepted }> {
-  const response = await fetch(path, { method: 'POST' })
+): Promise<
+  { kind: "ready"; hash: BlobHash } | { kind: "queued"; queued: ScanAccepted }
+> {
+  const response = await fetch(path, { method: "POST" });
   if (response.status === 200) {
-    return { kind: 'ready', hash: ((await response.json()) as ExportReady).hash }
+    return {
+      kind: "ready",
+      hash: ((await response.json()) as ExportReady).hash,
+    };
   }
   if (response.status === 202) {
-    return { kind: 'queued', queued: (await response.json()) as ScanAccepted }
+    return { kind: "queued", queued: (await response.json()) as ScanAccepted };
   }
-  const refusal = (await response.json().catch(() => null)) as { message?: string } | null
-  throw new Error(refusal?.message ?? `${path} returned ${response.status}`)
+  const refusal = (await response.json().catch(() => null)) as {
+    message?: string;
+  } | null;
+  throw new Error(refusal?.message ?? `${path} returned ${response.status}`);
 }
 
 /**
@@ -1432,7 +1676,7 @@ async function requestBuilt(
  * still reaches these bytes before serving one.
  */
 export function blobUrl(hash: BlobHash): string {
-  return `/api/blob/${encodeURIComponent(hash)}`
+  return `/api/blob/${encodeURIComponent(hash)}`;
 }
 
 /**
@@ -1443,171 +1687,234 @@ export function blobUrl(hash: BlobHash): string {
  * route path is built in.
  */
 export function batchEventsUrl(library: LibraryId, batch: BatchId): string {
-  return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`
+  return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`;
 }
 
 /** A refusal the server sent with a sentence for a person (A2's routes). */
 async function sentence(response: Response, fallback: string): Promise<Error> {
-  const body = (await response.json().catch(() => null)) as { message?: string } | null
-  return new Error(body?.message ?? fallback)
+  const body = (await response.json().catch(() => null)) as {
+    message?: string;
+  } | null;
+  return new Error(body?.message ?? fallback);
 }
 
 /** `GET /api/storage/browse?path=` — one folder of the models folder (A2). */
 export async function browseModels(path: string): Promise<BrowseListing> {
-  const response = await fetch(`/api/storage/browse?path=${encodeURIComponent(path)}`)
-  if (!response.ok) throw await sentence(response, `browse returned ${response.status}`)
-  return (await response.json()) as BrowseListing
+  const response = await fetch(
+    `/api/storage/browse?path=${encodeURIComponent(path)}`,
+  );
+  if (!response.ok)
+    throw await sentence(response, `browse returned ${response.status}`);
+  return (await response.json()) as BrowseListing;
 }
 
 /** `GET /api/libraries/{id}/sources` — what the library holds. */
-export async function fetchSources(library: LibraryId): Promise<LibrarySource[]> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/sources`)
-  if (!response.ok) throw new Error(`sources returned ${response.status}`)
-  return (await response.json()) as LibrarySource[]
+export async function fetchSources(
+  library: LibraryId,
+): Promise<LibrarySource[]> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/sources`,
+  );
+  if (!response.ok) throw new Error(`sources returned ${response.status}`);
+  return (await response.json()) as LibrarySource[];
 }
 
 /** `POST /api/libraries/{id}/sources` — add a file or folder of the models folder. */
-export async function addSource(library: LibraryId, request: NewSourceRequest): Promise<LibrarySource> {
-  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/sources`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(request),
-  })
-  if (!response.ok) throw await sentence(response, `adding returned ${response.status}`)
-  return (await response.json()) as LibrarySource
+export async function addSource(
+  library: LibraryId,
+  request: NewSourceRequest,
+): Promise<LibrarySource> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/sources`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+  if (!response.ok)
+    throw await sentence(response, `adding returned ${response.status}`);
+  return (await response.json()) as LibrarySource;
 }
 
 /** `POST …/sources/{source}/pictures` — a picture for every part found under it. */
-export async function addSourcePicture(library: LibraryId, source: string, picture: File): Promise<void> {
+export async function addSourcePicture(
+  library: LibraryId,
+  source: string,
+  picture: File,
+): Promise<void> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/sources/${encodeURIComponent(source)}/pictures`,
-    { method: 'POST', body: picture },
-  )
-  if (!response.ok) throw await sentence(response, `the picture returned ${response.status}`)
+    { method: "POST", body: picture },
+  );
+  if (!response.ok)
+    throw await sentence(response, `the picture returned ${response.status}`);
 }
 
 /** `DELETE …/sources/{source}` — take it out of the library; its files stay where they are. */
-export async function removeSource(library: LibraryId, source: string): Promise<void> {
+export async function removeSource(
+  library: LibraryId,
+  source: string,
+): Promise<void> {
   const response = await fetch(
     `/api/libraries/${encodeURIComponent(library)}/sources/${encodeURIComponent(source)}`,
-    { method: 'DELETE' },
-  )
-  if (!response.ok) throw await sentence(response, `removing returned ${response.status}`)
+    { method: "DELETE" },
+  );
+  if (!response.ok)
+    throw await sentence(response, `removing returned ${response.status}`);
 }
 
 /** `GET /api/settings/import`. */
 export async function fetchImportSettings(): Promise<ImportSettings> {
-  const response = await fetch('/api/settings/import')
-  if (!response.ok) throw new Error(`import settings returned ${response.status}`)
-  return (await response.json()) as ImportSettings
+  const response = await fetch("/api/settings/import");
+  if (!response.ok)
+    throw new Error(`import settings returned ${response.status}`);
+  return (await response.json()) as ImportSettings;
 }
 
 /** `PUT /api/settings/import`. */
-export async function saveImportSettings(settings: ImportSettings): Promise<ImportSettings> {
-  const response = await fetch('/api/settings/import', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+export async function saveImportSettings(
+  settings: ImportSettings,
+): Promise<ImportSettings> {
+  const response = await fetch("/api/settings/import", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(settings),
-  })
-  if (!response.ok) throw new Error(`import settings returned ${response.status}`)
-  return (await response.json()) as ImportSettings
+  });
+  if (!response.ok)
+    throw new Error(`import settings returned ${response.status}`);
+  return (await response.json()) as ImportSettings;
 }
 
 /** `POST /api/parts/{id}/describe` — "Fetch details" from the model's page; nothing is downloaded. */
-export async function describePart(part: PartId, url: string): Promise<ScanAccepted> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/describe`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url }),
-  })
-  if (!response.ok) throw await sentence(response, `fetching details returned ${response.status}`)
-  return (await response.json()) as ScanAccepted
+export async function describePart(
+  part: PartId,
+  url: string,
+): Promise<ScanAccepted> {
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/describe`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    },
+  );
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `fetching details returned ${response.status}`,
+    );
+  return (await response.json()) as ScanAccepted;
 }
 
 /** `GET /api/people` — everybody on the install (A4). */
 export async function fetchPeople(): Promise<Person[]> {
-  const response = await fetch('/api/people')
-  if (!response.ok) throw new Error(`people returned ${response.status}`)
-  return (await response.json()) as Person[]
+  const response = await fetch("/api/people");
+  if (!response.ok) throw new Error(`people returned ${response.status}`);
+  return (await response.json()) as Person[];
 }
 
 /** `POST /api/people` — admin only: a new account. */
 export async function createPerson(person: NewPerson): Promise<Person> {
-  const response = await fetch('/api/people', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const response = await fetch("/api/people", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(person),
-  })
-  if (!response.ok) throw await sentence(response, `making an account returned ${response.status}`)
-  return (await response.json()) as Person
+  });
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `making an account returned ${response.status}`,
+    );
+  return (await response.json()) as Person;
 }
 
 /** `PUT /api/people/{id}/password` — admin only. */
-export async function resetPassword(person: UserId, password: string): Promise<void> {
-  const response = await fetch(`/api/people/${encodeURIComponent(person)}/password`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password } satisfies NewPassword),
-  })
-  if (!response.ok) throw await sentence(response, `the reset returned ${response.status}`)
+export async function resetPassword(
+  person: UserId,
+  password: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/people/${encodeURIComponent(person)}/password`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password } satisfies NewPassword),
+    },
+  );
+  if (!response.ok)
+    throw await sentence(response, `the reset returned ${response.status}`);
 }
 
 /** `DELETE /api/people/{id}` — admin only; their libraries become the admin's. */
 export async function deletePerson(person: UserId): Promise<void> {
-  const response = await fetch(`/api/people/${encodeURIComponent(person)}`, { method: 'DELETE' })
-  if (!response.ok) throw await sentence(response, `deleting returned ${response.status}`)
+  const response = await fetch(`/api/people/${encodeURIComponent(person)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok)
+    throw await sentence(response, `deleting returned ${response.status}`);
 }
 
 /** `PUT /api/profile/password` — your own, given the current one. */
 export async function changePassword(change: PasswordChange): Promise<void> {
-  const response = await fetch('/api/profile/password', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+  const response = await fetch("/api/profile/password", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(change),
-  })
-  if (!response.ok) throw await sentence(response, `the change returned ${response.status}`)
+  });
+  if (!response.ok)
+    throw await sentence(response, `the change returned ${response.status}`);
 }
 
 /** `GET /api/parts/{id}/shares` — the owner's answer to who sees it. */
 export async function fetchShares(part: PartId): Promise<Shares> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/shares`)
-  if (!response.ok) throw new Error(`shares returned ${response.status}`)
-  return (await response.json()) as Shares
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/shares`);
+  if (!response.ok) throw new Error(`shares returned ${response.status}`);
+  return (await response.json()) as Shares;
 }
 
 /** `PUT /api/parts/{id}/shares` — share it with exactly these. */
 export async function saveShares(part: PartId, shares: Shares): Promise<void> {
-  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/shares`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(shares),
-  })
-  if (!response.ok) throw await sentence(response, `sharing returned ${response.status}`)
+  const response = await fetch(
+    `/api/parts/${encodeURIComponent(part)}/shares`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(shares),
+    },
+  );
+  if (!response.ok)
+    throw await sentence(response, `sharing returned ${response.status}`);
 }
 
 /** `GET /api/shared` — what other people shared with you. */
 export async function fetchShared(): Promise<PartsPage> {
-  const response = await fetch('/api/shared')
-  if (!response.ok) throw new Error(`shared returned ${response.status}`)
-  return (await response.json()) as PartsPage
+  const response = await fetch("/api/shared");
+  if (!response.ok) throw new Error(`shared returned ${response.status}`);
+  return (await response.json()) as PartsPage;
 }
 
 /** `GET /api/settings/server` — the port, and what fixes it (A5). */
 export async function fetchServerPort(): Promise<ServerPort> {
-  const response = await fetch('/api/settings/server')
-  if (!response.ok) throw new Error(`server settings returned ${response.status}`)
-  return (await response.json()) as ServerPort
+  const response = await fetch("/api/settings/server");
+  if (!response.ok)
+    throw new Error(`server settings returned ${response.status}`);
+  return (await response.json()) as ServerPort;
 }
 
 /** `PUT /api/settings/port` — move the app to another port; the old one answers a minute more. */
 export async function movePort(port: number): Promise<ServerPort> {
-  const response = await fetch('/api/settings/port', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+  const response = await fetch("/api/settings/port", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ port } satisfies MovePort),
-  })
-  if (!response.ok) throw await sentence(response, `moving the port returned ${response.status}`)
-  return (await response.json()) as ServerPort
+  });
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `moving the port returned ${response.status}`,
+    );
+  return (await response.json()) as ServerPort;
 }
 
 /**
@@ -1616,15 +1923,91 @@ export async function movePort(port: number): Promise<ServerPort> {
  * session cookie names no port, so the person arrives signed in.
  */
 export async function followPort(port: number, tries = 40): Promise<boolean> {
-  const there = `${window.location.protocol}//${window.location.hostname}:${port}`
+  const there = `${window.location.protocol}//${window.location.hostname}:${port}`;
   for (let i = 0; i < tries; i++) {
     try {
-      await fetch(`${there}/api/healthz`, { mode: 'no-cors', cache: 'no-store' })
-      window.location.assign(`${there}${window.location.pathname}${window.location.search}`)
-      return true
+      await fetch(`${there}/api/healthz`, {
+        mode: "no-cors",
+        cache: "no-store",
+      });
+      window.location.assign(
+        `${there}${window.location.pathname}${window.location.search}`,
+      );
+      return true;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250))
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
-  return false
+  return false;
+}
+
+/**
+ * The models folder (A6). Signed in, the routes are Settings'; in the wizard, before anybody can sign
+ * in, they are setup's and carry the setup code.
+ */
+function folderRoute(code: string | null, rest: string): [string, RequestInit] {
+  return code === null
+    ? [`/api/settings/storage${rest}`, {}]
+    : [`/api/setup/storage${rest}`, { headers: { "x-setup-code": code } }];
+}
+
+/** `GET /api/settings/storage` — the models folder, and whether it may be chosen. */
+export async function fetchModelsFolder(
+  code: string | null = null,
+): Promise<ModelsFolder> {
+  const [url, init] = folderRoute(code, "");
+  const response = await fetch(url, init);
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `the models folder returned ${response.status}`,
+    );
+  return (await response.json()) as ModelsFolder;
+}
+
+/** `GET /api/settings/storage/folders?path=` — one folder of the machine, for the picker. */
+export async function fetchHostFolders(
+  path: string | null,
+  code: string | null = null,
+): Promise<HostFolders> {
+  const [url, init] = folderRoute(
+    code,
+    `/folders${path === null ? "" : `?path=${encodeURIComponent(path)}`}`,
+  );
+  const response = await fetch(url, init);
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `listing folders returned ${response.status}`,
+    );
+  return (await response.json()) as HostFolders;
+}
+
+/** `PUT /api/settings/storage` — choose the models folder; Lapidary restarts on it. */
+export async function chooseModelsFolder(path: string): Promise<boolean> {
+  const response = await fetch("/api/settings/storage", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path } satisfies ChooseModelsFolder),
+  });
+  if (!response.ok)
+    throw await sentence(
+      response,
+      `choosing the folder returned ${response.status}`,
+    );
+  // 202: saved, and the server is restarting on it. 200: it already ran there.
+  return response.status === 202;
+}
+
+/** After a restart was asked for: wait for this page's server to stop, then follow it back on `port`. */
+export async function followRestart(port: number): Promise<boolean> {
+  for (let i = 0; i < 60; i++) {
+    try {
+      await fetch("/api/healthz", { cache: "no-store" });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } catch {
+      break;
+    }
+  }
+  return followPort(port, 160);
 }

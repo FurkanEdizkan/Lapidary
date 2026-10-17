@@ -4,6 +4,7 @@
 //! and without a `worker` feature, so the API image never linked the OCCT kernel. The kernel is
 //! gone, ingest takes about 200 ms a file, and a hobby library does not need four containers. The
 
+mod models_dir;
 mod ports;
 mod web;
 
@@ -39,8 +40,16 @@ struct Config {
     inbox_dir: Option<PathBuf>,
     /// Where `ingest_dir` and `inbox_dir` are mounted from on the host, for the reason
     /// `host_storage_root` gives. Ignored unless absolute.
+    /// `LAPIDARY_MODELS_DIR` as compose passes it, so set means the operator fixed the folder (A6).
+    #[serde(default, deserialize_with = "empty_str_as_none")]
     host_ingest_root: Option<PathBuf>,
     host_inbox_root: Option<PathBuf>,
+    /// The browse root's mount (A6), `/host` under compose: the models folder is chosen inside it.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    host_dir: Option<PathBuf>,
+    /// Where that mount is on the host, `/` unless `LAPIDARY_BROWSE_ROOT` says otherwise.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    host_browse_root: Option<PathBuf>,
     /// Where `blob_root` is mounted **from**, on the host.
     ///
     /// Nothing in this process reads a file through it, and nothing should: it exists to be
@@ -344,16 +353,43 @@ async fn main() -> Result<()> {
     let (port_handle, port_moves) = ports::handle(first.locked_by.clone(), first.port);
     let ports_db = db.clone();
     let shutdown = tokio_util::sync::CancellationToken::new();
+    // Cancelled when the models folder changes (A6): this process stops as it does for SIGTERM, and
+    // compose's `restart: unless-stopped` starts it again on the new folder.
+    let restart = tokio_util::sync::CancellationToken::new();
     let (app_router, worker, flusher) = {
         tracing::info!(parsers = %parsers_description(), "parsers");
         let blob_root = config
                 .blob_root
                 .clone()
                 .context("Could not start: LAPIDARY_BLOB_ROOT is not set. It names the store every model is kept in.")?;
-        let ingest_dir = config
+        let mount = config
                 .ingest_dir
                 .clone()
                 .context("Could not start: LAPIDARY_INGEST_DIR is not set. It names the folder the scan button reads.")?;
+        // The models folder (A6): fixed by deploy/.env, or chosen in the wizard or Settings, or the mount.
+        let host = config.host_dir.clone().map(|dir| models_dir::Host {
+            dir,
+            root: config
+                .host_browse_root
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/")),
+        });
+        let folder = models_dir::first(
+            &db,
+            mount,
+            config
+                .host_ingest_root
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            host.as_ref(),
+        )
+        .await;
+        tracing::info!(
+            folder = folder.shown.as_deref().unwrap_or("the deployment's mount"),
+            fixed_by = folder.locked_by.as_deref().unwrap_or("nothing"),
+            "models folder"
+        );
+        let ingest_dir = folder.dir.clone();
         // Required rather than defaulted: a default would put half-transferred files somewhere
         // nobody chose, and the one wrong answer here — the blob root itself — would put
         // incomplete bytes inside a store whose whole contract is that everything in it is
@@ -427,8 +463,9 @@ async fn main() -> Result<()> {
                 // compose's unset default rather than an operator's choice, and showing it as
                 // though it were one is the mistake this guards.
                 host_storage_root: absolute(config.host_storage_root.as_ref()),
-                host_ingest_root: absolute(config.host_ingest_root.as_ref()),
-                host_inbox_root: absolute(config.host_inbox_root.as_ref()),
+                host_ingest_root: folder.shown.clone(),
+                host_inbox_root: absolute(config.host_inbox_root.as_ref())
+                    .or_else(|| folder.shown.clone()),
                 ingest_dir,
                 inbox_dir,
             },
@@ -436,7 +473,14 @@ async fn main() -> Result<()> {
         )
         .merge(lapidary_api::events::router(hub, events_db))
         // The port's two routes, beside the listeners they move (A5).
-        .merge(ports::routes(ports_db.clone(), port_handle.clone()));
+        .merge(ports::routes(ports_db.clone(), port_handle.clone()))
+        .merge(models_dir::routes(
+            ports_db.clone(),
+            host,
+            folder,
+            absolute(config.host_storage_root.as_ref()),
+            restart.clone(),
+        ));
         let app = match &config.web_dir {
             Some(dist) => {
                 if !dist.join("index.html").is_file() {
@@ -463,7 +507,13 @@ async fn main() -> Result<()> {
         ports_db,
         shutdown.clone(),
     ));
-    shutdown_signal(shutdown.clone()).await;
+    tokio::select! {
+        () = shutdown_signal(shutdown.clone()) => {}
+        () = restart.cancelled() => {
+            tracing::info!("stopping to start again on the new models folder; if nothing restarts Lapidary, start it again");
+            shutdown.cancel();
+        }
+    }
     let served = served.await;
 
     // The listener is closed; the worker may still be finishing a file. Cancelling here
