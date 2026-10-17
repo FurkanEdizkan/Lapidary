@@ -296,6 +296,7 @@ fn unpack_7z(
             && (attributes & 0x400 != 0 || (attributes >> 16) & 0o170000 == 0o120000)
         {
             out.skipped.push(format!("{} (a link)", entry.name()));
+            std::io::copy(data, &mut std::io::sink())?;
             return Ok(true);
         }
         match judge(entry.name()) {
@@ -306,9 +307,15 @@ fn unpack_7z(
                     return Ok(false);
                 }
             },
-            Take::Skip(why) => out.skipped.push(why),
-            // Solid archives decode in order, so what isn't kept is still read past, by the crate.
-            Take::Ignore => {}
+            Take::Skip(why) => {
+                out.skipped.push(why);
+                std::io::copy(data, &mut std::io::sink())?;
+            }
+            // A solid archive is one stream: what isn't kept is still read through, or the next
+            // entry starts in the middle of this one and fails its checksum.
+            Take::Ignore => {
+                std::io::copy(data, &mut std::io::sink())?;
+            }
         }
         Ok(true)
     });
@@ -447,6 +454,8 @@ mod tests {
         let source = root.path().join("source");
         std::fs::create_dir_all(source.join("parts")).expect("source");
         std::fs::write(source.join("parts/hinge-pin.stl"), b"solid hinge").expect("stl");
+        // Ahead of the model in the one solid stream, as a pack's photos are.
+        std::fs::write(source.join("a-photo.jpg"), vec![7u8; 50_000]).expect("jpg");
         std::fs::write(source.join("notes.txt"), b"print at 0.2").expect("txt");
         sevenz_rust2::compress_to_path(&source, root.path().join("hinge.7z")).expect("7z");
         let unpacked = unpack(root.path(), "hinge.7z", SMALL).expect("unpacked");
