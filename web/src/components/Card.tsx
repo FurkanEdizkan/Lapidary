@@ -270,7 +270,7 @@ export function Card({
             >
               <Icon name="caretRight" />
             </button>
-            <span className="tabular absolute top-2 right-2 rounded-[var(--radius-ctl)] bg-[rgba(18,18,20,0.8)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)]">
+            <span className="tabular absolute top-[9%] right-[9%] z-10 rounded-[var(--radius-ctl)] bg-[rgba(18,18,20,0.8)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)]">
               {strings.parts.pictureOf((shown % total) + 1, total)}
             </span>
           </>
