@@ -21,11 +21,26 @@ vi.mock('three', async (original) => {
     domElement = document.createElement('canvas')
     setPixelRatio() {}
     setSize() {}
+    clear() {}
     render() {}
     dispose() {}
   }
   return { ...three, WebGLRenderer: StubRenderer }
 })
+// The axis gizmo draws its labels on a 2D canvas, which jsdom does not have.
+vi.mock('three/addons/helpers/ViewHelper.js', () => ({
+  ViewHelper: class {
+    center = { set: () => {} }
+    animating = false
+    setLabels() {}
+    render() {}
+    handleClick() {
+      return false
+    }
+    update() {}
+    dispose() {}
+  },
+}))
 vi.mock('three/addons/controls/OrbitControls.js', () => ({
   OrbitControls: class {
     target = { set: () => {} }

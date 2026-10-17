@@ -1770,6 +1770,21 @@ export const strings = {
     view: 'View in 3D',
     /** While the original file is on its way and being read. */
     loading: 'Loading the model…',
+    /** The view's aids (A12). Every figure they show is read from the mesh, so each carries its ≈. */
+    tools: 'View tools',
+    tool: { grid: 'Grid', size: 'Size', measure: 'Measure' },
+    axisX: 'X',
+    axisY: 'Y',
+    axisZ: 'Z',
+    mm: (value: string) => `${value} mm`,
+    gridStep: 'Grid squares ',
+    size: 'Size ',
+    by: ' × ',
+    measureFirst: 'Click a point on the model.',
+    measureSecond: 'Click a second point. Drag to turn the view.',
+    point: (i: number) => `${i === 0 ? 'A' : 'B'}  `,
+    distance: 'Distance ',
+    delta: 'ΔX, ΔY, ΔZ ',
     /** A model past what a browser can hold (A11). */
     tooBig:
       'This model has more than 50 million triangles, more than a browser can draw. Download it and open it in your own tool.',
