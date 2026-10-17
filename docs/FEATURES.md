@@ -65,6 +65,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Runs as the person who installed it (the owner of deploy/, or LAPIDARY_UID/GID), so their folders open with no permission command and what Lapidary writes is theirs; never root | A7, built |
 | `./install.sh`: Podman or Docker, deploy/.env written once with a random password, built, started, and the address and setup code printed. Lapidary's own files chosen in the wizard beside the models folder, copied there whole | A8, built |
 | The folder picker as a dialog: a path field, the path bar from the browse root, folders with icons, and New folder (one plain-named empty folder, never over anything, only where Lapidary may write) | A9, built |
+| Upload single files, and zip and 7z archives: kept as sent, their stl, obj and 3mf unpacked beside them into parts, never over a file; RAR and encrypted archives refused by name | A10, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped

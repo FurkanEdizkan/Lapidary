@@ -126,7 +126,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A7](A7.md) | Lapidary runs as the person who installed it | 12 | deploy + Rust | A6 | see [A7.md](A7.md) | — | merged `201bfb9` | `feat/run-as-owner` |
 | [A8](A8.md) | One-command install, and Lapidary's own files chosen in the wizard | 12 | deploy + Rust + web | A7 | see [A8.md](A8.md) | — | merged `d9436ac` | `feat/install-and-store` |
 | [A9](A9.md) | A folder browser worth the name, and New folder | 12 | Rust + web | A8 | see [A9.md](A9.md) | — | merged `30aca80` | `feat/folder-browser` |
-| [A10](A10.md) | Upload single files, and zip and 7z archives | 12 | Rust + web | A9 | see [A10.md](A10.md) | — | open | `feat/upload-archives` |
+| [A10](A10.md) | Upload single files, and zip and 7z archives | 12 | Rust + web | A9 | see [A10.md](A10.md) | — | merged `419f300` | `feat/upload-archives` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
