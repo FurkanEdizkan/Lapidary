@@ -125,7 +125,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A6](A6.md) | The models folder, chosen in the wizard and Settings | 12 | Rust + web + deploy | A5 | see [A6.md](A6.md) | — | merged `20322ba` | `feat/models-folder-picker` |
 | [A7](A7.md) | Lapidary runs as the person who installed it | 12 | deploy + Rust | A6 | see [A7.md](A7.md) | — | merged `201bfb9` | `feat/run-as-owner` |
 | [A8](A8.md) | One-command install, and Lapidary's own files chosen in the wizard | 12 | deploy + Rust + web | A7 | see [A8.md](A8.md) | — | merged `d9436ac` | `feat/install-and-store` |
-| [A9](A9.md) | A folder browser worth the name, and New folder | 12 | Rust + web | A8 | see [A9.md](A9.md) | — | open | `feat/folder-browser` |
+| [A9](A9.md) | A folder browser worth the name, and New folder | 12 | Rust + web | A8 | see [A9.md](A9.md) | — | merged `30aca80` | `feat/folder-browser` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
