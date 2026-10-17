@@ -318,7 +318,7 @@ fn cannot_open(shown: &str) -> String {
 
 fn cannot_write(shown: &str) -> String {
     format!(
-        "Lapidary can't write to {shown}, so it couldn't put uploads there or move a removed model into _removed. Run `sudo setfacl -R -m u:10001:rwX -m d:u:10001:rwX \"{shown}\"`, then reload."
+        "Lapidary can't write to {shown}, so it can't be the models folder: uploads go there, and removed models into its _removed. To use this folder, run `sudo setfacl -R -m u:10001:rwX -m d:u:10001:rwX \"{shown}\"`, then reload."
     )
 }
 
