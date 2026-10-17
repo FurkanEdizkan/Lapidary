@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Doorway, Field, INPUT } from '../components/Doorway'
 import { HEADLINE, LEAD, SECTION_TITLE, STANDING } from '../components/Page'
 import { LOGIN_PATH, Refused, fetchSetupStatus, runSetup } from '../lib/session'
+import { followPort, movePort } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { SetupStatus } from '../lib/types'
 
@@ -62,6 +63,9 @@ function Wizard({ status }: { status: SetupStatus }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [importLinks, setImportLinks] = useState(!status.importLinksForcedOff)
+  // The port this page was opened on (A5); changing it moves Lapidary there once the account exists.
+  const here = window.location.port === '' ? '' : window.location.port
+  const [port, setPort] = useState(here)
   const [problem, setProblem] = useState<string | null>(null)
 
   const finish = useMutation({
@@ -73,7 +77,20 @@ function Wizard({ status }: { status: SetupStatus }) {
         password,
         importLinks: status.importLinksForcedOff ? null : importLinks,
       }),
-    onSuccess: () => window.location.assign('/'),
+    onSuccess: async () => {
+      const to = Number(port)
+      if (port !== here && Number.isInteger(to) && to >= 1024) {
+        // Signed in now, so the move is allowed; a refusal (a fixed or busy port) leaves Lapidary
+        // where it is, and the person can move it from Settings.
+        try {
+          await movePort(to)
+          if (await followPort(to)) return
+        } catch {
+          // Stay on this port.
+        }
+      }
+      window.location.assign('/')
+    },
     onError: (error) => {
       // Every refusal the server can give is about the first step's fields.
       if (error instanceof Refused) setStep(1)
@@ -162,6 +179,16 @@ function Wizard({ status }: { status: SetupStatus }) {
         <section className="mt-6 flex flex-col gap-4">
           <h3 className={SECTION_TITLE}>{strings.setup.serverTitle}</h3>
           <p className="-mt-2 text-sm text-[var(--color-dim)]">{strings.setup.serverLead}</p>
+          <Field label={strings.setup.port} hint={strings.setup.portHint}>
+            <input
+              type="number"
+              min={1024}
+              max={65535}
+              value={port}
+              onChange={(event) => setPort(event.target.value)}
+              className={`${INPUT} tabular w-32`}
+            />
+          </Field>
           <dl className="flex flex-col gap-3 text-sm">
             <Fact label={strings.setup.modelsFolder} value={status.hostIngestRoot} />
             <Fact label={strings.setup.inbox} value={status.hostInboxRoot} />

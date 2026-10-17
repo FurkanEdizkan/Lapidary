@@ -26,6 +26,10 @@ services:
       # boundary issues. Note the consequence: moving to a PG19 image is a pg_upgrade job, not
       # a tag change — a bare tag bump would start an empty 19/docker beside the 18 data.
       - lapidary-db:/var/lib/postgresql:Z
+    # On the host's loopback only (A5): the app runs with host networking and reaches the database
+    # here; nothing off this machine can.
+    ports:
+      - "127.0.0.1:${LAPIDARY_DB_PORT:-5439}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lapidary} -d ${POSTGRES_DB:-lapidary}"]
       interval: 5s
@@ -50,8 +54,10 @@ services:
       context: ..
       dockerfile: deploy/Containerfile
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lapidary}
-      LAPIDARY_BIND: 0.0.0.0:8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-lapidary}:${POSTGRES_PASSWORD}@127.0.0.1:${LAPIDARY_DB_PORT:-5439}/${POSTGRES_DB:-lapidary}
+      # The port (A5). Unset, Lapidary takes 3000 or the first free port after it, keeps it, and
+      # Settings can move it with no restart; set, it is fixed here and Settings says so.
+      LAPIDARY_PORT: ${LAPIDARY_PORT:-}
       LAPIDARY_LOG: ${LAPIDARY_LOG:-info}
       # The browser app, built into the image by deploy/Containerfile's `web` stage.
       LAPIDARY_WEB_DIR: /usr/share/lapidary/web
@@ -98,9 +104,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      # The app and its API on one port. 3000 on the host, as the web container had.
-      - "${LAPIDARY_PORT:-3000}:8080"
+    # The app binds its own port on the host (A5): a container cannot change its own `ports:`
+    # mapping, and Settings moves the port live.
+    network_mode: host
     volumes:
       # The user's own storage root — a bind-mounted host directory, not a named volume. The
       # whole point of this layout (docs/DATA.md §1.1) is that a user can open it in a file

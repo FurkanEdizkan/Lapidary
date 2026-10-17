@@ -4,6 +4,7 @@
 //! and without a `worker` feature, so the API image never linked the OCCT kernel. The kernel is
 //! gone, ingest takes about 200 ms a file, and a hobby library does not need four containers. The
 
+mod ports;
 mod web;
 
 use anyhow::{Context, Result, bail};
@@ -16,8 +17,14 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 struct Config {
     database_url: String,
-    #[serde(default = "default_bind")]
-    bind: String,
+    /// A whole address to listen on, which fixes the port (A5). Unset in a container: the port is
+    /// `port`, or this install's own (`ports.rs`).
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    bind: Option<String>,
+    /// `LAPIDARY_PORT`: the port, fixed by the operator. Unset, the install keeps its own and Settings
+    /// may move it.
+    #[serde(default, deserialize_with = "empty_str_as_none")]
+    port: Option<u16>,
     /// Gone. Read only so that a compose file from before S1 or S3, which still sets it, is refused
     /// with a sentence saying what changed rather than starting as something it no longer is.
     role: Option<String>,
@@ -138,10 +145,6 @@ where
     }
 
     deserializer.deserialize_any(Knob(std::marker::PhantomData))
-}
-
-fn default_bind() -> String {
-    "0.0.0.0:8080".to_owned()
 }
 
 /// What this build can read, for the startup log. Asked of `lapidary-cad` rather than written out,
@@ -330,16 +333,16 @@ async fn main() -> Result<()> {
         Err(err) => bail!("Could not start: preparing first-run setup failed: {err}"),
     }
 
-    let listener = tokio::net::TcpListener::bind(&config.bind)
-        .await
-        .with_context(|| {
-            format!(
-                "Could not bind {}. Another process may already hold that port.",
-                config.bind
-            )
-        })?;
-
-    tracing::info!(bind = %config.bind, "lapidary-server listening");
+    // The port (A5): the operator's when they fixed one, else this install's, else the first free one.
+    let first = ports::first(&db, config.bind.as_deref(), config.port).await?;
+    tracing::info!(
+        port = first.port,
+        fixed_by = first.locked_by.as_deref().unwrap_or("nothing"),
+        "Lapidary is at http://localhost:{}",
+        first.port
+    );
+    let (port_handle, port_moves) = ports::handle(first.locked_by.clone(), first.port);
+    let ports_db = db.clone();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let (app_router, worker, flusher) = {
         tracing::info!(parsers = %parsers_description(), "parsers");
@@ -431,7 +434,9 @@ async fn main() -> Result<()> {
             },
             Role::Api,
         )
-        .merge(lapidary_api::events::router(hub, events_db));
+        .merge(lapidary_api::events::router(hub, events_db))
+        // The port's two routes, beside the listeners they move (A5).
+        .merge(ports::routes(ports_db.clone(), port_handle.clone()));
         let app = match &config.web_dir {
             Some(dist) => {
                 if !dist.join("index.html").is_file() {
@@ -450,9 +455,16 @@ async fn main() -> Result<()> {
         (app, Some(worker), Some((flusher, last)))
     };
 
-    let served = axum::serve(listener, app_router)
-        .with_graceful_shutdown(shutdown_signal(shutdown.clone()))
-        .await;
+    let served = tokio::spawn(ports::run(
+        first.listener,
+        port_handle,
+        port_moves,
+        app_router,
+        ports_db,
+        shutdown.clone(),
+    ));
+    shutdown_signal(shutdown.clone()).await;
+    let served = served.await;
 
     // The listener is closed; the worker may still be finishing a file. Cancelling here
     // as well as in `shutdown_signal` covers the case where `serve` returned for some

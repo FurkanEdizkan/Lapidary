@@ -1,5 +1,7 @@
 import type { Sort } from './preferences'
 import type {
+  MovePort,
+  ServerPort,
   NewPassword,
   NewPerson,
   PasswordChange,
@@ -1588,4 +1590,41 @@ export async function fetchShared(): Promise<PartsPage> {
   const response = await fetch('/api/shared')
   if (!response.ok) throw new Error(`shared returned ${response.status}`)
   return (await response.json()) as PartsPage
+}
+
+/** `GET /api/settings/server` — the port, and what fixes it (A5). */
+export async function fetchServerPort(): Promise<ServerPort> {
+  const response = await fetch('/api/settings/server')
+  if (!response.ok) throw new Error(`server settings returned ${response.status}`)
+  return (await response.json()) as ServerPort
+}
+
+/** `PUT /api/settings/port` — move the app to another port; the old one answers a minute more. */
+export async function movePort(port: number): Promise<ServerPort> {
+  const response = await fetch('/api/settings/port', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ port } satisfies MovePort),
+  })
+  if (!response.ok) throw await sentence(response, `moving the port returned ${response.status}`)
+  return (await response.json()) as ServerPort
+}
+
+/**
+ * Wait until the app answers on `port`, then go there, on the same page (A5). Another port is another
+ * origin, so the check is a `no-cors` request: its answer cannot be read, only that one came. The
+ * session cookie names no port, so the person arrives signed in.
+ */
+export async function followPort(port: number, tries = 40): Promise<boolean> {
+  const there = `${window.location.protocol}//${window.location.hostname}:${port}`
+  for (let i = 0; i < tries; i++) {
+    try {
+      await fetch(`${there}/api/healthz`, { mode: 'no-cors', cache: 'no-store' })
+      window.location.assign(`${there}${window.location.pathname}${window.location.search}`)
+      return true
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  return false
 }

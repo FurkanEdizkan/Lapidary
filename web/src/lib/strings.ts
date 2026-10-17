@@ -140,6 +140,15 @@ export const strings = {
     remove: 'Remove',
     saveFailed: 'The key was not saved. Check that the server is running, then try again.',
     checkFailed: 'The check could not run. Check that the server is running, then try again.',
+    serverHeading: 'Server',
+    port: 'Port',
+    portHint: 'Lapidary moves to the new port with no restart. This page follows it; other open tabs keep working for a minute.',
+    portLocked: (by: string) => `Set by ${by} in deploy/.env. Change it there and run docker compose up -d.`,
+    portAdminsOnly: 'Only an admin can change the port.',
+    movePort: 'Move',
+    moving: (port: number) => `Moving Lapidary to port ${port}…`,
+    moveLost: (port: number) =>
+      `Lapidary moved to port ${port} but this page could not reach it. Open it on port ${port} yourself.`,
     importHeading: 'Adding models',
     fetchDetails: 'Fetch a model’s details from its page when I add it with a link',
     fetchDetailsHint:
@@ -224,6 +233,8 @@ export const strings = {
     serverTitle: 'This server',
     serverLead:
       'Where Lapidary reads your models and keeps its own files. These come from deploy/.env, and change there, followed by `docker compose up -d`.',
+    port: 'Port',
+    portHint: 'Where Lapidary answers on this machine. Change it now or later in Settings, with no restart.',
     modelsFolder: 'Your models folder',
     inbox: 'Uploads and imports',
     store: 'Lapidary’s own files',

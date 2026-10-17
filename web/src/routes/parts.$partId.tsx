@@ -15,6 +15,7 @@ import { Menu } from '../components/Menu'
 import { closeMenu } from '../components/Dialog'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { ShareDialog } from '../components/ShareDialog'
+import { PartSkeleton } from '../components/Skeleton'
 import { strings } from '../lib/strings'
 import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
@@ -74,7 +75,7 @@ export function PartPage({ partId }: { partId: string }) {
           {strings.detail.back}
         </Link>
         {part.isPending ? (
-          <p className="mt-6 text-[var(--color-muted)]">{strings.detail.loading}</p>
+          <PartSkeleton label={strings.detail.loading} />
         ) : part.isError ? (
           <p className="mt-6 max-w-prose text-[var(--color-muted)]">{strings.detail.failed}</p>
         ) : (

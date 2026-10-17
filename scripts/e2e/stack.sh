@@ -205,7 +205,7 @@ CORPUS_SLICE=${CORPUS_SLICE:-400}
 # would then chown and delete.
 COMPOSE_UNSET=()
 for var in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB LAPIDARY_LOG \
-  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR LAPIDARY_MODELS_DIR \
+  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR LAPIDARY_MODELS_DIR LAPIDARY_DB_PORT LAPIDARY_PORT \
   LAPIDARY_PORT_WEB LAPIDARY_PORT_API LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER \
   LAPIDARY_WORKER_CONCURRENCY LAPIDARY_JOB_LEASE_SECS LAPIDARY_KERNEL_TIMEOUT \
   LAPIDARY_JOB_POLL_SECS LAPIDARY_WORKER_ID LAPIDARY_SETUP_CODE LAPIDARY_COOKIE_SECURE; do
@@ -405,6 +405,8 @@ LAPIDARY_LOG=info
 LAPIDARY_STORAGE_ROOT=$STORE
 # The one models folder (A2).
 LAPIDARY_MODELS_DIR=$INGEST
+# The database's loopback port (A5): the lane's spare api port, since the api is the app's own port now.
+LAPIDARY_DB_PORT=$LAPIDARY_PORT_API
 # Interpolated into scripts/e2e/e2e.override.yaml, which is the only thing that moves the published
 # ports off deploy/compose.yaml's literals.
 LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB
@@ -456,9 +458,13 @@ verify_ports() {
 import json, os, sys
 
 resolved = json.load(sys.stdin)
-want = {os.environ["LAPIDARY_PORT_WEB"]}
+# Since A5 the app runs on host networking and binds the lane web port itself; the only port
+# published is the database one, on loopback, and it is the lane own.
+want = {os.environ["LAPIDARY_PORT_API"]}
 published = set()
 mounts = {}
+app = resolved.get("services", {}).get("app", {})
+app_port = str((app.get("environment") or {}).get("LAPIDARY_PORT", ""))
 for name, service in resolved.get("services", {}).items():
     for port in service.get("ports") or []:
         published.add(str(port.get("published")))
@@ -469,6 +475,10 @@ for name, service in resolved.get("services", {}).items():
 problems = []
 if published != want:
     problems.append(f"published host ports are {sorted(published)}; this lane owns {sorted(want)}")
+if app_port != os.environ["LAPIDARY_PORT_WEB"]:
+    problems.append("the app would bind " + (app_port or "its own default") + "; this lane owns " + os.environ["LAPIDARY_PORT_WEB"])
+if app.get("network_mode") != "host":
+    problems.append("the app is not on host networking, so nothing would bind the lane port")
 for forbidden in ("3000", "8080", "8081", "8082"):
     if forbidden in published:
         problems.append(f"{forbidden} is published — that is deploy/compose.yaml`s literal, and the owner`s")
@@ -478,7 +488,7 @@ for path in (os.environ["STORE"], os.environ["INGEST"], os.environ["INBOX"]):
 for path in mounts:
     if not path.startswith(os.path.dirname(os.environ["STORE"])):
         problems.append(f"{path} is bind-mounted from outside this lane`s target/e2e directory")
-print("  ports " + ", ".join(sorted(published)) + "; bind mounts " + ", ".join(sorted(mounts)))
+print("  app on " + app_port + ", database on " + ", ".join(sorted(published)) + "; bind mounts " + ", ".join(sorted(mounts)))
 for problem in problems:
     print("  " + problem, file=sys.stderr)
 sys.exit(1 if problems else 0)
