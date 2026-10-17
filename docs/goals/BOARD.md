@@ -108,6 +108,23 @@ uploads and imports; **delete removes from the library and never touches the fil
 
 **Migration numbers:** 0060 M2 · 0061 M3 · 0062 M4.
 
+## Accounts — several people, one install
+
+Owner, 2026-10-17: local accounts set up by a first-run wizard; every person starts with an empty library and sees
+only their own models and the ones shared with them; one read-write storage location where removed files are moved
+to `_removed/` and never deleted; the port is picked at first start and moved live from Settings. The approved plan
+is [`ACCOUNTS.md`](ACCOUNTS.md).
+
+| Id | Goal | Wave | Kind | Depends on | Owns | Migrations | Status | Branch |
+|---|---|---|---|---|---|---|---|---|
+| [A1](A1.md) | Accounts, sign-in and the setup wizard | 10 | Rust + web | M5 | see [ACCOUNTS.md](ACCOUNTS.md) | 0063 | open | `feat/accounts` |
+| [A2](A2.md) | One storage location: browse, add, remove to `_removed/` | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | 0064 | open | `feat/one-storage` |
+| [A3](A3.md) | Models per person | 11 | Rust + web | A2 | see [ACCOUNTS.md](ACCOUNTS.md) | 0065 | open | `feat/models-per-person` |
+| [A4](A4.md) | Sharing and the accounts admin | 11 | Rust + web | A3 | see [ACCOUNTS.md](ACCOUNTS.md) | 0066 | open | `feat/sharing-users` |
+| [A5](A5.md) | The port, moved live, and skeleton pages | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | — | open | `feat/live-port` |
+
+**Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
+
 ## Backlog — recorded, not scheduled
 
 Each is a candidate goal for a later board; the source is `docs/ROADMAP.md` or a `ponytail:` comment.
