@@ -642,6 +642,7 @@ mod tests {
     // clean 404, while `lapidary_ingest::scan` enqueues blind and answers 500 on the foreign key.
     #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
     async fn the_api_role_router_serves_its_own_scan_and_not_ingests(pool: sqlx::PgPool) {
+        let pool_for_setup = pool.clone();
         let app = router(
             AppState {
                 db: pool,
@@ -659,6 +660,34 @@ mod tests {
             Role::Api,
         );
 
+        // Signed in the way a person is (A1): the logged code, the wizard's account, its cookie.
+        let code = lapidary_api::auth::prepare_setup(&pool_for_setup)
+            .await
+            .expect("prepares")
+            .expect("nobody has an account yet");
+        let made = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"code":"{code}","username":"furkan","password":"correct horse battery"}}"#
+                    )))
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(made.status(), StatusCode::OK);
+        let cookie = made
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .expect("setup signs the admin in")
+            .to_owned();
+
         // Mounted: the browser's scan button has a route to reach.
         let seeded = app
             .clone()
@@ -666,6 +695,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/libraries/{SEEDED_LIBRARY}/scan"))
+                    .header("cookie", &cookie)
                     .body(Body::empty())
                     .expect("builds"),
             )
@@ -680,6 +710,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/libraries/01931b6e-0000-7000-8000-00000000dead/scan")
+                    .header("cookie", &cookie)
                     .body(Body::empty())
                     .expect("builds"),
             )
