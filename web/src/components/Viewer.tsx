@@ -14,7 +14,7 @@ import { downloadUrl } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { PartDetail } from '../lib/types'
 import { frameBox, type Vec3 } from '../lib/viewer-math'
-import { Unviewable, parseMesh } from './mesh'
+import { Unviewable, loadMesh, meshFrom } from './mesh'
 import { contactShadow, disposeModel, partMaterial, shadowMaterial, studioLights } from './studio'
 
 /** What a view can be told. One part, shown once; everything else about it is the pointer's. */
@@ -125,6 +125,11 @@ export default function Viewer({
     }
     if (view.current === null) view.current = createView(node, () => setPainted(true))
     const current = view.current
+    // The model last drawn is kept (A11): the quick look, then the part's page, read it once.
+    if (lastDrawn?.revision === revision) {
+      current.show(meshFrom(lastDrawn.positions))
+      return
+    }
     const aborter = new AbortController()
     let stale = false
     // `?variant=original` returns the ingested bytes, byte for byte. Fetched rather than handed
@@ -135,9 +140,12 @@ export default function Viewer({
         if (!response.ok) throw new Error(String(response.status))
         return response.arrayBuffer()
       })
-      .then((bytes) => {
-        if (stale) return
-        current.show(parseMesh(format, bytes))
+      // Read off the page's thread (A11), so a large model never freezes the screen while it loads.
+      .then((bytes) => (stale ? null : loadMesh(format, bytes, aborter.signal)))
+      .then((mesh) => {
+        if (stale || mesh === null) return
+        lastDrawn = { revision, positions: mesh.geometry.getAttribute('position').array as Float32Array }
+        current.show(mesh)
       })
       .catch((error: unknown) => {
         // An abort is this effect being replaced, not a failure anyone needs told about.
@@ -231,6 +239,17 @@ export default function Viewer({
       )}
     </div>
   )
+}
+
+/**
+ * The positions of the last model drawn, by revision (A11). One model, because a large one is hundreds of
+ * megabytes. ponytail: a single slot; a small cache of several is the upgrade if people flick between parts.
+ */
+let lastDrawn: { revision: PartDetail['revision']; positions: Float32Array } | null = null
+
+/** For tests, which draw one part many times. */
+export function forgetLastDrawn() {
+  lastDrawn = null
 }
 
 function createView(node: HTMLElement, onFirstFrame: () => void): View {
