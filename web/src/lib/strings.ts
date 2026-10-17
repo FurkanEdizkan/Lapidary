@@ -1770,6 +1770,9 @@ export const strings = {
     view: 'View in 3D',
     /** While the original file is on its way and being read. */
     loading: 'Loading the model…',
+    /** A model past what a browser can hold (A11). */
+    tooBig:
+      'This model has more than 50 million triangles, more than a browser can draw. Download it and open it in your own tool.',
     /** Beside the picture where the browser cannot draw 3D, so the missing button is explained. */
     noWebGL: 'This browser cannot draw 3D here, so there is no view. The download is unaffected.',
     failed:

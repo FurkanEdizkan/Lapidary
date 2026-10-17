@@ -38,10 +38,12 @@ vi.mock('three/addons/controls/OrbitControls.js', () => ({
 const { parse } = vi.hoisted(() => ({ parse: vi.fn() }))
 vi.mock('./mesh', async (original) => {
   const mesh = await original<typeof import('./mesh')>()
-  return { ...mesh, parseMesh: parse }
+  return { ...mesh, parseMesh: parse, loadMesh: async (format: string, bytes: ArrayBuffer) => parse(format, bytes) }
 })
 
-afterEach(() => {
+afterEach(async () => {
+  // The viewer keeps the last model it drew (A11), and every test here draws the same part.
+  ;(await import('./Viewer')).forgetLastDrawn()
   parse.mockReset()
   vi.unstubAllGlobals()
 })

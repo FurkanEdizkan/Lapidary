@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { Box3 } from 'three'
 import { zipSync } from 'three/addons/libs/fflate.module.js'
-import { parseMesh } from './mesh'
+import { parseMesh, slices } from './mesh'
 
 /**
  * `node:fs`, reached the way `contrast.test.ts` reaches it and for its reasons: the specifier is
@@ -58,9 +58,7 @@ test('every format loads at the box bbox-mm.json states for it', () => {
     for (const axis of [0, 1, 2]) {
       // 0.01 mm: the fixtures are written to four decimal places and three stores positions
       // as f32, so the two sides agree to well inside a hundredth of a millimetre or not at all.
-      expect(Math.abs(got[axis]! - want![axis]!), `${name} axis ${axis}: got ${got}, stated ${want}`).toBeLessThan(
-        0.01,
-      )
+      expect(Math.abs(got[axis]! - want![axis]!), `${name} axis ${axis}: got ${got}, stated ${want}`).toBeLessThan(0.01)
     }
   }
 })
@@ -166,4 +164,51 @@ test('a 3MF is loaded at millimetres whatever unit it declares', () => {
  */
 test('a format with no loader is refused in words that name it', () => {
   expect(() => parseMesh('step', new ArrayBuffer(8))).toThrow(/STEP/i)
+})
+
+/**
+ * A11: how Bambu Studio and Orca save every project. The build names an object whose components point,
+ * with `p:path`, into other model parts that each number their objects from 1, each with a transform.
+ * `tmf.rs`'s `components_in_other_model_parts_are_followed_by_path` holds the server to the same box.
+ */
+test('a component in another model part is followed by its path, with its transform', () => {
+  const tri = (dx: number) =>
+    `<vertices><vertex x="${dx}" y="0" z="0"/><vertex x="${dx + 10}" y="0" z="0"/><vertex x="${dx}" y="5" z="2"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles>`
+  const main = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+ <resources>
+  <object id="1" type="model"><mesh>${tri(0)}</mesh></object>
+  <object id="2" type="model"><components>
+   <component p:path="/3D/Objects/object_7.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 100 0 0"/>
+  </components></object>
+ </resources>
+ <build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 30"/></build>
+</model>`
+  const other = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>
+ <object id="1" type="model"><mesh>${tri(0)}</mesh></object>
+</resources></model>`
+  const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>`
+  const zip = zipSync({
+    '_rels/.rels': bytes(rels),
+    '3D/3dmodel.model': bytes(main),
+    '3D/Objects/object_7.model': bytes(other),
+  })
+  const box = new Box3().setFromObject(parseMesh('3mf', Uint8Array.from(zip).buffer))
+  // Only the component is drawn — the main part's own object 1 is named by nothing in the build —
+  // moved 100 along x by the component and 30 up z by the item.
+  expect(box.min.toArray()).toEqual([100, 0, 30])
+  expect(box.max.toArray()).toEqual([110, 5, 32])
+})
+
+/** A11: a model part is read in slices that each end on a `>`, so no tag is cut in two. */
+test('slices of a model part never cut a tag', () => {
+  const xml = '<vertex x="1" y="2" z="3"/>'.repeat(50)
+  const parts = [...slices(bytes(xml), 7)]
+  expect(parts.length).toBeGreaterThan(1)
+  expect(parts.join('')).toBe(xml)
+  for (const part of parts) expect(part.endsWith('>')).toBe(true)
 })
