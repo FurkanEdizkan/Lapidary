@@ -101,4 +101,9 @@ storagePath: string | null,
 /**
  * Which directory `storagePath` is relative to, as `PartCard::file_root`.
  */
-fileRoot: FileRoot | null, createdAt: string, updatedAt: string, };
+fileRoot: FileRoot | null, createdAt: string, updatedAt: string, 
+/**
+ * `false` for a model somebody shared with this person (A4): they may look and download, and
+ * the page offers nothing that changes it.
+ */
+yours: boolean, };

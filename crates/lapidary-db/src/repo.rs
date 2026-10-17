@@ -650,7 +650,7 @@ impl PgBlobs {
              JOIN revision r ON r.id = d.revision_id \
              JOIN part p ON p.id = r.part_id \
              JOIN library l ON l.id = p.library_id \
-             WHERE d.blake3 = $1 AND p.owner_id = $2 LIMIT 1",
+             WHERE d.blake3 = $1 AND (p.owner_id = $2 OR p.shared_with_everyone OR EXISTS (SELECT 1 FROM part_share s WHERE s.part_id = p.id AND s.user_id = $2)) LIMIT 1",
         )
         .bind(hash.to_hex())
         .bind(viewer.as_uuid())
@@ -1905,15 +1905,102 @@ impl PgParts {
     /// What `user` may do with a part (A3): `None` is nothing — no such part, or somebody else's — which
     /// the API answers exactly as it answers an unknown id.
     pub async fn part_access(&self, part: PartId, user: UserId) -> Result<Option<Access>, DbError> {
-        let owner: Option<Option<Uuid>> =
-            sqlx::query_scalar("SELECT owner_id FROM part WHERE id = $1")
-                .bind(part.as_uuid())
-                .fetch_optional(&self.0)
-                .await?;
-        Ok(match owner.flatten() {
-            Some(owner) if owner == user.as_uuid() => Some(Access::Owner),
+        // Theirs, or shared with them or with everybody (A4).
+        let found: Option<(Option<Uuid>, bool)> = sqlx::query_as(
+            "SELECT p.owner_id, p.shared_with_everyone OR EXISTS \
+               (SELECT 1 FROM part_share s WHERE s.part_id = p.id AND s.user_id = $2) \
+             FROM part p WHERE p.id = $1",
+        )
+        .bind(part.as_uuid())
+        .bind(user.as_uuid())
+        .fetch_optional(&self.0)
+        .await?;
+        Ok(match found {
+            Some((Some(owner), _)) if owner == user.as_uuid() => Some(Access::Owner),
+            Some((Some(_), true)) => Some(Access::Reader),
             _ => None,
         })
+    }
+
+    /// The parts shared with `user` by somebody else, newest first (A4): the Shared with me grid.
+    pub async fn shared_with(&self, user: UserId, limit: u32) -> Result<Vec<PartRow>, DbError> {
+        let rows: Vec<GridRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            grid_columns!(),
+            " FROM part p ",
+            grid_laterals!(),
+            " WHERE p.owner_id IS NOT NULL AND p.owner_id <> $1 \
+               AND (p.shared_with_everyone OR EXISTS \
+                    (SELECT 1 FROM part_share s WHERE s.part_id = p.id AND s.user_id = $1)) \
+             ORDER BY p.created_at DESC, p.id DESC LIMIT $2",
+        ))
+        .bind(user.as_uuid())
+        .bind(i64::from(limit))
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter().map(to_part_row).collect()
+    }
+
+    /// Who a part is shared with (A4): everybody, and the chosen people, by name.
+    pub async fn shares(&self, part: PartId) -> Result<(bool, Vec<crate::UserRow>), DbError> {
+        let everyone: bool =
+            sqlx::query_scalar("SELECT shared_with_everyone FROM part WHERE id = $1")
+                .bind(part.as_uuid())
+                .fetch_optional(&self.0)
+                .await?
+                .unwrap_or(false);
+        let people: Vec<(Uuid, String, Option<String>, bool)> = sqlx::query_as(
+            "SELECT u.id, u.username, u.display_name, u.is_admin FROM part_share s \
+             JOIN app_user u ON u.id = s.user_id WHERE s.part_id = $1 ORDER BY u.username",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+        Ok((
+            everyone,
+            people
+                .into_iter()
+                .map(|(id, username, display_name, is_admin)| crate::UserRow {
+                    id: UserId::from_uuid(id),
+                    username,
+                    display_name,
+                    is_admin,
+                })
+                .collect(),
+        ))
+    }
+
+    /// Share a part with exactly these: everybody or not, and these people (A4). Replaces what was.
+    pub async fn set_shares(
+        &self,
+        part: PartId,
+        everyone: bool,
+        people: &[UserId],
+    ) -> Result<(), DbError> {
+        let mut tx = self.0.begin().await?;
+        sqlx::query("UPDATE part SET shared_with_everyone = $2 WHERE id = $1")
+            .bind(part.as_uuid())
+            .bind(everyone)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM part_share WHERE part_id = $1")
+            .bind(part.as_uuid())
+            .execute(&mut *tx)
+            .await?;
+        let ids: Vec<Uuid> = people.iter().map(|person| person.as_uuid()).collect();
+        // Never with its own owner, and only with people who exist.
+        sqlx::query(
+            "INSERT INTO part_share (part_id, user_id) \
+             SELECT $1, u.id FROM app_user u WHERE u.id = ANY($2) \
+               AND u.id IS DISTINCT FROM (SELECT owner_id FROM part WHERE id = $1) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(part.as_uuid())
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Whether a part with this id exists at all, whoever's it is.
@@ -3354,7 +3441,7 @@ impl PgParts {
     ) -> Result<bool, DbError> {
         let reachable: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM part_image i JOIN part p ON p.id = i.part_id \
-             WHERE i.blake3 = $1 AND p.owner_id = $2)",
+             WHERE i.blake3 = $1 AND (p.owner_id = $2 OR p.shared_with_everyone OR EXISTS (SELECT 1 FROM part_share s WHERE s.part_id = p.id AND s.user_id = $2)))",
         )
         .bind(hash.to_hex())
         .bind(viewer.as_uuid())
