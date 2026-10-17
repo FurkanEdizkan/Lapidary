@@ -82,7 +82,8 @@ export function PartPage({ partId }: { partId: string }) {
             part={part.data}
             // The page, not the dialog, is where a form that takes typing belongs — the same
             // line `actions` draws below.
-            recordable
+            // Only the owner edits (A4): a shared model is looked at and downloaded.
+            recordable={part.data.yours}
             layout="page"
             actions={
               part.data.yours ? (
