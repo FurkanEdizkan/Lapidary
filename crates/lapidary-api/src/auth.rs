@@ -554,6 +554,12 @@ fn normal(code: &str) -> String {
         .collect()
 }
 
+/// Whether a request may use the wizard's own routes outside this crate (A6's folder picker): nobody
+/// has an account yet, and it carries the setup code.
+pub async fn setup_open(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
+    Ok(!PgAccounts(db.clone()).any_user().await? && code_matches(db, typed).await?)
+}
+
 async fn code_matches(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
     let typed = normal(typed);
     if typed.is_empty() {

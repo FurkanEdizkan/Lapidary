@@ -183,6 +183,46 @@ impl PgSources {
         tx.commit().await?;
         Ok(Some(parts.len() as u64))
     }
+
+    /// What ties the models folder to where it is now (A6), for choosing another one. `own` are
+    /// Lapidary's own top-level folders in it (`examples`, `uploads`, `imports`).
+    pub async fn folder_use(&self, own: &[&str]) -> Result<FolderUse, DbError> {
+        let own: Vec<String> = own.iter().map(|name| (*name).to_owned()).collect();
+        let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM library_source")
+            .fetch_one(&self.0)
+            .await?;
+        let in_place: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM file WHERE root IN ('library', 'inbox') \
+             AND NOT split_part(storage_path, '/', 1) = ANY($1)",
+        )
+        .bind(&own)
+        .fetch_one(&self.0)
+        .await?;
+        let own_files: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT storage_path FROM file WHERE root IN ('library', 'inbox') AND on_disk \
+             AND split_part(storage_path, '/', 1) = ANY($1) ORDER BY storage_path",
+        )
+        .bind(&own)
+        .fetch_all(&self.0)
+        .await?;
+        Ok(FolderUse {
+            sources,
+            in_place,
+            own_files,
+        })
+    }
+}
+
+/// See [`PgSources::folder_use`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderUse {
+    /// Files and folders people added from the models folder.
+    pub sources: i64,
+    /// Model files read where they are in it, outside Lapidary's own folders.
+    pub in_place: i64,
+    /// Files Lapidary wrote under its own folders, relative to the models folder: what a new
+    /// folder gets a copy of.
+    pub own_files: Vec<String>,
 }
 
 #[cfg(test)]

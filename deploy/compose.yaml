@@ -70,8 +70,12 @@ services:
       # Your models folder (A2): the one storage location. Lapidary reads each model where it is,
       # writes uploads under `uploads/<you>/` and imports under `imports/` once, and moves a
       # removed model's file into `_removed/` — it never deletes a file there.
+      # The mount below, used until the wizard or Settings chooses a folder inside /host (A6). Uploads
+      # and imports go to whichever is in use.
       LAPIDARY_INGEST_DIR: /models
-      LAPIDARY_INBOX_DIR: /models
+      # The browse root (A6): what the wizard and Settings choose the models folder from.
+      LAPIDARY_HOST_DIR: /host
+      LAPIDARY_HOST_BROWSE_ROOT: ${LAPIDARY_BROWSE_ROOT:-/}
       # The bundled examples, copied into the image by deploy/Containerfile. Seeded once, on
       # the first start of a library nothing has ever run in — see `lapidary_ingest::seed`.
       # Unset it to start with an empty grid.
@@ -82,9 +86,9 @@ services:
       # absolute, so the `../storage` fallback is harmless; set LAPIDARY_STORAGE_ROOT to an
       # absolute path, as .env.example recommends, and the paths appear.
       LAPIDARY_HOST_STORAGE_ROOT: ${LAPIDARY_STORAGE_ROOT:-../storage}
-      # The same, for your models folder: what a card's "show in folder" path starts with.
-      LAPIDARY_HOST_INGEST_ROOT: ${LAPIDARY_MODELS_DIR:-../models}
-      LAPIDARY_HOST_INBOX_ROOT: ${LAPIDARY_MODELS_DIR:-../models}
+      # The same, for your models folder: what a card's "show in folder" path starts with. Set, it also
+      # fixes the folder, and the wizard and Settings say so instead of offering a choice (A6).
+      LAPIDARY_HOST_INGEST_ROOT: ${LAPIDARY_MODELS_DIR:-}
       # Importing a model from its Printables, Thingiverse or MyMiniFactory page (F3). `false` turns
       # it off — the Settings page says so and nothing contacts those sites — for an install that
       # must make no outbound request beyond a picture somebody pastes.
@@ -107,6 +111,9 @@ services:
     # The app binds its own port on the host (A5): a container cannot change its own `ports:`
     # mapping, and Settings moves the port live.
     network_mode: host
+    # Choosing the models folder stops the process so it starts again on it (A6); a crash restarts
+    # it too. `docker compose stop` still stops it.
+    restart: unless-stopped
     volumes:
       # The user's own storage root — a bind-mounted host directory, not a named volume. The
       # whole point of this layout (docs/DATA.md §1.1) is that a user can open it in a file
@@ -126,6 +133,11 @@ services:
       # it never deletes one (`cargo xtask check-deploy` keeps the code that could out of the API).
       # It runs as uid 10001, so that user needs write access to the folder — see .env.example.
       - ${LAPIDARY_MODELS_DIR:-../models}:/models:z
+      # The browse root (A6), the whole machine unless LAPIDARY_BROWSE_ROOT narrows it. Read-write so
+      # the folder chosen inside it can take uploads and `_removed/`; uid 10001 writes only where the
+      # host lets it. **No `z`**: relabelling `/` would relabel the machine. On an SELinux-enforcing
+      # host, set LAPIDARY_BROWSE_ROOT to a folder you have labelled, or use LAPIDARY_MODELS_DIR.
+      - ${LAPIDARY_BROWSE_ROOT:-/}:/host
       # Partial uploads. A named volume and not part of the storage root, so a half-transferred
       # file is never inside a directory whose contract is that everything in it is complete.
       - lapidary-uploads:/var/lib/lapidary-uploads:Z
