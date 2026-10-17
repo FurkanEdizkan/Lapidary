@@ -47,7 +47,7 @@ use lapidary_core::{
 };
 use lapidary_db::{
     DbError, IngestRequest, JobRow, PgBlobs, PgFolders, PgIngest, PgParts, PgPool, PgRevisions,
-    RevisionRequest, StoredBlobRow,
+    PgSources, RevisionRequest, StoredBlobRow,
 };
 use lapidary_jobs::{HandlerError, JobHandler};
 use lapidary_storage::{DerivativeStore, LibraryReader, Roots};
@@ -114,6 +114,10 @@ impl JobHandler for WorkerHandler {
             }
             // A model from the page a person pasted, through ordinary ingest; see `link.rs`.
             JobPayload::ImportLink { url } => self.import_link(job.library_id, &url).await,
+            // "Fetch details": a part described from its page, nothing downloaded (A2).
+            JobPayload::DescribePage { path, url } => {
+                self.describe_one(job.library_id, &path, &url).await
+            }
             // A bundle unpacks into its own batch, as a scan does; see `import.rs`.
             JobPayload::ImportBundle { blake3, path } => {
                 self.import_bundle(job.batch_id, job.library_id, blake3, &path)
@@ -139,17 +143,6 @@ fn refuse_escaping(path: &str) -> Result<(), HandlerError> {
     })
 }
 
-/// A library's root joined with a path relative to it: where a scanned file is under the ingest
-/// mount. `''` is the whole mount.
-pub(crate) fn under_root(root: &str, relative: &str) -> String {
-    let root = root.trim_matches('/');
-    if root.is_empty() {
-        relative.to_owned()
-    } else {
-        format!("{root}/{relative}")
-    }
-}
-
 impl WorkerHandler {
     /// The three roots a `file` row can name.
     pub(crate) fn roots(&self) -> Roots {
@@ -158,21 +151,6 @@ impl WorkerHandler {
             inbox: self.inbox_dir.clone(),
             store: self.blob_root.clone(),
         }
-    }
-
-    /// The library's own folder under the ingest mount. A library that does not exist is
-    /// `Permanent`: the row will not reappear.
-    pub(crate) async fn library_root(&self, library: LibraryId) -> Result<String, HandlerError> {
-        PgParts(self.db.clone())
-            .library_root(library)
-            .await
-            .map_err(classify_db)?
-            .ok_or_else(|| HandlerError::Permanent {
-                message: format!(
-                    "There is no library {library} to ingest into. The library may have been \
-                     removed after this job was queued; re-scan the library you meant."
-                ),
-            })
     }
 
     /// The centre of the volume measured, onto the revision just committed. Warn-only: the
@@ -199,15 +177,16 @@ impl WorkerHandler {
         }
     }
 
-    /// One file a scan found in the owner's folders, read where it is: `source_path` is relative
-    /// to the library's root, and the file is at that root joined with it under the ingest mount.
+    /// One file a scan found in the models folder, read where it is: `source_path` is its path under
+    /// the folder (A2), and once it is filed it gets what the person gave the file or folder it was
+    /// added through — their pictures, and the page's details when they asked for them.
     pub async fn ingest_one(
         &self,
         library: LibraryId,
         source_path: &str,
     ) -> Result<Outcome, HandlerError> {
         refuse_escaping(source_path)?;
-        let at = under_root(&self.library_root(library).await?, source_path);
+        let at = source_path.to_owned();
         // 1. Read bytes. A missing file may mean the mount is not ready yet, so this is
         // Transient — unlike every step below it, this one has nothing to do with the bytes.
         let (bytes, stat) = LibraryReader::open(&self.ingest_dir)
@@ -222,15 +201,75 @@ impl WorkerHandler {
             path: &at,
             mtime_ns: stat.mtime_ns,
         };
-        self.index(
-            library,
-            source_path,
-            bytes,
-            hash,
-            RevisionOrigin::Ingest,
-            at,
-        )
-        .await
+        let filed = self
+            .index(
+                library,
+                source_path,
+                bytes,
+                hash,
+                RevisionOrigin::Ingest,
+                at,
+            )
+            .await?;
+        if matches!(filed, Outcome::Ingested | Outcome::Revised) {
+            self.as_added(library, source_path).await;
+        }
+        Ok(filed)
+    }
+
+    /// What the person gave the file or folder this part was added through (A2): each of their
+    /// pictures, once, after the part's own, and the page's details when they asked for them.
+    /// Warn-only: the part is filed, and what it is given is not a reason to fail it.
+    async fn as_added(&self, library: LibraryId, source_path: &str) {
+        let source = match PgSources(self.db.clone())
+            .covering(library, source_path)
+            .await
+        {
+            Ok(Some(source)) => source,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(source_path, %error, "could not read what this file was added with; it has no pictures from it");
+                return;
+            }
+        };
+        let images = match PgSources(self.db.clone()).images(source.id).await {
+            Ok(images) => images,
+            Err(error) => {
+                tracing::warn!(source_path, %error, "could not read the pictures this file was added with");
+                Vec::new()
+            }
+        };
+        if !images.is_empty() {
+            match PgRevisions(self.db.clone())
+                .current(library, source_path)
+                .await
+            {
+                Ok(Some(current)) => {
+                    for (n, webp) in images.iter().enumerate() {
+                        // A source URL of its own, so filing the part again adds nothing twice.
+                        let mark = format!("lapidary:source/{}/{n}", source.id);
+                        self.adopt_picture(
+                            current.part,
+                            webp,
+                            "uploaded",
+                            Some(&mark),
+                            source_path,
+                        )
+                        .await;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(source_path, %error, "could not find the part just filed; it has no pictures from what it was added with")
+                }
+            }
+        }
+        if source.fetch_details
+            && let Some(url) = source.page_url.as_deref()
+            && let Err(error) = self.describe_one(library, source_path, url).await
+        {
+            tracing::warn!(source_path, url, %error, "could not fetch the page's details; the part is filed without them");
+        }
     }
 
     /// One file Lapidary wrote into the inbox — an upload — indexed from there. `path` is where

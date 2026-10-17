@@ -138,6 +138,10 @@ export const strings = {
     remove: 'Remove',
     saveFailed: 'The key was not saved. Check that the server is running, then try again.',
     checkFailed: 'The check could not run. Check that the server is running, then try again.',
+    importHeading: 'Adding models',
+    fetchDetails: 'Fetch a model’s details from its page when I add it with a link',
+    fetchDetailsHint:
+      'Pictures, tags, licence and creator, from Printables, Thingiverse or MyMiniFactory. Nothing is downloaded; the file is the one in your models folder.',
   },
   /** The user menu at the header's right (M2): this install's profile, and its settings. */
   user: {
@@ -209,6 +213,45 @@ export const strings = {
     saveFailed: 'The name was not saved. Check that the server is running, then try again.',
   },
   /** Importing a model from the page a person pastes (F3). */
+  /**
+   * The Import dialog (A2): a file browser over the models folder. A person adds a file or a folder,
+   * optionally with its page and pictures; nothing is copied, and the library holds what was added.
+   */
+  addModels: {
+    button: 'Import',
+    title: 'Import from your models folder',
+    lead: 'Choose files or folders. Lapidary reads them where they are; nothing is copied or moved.',
+    top: 'Models folder',
+    open: (name: string) => `Open ${name}`,
+    select: (name: string) => `Add ${name}`,
+    empty: 'No folders or model files here.',
+    size: (bytes: number) =>
+      bytes < 1_048_576
+        ? `${Math.max(1, Math.round(bytes / 1024)).toLocaleString('en-US')} KB`
+        : `${(bytes / 1_048_576).toLocaleString('en-US', { maximumFractionDigits: 1 })} MB`,
+    truncated: 'This folder holds more than the list shows. Open a folder inside it to see the rest.',
+    loading: 'Loading…',
+    failed: 'Could not read this folder. Check that the server is running, then try again.',
+    pageLabel: 'Model page (optional)',
+    pageHint: 'Printables, Thingiverse or MyMiniFactory. Gives every model added here its source and licence.',
+    fetchDetails: 'Fetch pictures, tags and licence from the page',
+    picturesLabel: 'Pictures (optional)',
+    picturesChosen: (n: number) => (n === 1 ? '1 picture chosen' : `${n} pictures chosen`),
+    add: (n: number) => `Add ${n.toLocaleString('en-US')} selected`,
+    addThis: 'Add this whole folder',
+    adding: 'Adding…',
+    added: (n: number) => (n === 1 ? 'Added. The library is scanning it now.' : `Added ${n}. The library is scanning them now.`),
+    inLibrary: 'In this library',
+    nothingAdded: 'Nothing added yet.',
+    remove: 'Remove',
+    removeTitle: (path: string) => `Remove ${path} from this library?`,
+    removed: (n: number) =>
+      n === 1 ? 'Removed, with its 1 model. Its files stay where they are.' : `Removed, with its ${n} models. Its files stay where they are.`,
+    whole: 'The whole models folder',
+    otherWays: 'Or:',
+    upload: 'Upload files from this computer',
+    fromLink: 'Import from a model’s page',
+  },
   importLink: {
     menuItem: 'Import from a link…',
     title: 'Import from a link',
@@ -708,9 +751,9 @@ export const strings = {
     confirmTitleMany: (count: number) =>
       count === 1 ? 'Delete 1 part?' : `Delete ${count.toLocaleString('en-US')} parts?`,
     confirmBody: (name: string) =>
-      `“${name}” is taken out of the library: its pictures, tags and revisions go with it, and this cannot be undone. The file itself stays where it is on disk.`,
+      `“${name}” is taken out of the library: its pictures, tags and revisions go with it, and this cannot be undone. Its file is moved into _removed in your models folder, never deleted — unless another part still uses it, and then it stays where it is.`,
     confirmBodyMany: (count: number) =>
-      `${count === 1 ? 'This part is' : `These ${count.toLocaleString('en-US')} parts are`} taken out of the library: their pictures, tags and revisions go with them, and this cannot be undone. The files themselves stay where they are on disk.`,
+      `${count === 1 ? 'This part is' : `These ${count.toLocaleString('en-US')} parts are`} taken out of the library: their pictures, tags and revisions go with them, and this cannot be undone. Their files are moved into _removed in your models folder, never deleted — except a file another part still uses, which stays where it is.`,
     confirm: 'Delete',
   },
   scan: {
@@ -1039,7 +1082,7 @@ export const strings = {
   /** The grid opened on a category deleted since a saved filter or a link named it. */
   categoryGone: {
     title: 'This category was deleted',
-    body: 'Its models were deleted from the library with it; their files are still on disk. The rest of these filters still work without it.',
+    body: 'Its models were deleted from the library with it; their files were moved into _removed in your models folder. The rest of these filters still work without it.',
     widen: 'Show these filters without the category',
   },
   /** The grid opened on a field filter the library no longer takes: not offered, removed, or of another kind. */
@@ -1162,7 +1205,7 @@ export const strings = {
           : parts === 1
             ? `Deleting takes this category${subcategoriesGo} and that model out of the library, with its pictures and tags`
             : `Deleting takes this category${subcategoriesGo} and those models out of the library, with their pictures and tags`
-      return `${inside} ${action}. This cannot be undone. The files themselves stay where they are on disk.`
+      return `${inside} ${action}. This cannot be undone. The models' files are moved into _removed in your models folder, never deleted.`
     },
     deleteConfirm: 'Delete category',
     deleteFailed:
@@ -1554,6 +1597,11 @@ export const strings = {
     refusedWithoutReason: 'Could not save this density. Reload and try again.',
   },
   sources: {
+    /** "Fetch details" (A2): fill the part from its model's page, downloading nothing. */
+    fetch: 'Fetch details',
+    fetchLabel: 'Model page to fetch details from',
+    fetchPlaceholder: 'https://www.printables.com/model/…',
+    fetching: 'Fetching the page’s details. Its pictures, tags and licence appear here in a moment.',
     /**
      * Where the model came from. The licence is the field this exists for: `docs/DATA.md`
      * is emphatic that half of hobbyist STL libraries are non-commercial and somebody
@@ -1653,7 +1701,7 @@ export const strings = {
   emptyLibrary: {
     title: 'Nothing here yet',
     body:
-      'This library is empty. Upload a folder of models, drop one anywhere on this page, or scan the directory mounted on the server — every model found appears here.',
+      'This library is empty. Choose models from your models folder with Import, upload a folder, or drop one anywhere on this page — every model you add appears here.',
     /** Under the first run's Upload: the gesture with no button of its own, said once where it matters. */
     dropHint: 'Or drag a folder from your file manager and drop it anywhere.',
     /**

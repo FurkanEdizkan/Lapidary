@@ -17,9 +17,9 @@
 //     stamps its bytes so the same file is never sent twice);
 //   * every selector a flow depends on is a named entry in `S` below, so the goal's "rename one
 //     selector and watch that flow alone fail" test is a one-line edit.
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { session, sleep, uploadThrough } from './cdp.mjs'
 
@@ -157,7 +157,7 @@ const T = {
   // The part menu's row and the confirmation's button carry the same word.
   deletePart: 'Delete',
   // The sentence the delete confirmation exists to say: delete is final, and the file is not touched.
-  deleteKeepsFile: 'The file itself stays where it is on disk.',
+  deleteKeepsFile: 'moved into _removed in your models folder, never deleted',
   uploadButton: 'Upload a folder',
   scanStart: 'Scan the ingest folder',
   storageSummary: 'Storage',
@@ -899,7 +899,8 @@ const FLOWS = [
           return true
         })()`)
         expect(pressed, `no "${T.deletePart}" button in #${S.partMenu}`)
-        // The confirmation has to say the file stays before anything is sent.
+        // The confirmation has to say where the file goes (A2: into _removed, never deleted) before
+        // anything is sent.
         const asked = await page.settle(
           () => page.evaluate(`document.querySelector('[role="dialog"]')?.textContent ?? ''`),
           (t) => t.includes(T.deleteKeepsFile),
@@ -920,7 +921,14 @@ const FLOWS = [
         deleted = true
         const after = await ctx.countParts(ctx.uploaded.id)
         expect(after === before, `Uploaded held ${before} parts before the upload and ${after} after the delete`)
-        return `${JSON.stringify(victim.name)} uploaded, confirmation says the file stays on disk, deleted, 404 from the detail route (${before} parts either side)`
+        // And the file was moved, not deleted (A2): it is under _removed/ in the models folder, which is
+        // the lane's ingest tree beside seed.json.
+        const removed = join(dirname(args.seed), 'ingest', '_removed')
+        const kept = existsSync(removed)
+          ? readdirSync(removed, { recursive: true }).some((f) => String(f).endsWith(`${victim.name}.stl`))
+          : false
+        expect(kept, `${victim.name}.stl is not under ${removed}`)
+        return `${JSON.stringify(victim.name)} uploaded, confirmation says the file moves to _removed, deleted, 404 from the detail route, the file kept under _removed (${before} parts either side)`
       } finally {
         // Whatever went wrong above, the part this flow made does not outlive it.
         if (!deleted) await ctx.del(`/api/parts/${victim.id}`).catch(() => {})

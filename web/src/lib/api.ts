@@ -1,5 +1,9 @@
 import type { Sort } from './preferences'
 import type {
+  BrowseListing,
+  ImportSettings,
+  LibrarySource,
+  NewSourceRequest,
   BatchId,
   BatchStatus,
   BlobHash,
@@ -1432,4 +1436,82 @@ export function blobUrl(hash: BlobHash): string {
  */
 export function batchEventsUrl(library: LibraryId, batch: BatchId): string {
   return `/api/libraries/${encodeURIComponent(library)}/jobs/${encodeURIComponent(batch)}/events`
+}
+
+/** A refusal the server sent with a sentence for a person (A2's routes). */
+async function sentence(response: Response, fallback: string): Promise<Error> {
+  const body = (await response.json().catch(() => null)) as { message?: string } | null
+  return new Error(body?.message ?? fallback)
+}
+
+/** `GET /api/storage/browse?path=` — one folder of the models folder (A2). */
+export async function browseModels(path: string): Promise<BrowseListing> {
+  const response = await fetch(`/api/storage/browse?path=${encodeURIComponent(path)}`)
+  if (!response.ok) throw await sentence(response, `browse returned ${response.status}`)
+  return (await response.json()) as BrowseListing
+}
+
+/** `GET /api/libraries/{id}/sources` — what the library holds. */
+export async function fetchSources(library: LibraryId): Promise<LibrarySource[]> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/sources`)
+  if (!response.ok) throw new Error(`sources returned ${response.status}`)
+  return (await response.json()) as LibrarySource[]
+}
+
+/** `POST /api/libraries/{id}/sources` — add a file or folder of the models folder. */
+export async function addSource(library: LibraryId, request: NewSourceRequest): Promise<LibrarySource> {
+  const response = await fetch(`/api/libraries/${encodeURIComponent(library)}/sources`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw await sentence(response, `adding returned ${response.status}`)
+  return (await response.json()) as LibrarySource
+}
+
+/** `POST …/sources/{source}/pictures` — a picture for every part found under it. */
+export async function addSourcePicture(library: LibraryId, source: string, picture: File): Promise<void> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/sources/${encodeURIComponent(source)}/pictures`,
+    { method: 'POST', body: picture },
+  )
+  if (!response.ok) throw await sentence(response, `the picture returned ${response.status}`)
+}
+
+/** `DELETE …/sources/{source}` — take it out of the library; its files stay where they are. */
+export async function removeSource(library: LibraryId, source: string): Promise<void> {
+  const response = await fetch(
+    `/api/libraries/${encodeURIComponent(library)}/sources/${encodeURIComponent(source)}`,
+    { method: 'DELETE' },
+  )
+  if (!response.ok) throw await sentence(response, `removing returned ${response.status}`)
+}
+
+/** `GET /api/settings/import`. */
+export async function fetchImportSettings(): Promise<ImportSettings> {
+  const response = await fetch('/api/settings/import')
+  if (!response.ok) throw new Error(`import settings returned ${response.status}`)
+  return (await response.json()) as ImportSettings
+}
+
+/** `PUT /api/settings/import`. */
+export async function saveImportSettings(settings: ImportSettings): Promise<ImportSettings> {
+  const response = await fetch('/api/settings/import', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!response.ok) throw new Error(`import settings returned ${response.status}`)
+  return (await response.json()) as ImportSettings
+}
+
+/** `POST /api/parts/{id}/describe` — "Fetch details" from the model's page; nothing is downloaded. */
+export async function describePart(part: PartId, url: string): Promise<ScanAccepted> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/describe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  if (!response.ok) throw await sentence(response, `fetching details returned ${response.status}`)
+  return (await response.json()) as ScanAccepted
 }

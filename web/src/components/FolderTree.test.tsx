@@ -378,7 +378,7 @@ test('the delete confirmation names the models, the subcategories, and what stay
   // good, and their files stay on disk.
   expect(body).toContain('takes this category and the subcategory under it and those models out of the library')
   expect(body).toContain('cannot be undone')
-  expect(body).toContain('The files themselves stay where they are on disk')
+  expect(body).toContain('moved into _removed in your models folder, never deleted')
   expect(body).not.toMatch(/hidden|hides|restore/i)
   expect(body).not.toMatch(/delete[sd]? the files|erase|remove the files/i)
 
@@ -419,7 +419,7 @@ test('the singular reads as one, and an empty category still names the subcatego
   // reporting the category as empty.
   expect(empty).toContain('No models and 2 subcategories are inside it')
   expect(empty).toContain('takes this category and the subcategories under it out of the library')
-  expect(empty).toContain('The files themselves stay where they are on disk')
+  expect(empty).toContain('moved into _removed in your models folder, never deleted')
 })
 
 /**

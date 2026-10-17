@@ -264,7 +264,10 @@ async fn committing_writes_the_file_into_the_inbox_and_queues_its_index(pool: sq
     assert_eq!(accepted.queued, 1);
 
     // 1. The bytes are in the inbox, byte-identical, under the browser's path.
-    let placed = server.inbox.path().join("uploads/brackets/LP-1042-03.stl");
+    let placed = server
+        .inbox
+        .path()
+        .join("uploads/lena.kowalski/brackets/LP-1042-03.stl");
     assert_eq!(std::fs::read(&placed).expect("in the inbox"), BRACKET);
 
     // 2. Nothing went into the store: no blob row, no file.
@@ -289,7 +292,10 @@ async fn committing_writes_the_file_into_the_inbox_and_queues_its_index(pool: sq
             .await
             .expect("query");
     assert_eq!(kind, "ingest_inbox");
-    assert_eq!(payload["inbox"], "uploads/brackets/LP-1042-03.stl");
+    assert_eq!(
+        payload["inbox"],
+        "uploads/lena.kowalski/brackets/LP-1042-03.stl"
+    );
     assert_eq!(payload["path"], "brackets/LP-1042-03.stl");
 
     // 4. The staged copy is gone.
@@ -310,7 +316,7 @@ async fn committing_writes_the_file_into_the_inbox_and_queues_its_index(pool: sq
             server
                 .inbox
                 .path()
-                .join("uploads/brackets/LP-1042-03 (2).stl")
+                .join("uploads/lena.kowalski/brackets/LP-1042-03 (2).stl")
         )
         .expect("beside it"),
         changed
@@ -351,7 +357,7 @@ async fn committing_bytes_that_do_not_match_their_claim_stores_nothing(pool: sql
         !server
             .inbox
             .path()
-            .join("uploads/brackets/LP-1042-03.stl")
+            .join("uploads/lena.kowalski/brackets/LP-1042-03.stl")
             .exists(),
         "a refused commit places nothing in the inbox"
     );
@@ -626,17 +632,22 @@ async fn committing_many_files_places_each_and_queues_every_file(pool: sqlx::PgP
             .err()
             .map(|e| e.kind()),
         Some(std::io::ErrorKind::NotFound),
-        "under uploads/, not loose in the inbox"
+        "under uploads/<the uploader>/, not loose in the inbox"
     );
     assert_eq!(
         std::fs::read(
             server
                 .inbox
                 .path()
-                .join("uploads/spares/LP-1042-00-copy.stl")
+                .join("uploads/lena.kowalski/spares/LP-1042-00-copy.stl")
         )
         .expect("the copy"),
-        std::fs::read(server.inbox.path().join("uploads/brackets/LP-1042-00.stl"))
-            .expect("the original")
+        std::fs::read(
+            server
+                .inbox
+                .path()
+                .join("uploads/lena.kowalski/brackets/LP-1042-00.stl")
+        )
+        .expect("the original")
     );
 }

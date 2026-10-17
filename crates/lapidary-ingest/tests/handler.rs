@@ -1249,6 +1249,15 @@ async fn an_export_derived_twice_is_one_blob_with_one_reference(pool: PgPool) {
 
 /// A `scan_directory` job row belonging to `batch`, shaped exactly as the api route's
 /// `enqueue` writes one: the payload is empty, and the batch is the row's own column.
+/// The seeded library holding the whole models folder, as a person who added it with Import has
+/// (A2): what every scan test here walks.
+async fn whole_folder(pool: &PgPool) {
+    lapidary_db::PgSources(pool.clone())
+        .add(seeded(), "", "folder", None, false)
+        .await
+        .expect("the whole folder, added");
+}
+
 fn scan_job(batch: BatchId, library: LibraryId) -> JobRow {
     JobRow {
         id: JobId::new(),
@@ -1275,6 +1284,7 @@ async fn ingest_paths_in(pool: &PgPool, batch: BatchId) -> Vec<String> {
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_job_enqueues_its_files_into_its_own_batch_and_grows_the_total(pool: PgPool) {
+    whole_folder(&pool).await;
     // The reason `enqueue_into` exists. The api route enqueues the scan job into a fresh
     // batch and hands the browser that id; if the walk minted a second batch for the
     // files, the browser would poll a batch of one, watch it settle, and report a
@@ -1348,6 +1358,7 @@ async fn a_scan_job_enqueues_its_files_into_its_own_batch_and_grows_the_total(po
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn an_unreadable_ingest_directory_fails_the_scan_job_and_names_the_mount(pool: PgPool) {
+    whole_folder(&pool).await;
     // A path that was never created — the real-world case is a missing or unreadable
     // `/ingest` mount. It must not succeed with nothing queued, which is
     // indistinguishable from an empty directory that scanned perfectly well, and it must
@@ -1413,6 +1424,7 @@ async fn scanned_paths(pool: &PgPool, ingest_dir: &Path, blob_root: &Path) -> Ve
 /// error anywhere, and the operator had to flatten their library to use Lapidary at all.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_descends_and_reports_paths_relative_to_the_mount(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
 
@@ -1453,6 +1465,7 @@ async fn a_scan_descends_and_reports_paths_relative_to_the_mount(pool: PgPool) {
 /// and nothing anywhere says why. Refused out loud is the behaviour; skipped is the bug.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_finds_a_b_rep_file_and_its_job_refuses_it_rather_than_skipping_it(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
@@ -1489,6 +1502,7 @@ async fn a_scan_finds_a_b_rep_file_and_its_job_refuses_it_rather_than_skipping_i
 #[cfg(unix)]
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_does_not_follow_a_symlinked_directory(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
 
@@ -1515,6 +1529,7 @@ async fn a_scan_does_not_follow_a_symlinked_directory(pool: PgPool) {
 /// `lapidary watch` skips too.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_skips_what_the_ignore_list_names(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
 
@@ -1550,6 +1565,7 @@ async fn a_scan_skips_what_the_ignore_list_names(pool: PgPool) {
 /// because the files above the cap are still real work.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_stops_at_the_depth_cap_and_keeps_what_it_found_above_it(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
 
@@ -1688,7 +1704,8 @@ async fn a_re_scan_re_ingests_a_deleted_part_as_a_new_one(pool: PgPool) {
         PgParts(pool.clone())
             .delete(lapidary_core::PartId::from_uuid(first))
             .await
-            .expect("delete"),
+            .expect("delete")
+            .is_some(),
     );
     assert_eq!(
         std::fs::read(ingest_dir.path().join(&path)).expect("delete never touches the file"),
@@ -1837,6 +1854,7 @@ async fn a_nested_file_is_recorded_where_it_is_and_nothing_is_written(pool: PgPo
 /// the snapshot is the one the owner made.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_scan_its_ingests_and_a_revision_write_nothing_under_the_folders(pool: PgPool) {
+    whole_folder(&pool).await;
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
     stage(
@@ -1924,7 +1942,7 @@ async fn a_touched_file_is_skipped_and_its_recorded_time_follows_it(pool: PgPool
     assert_eq!(file_rows(&pool, BRACKET).await[0].2, Some(mtime_ns(&path)));
 }
 
-/// A library with its own folder scans only there, and its parts are named relative to it.
+/// A library that was given one folder scans only there (A2: the folder is its one source).
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_library_with_its_own_folder_reads_only_there(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
@@ -1949,23 +1967,24 @@ async fn a_library_with_its_own_folder_reads_only_there(pool: PgPool) {
         .handle(&scan_job(batch, workshop))
         .await
         .expect("scans");
+    // Since A2 a part is named by where it is in the models folder, whatever added it.
     assert_eq!(
         ingest_paths_in(&pool, batch).await,
-        ["Jigs/drill-guide-lp-6010-01.stl"]
+        ["Workshop/Jigs/drill-guide-lp-6010-01.stl"]
     );
     handler
         .handle(&job_for_library(
             workshop,
-            "Jigs/drill-guide-lp-6010-01.stl",
+            "Workshop/Jigs/drill-guide-lp-6010-01.stl",
         ))
         .await
         .expect("ingests");
     assert_eq!(
-        file_rows(&pool, "Jigs/drill-guide-lp-6010-01.stl").await[0]
+        file_rows(&pool, "Workshop/Jigs/drill-guide-lp-6010-01.stl").await[0]
             .1
             .as_deref(),
         Some("Workshop/Jigs/drill-guide-lp-6010-01.stl"),
-        "where it is under the mount; the part is named relative to its library"
+        "where it is under the mount, which is also the part's name"
     );
 }
 
@@ -2063,17 +2082,19 @@ async fn an_upload_in_the_inbox_is_indexed_from_there(pool: PgPool) {
     }
 }
 
-/// A scan whose library names a folder that escapes the mount, by a hand edit past the api's
+/// A scan whose library holds a folder that escapes the mount, by a hand edit past the api's
 /// refusal, is refused rather than walked.
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_library_folder_that_escapes_the_mount_is_refused(pool: PgPool) {
     let ingest_dir = tempfile::tempdir().expect("temp dir");
     let blob_root = tempfile::tempdir().expect("temp dir");
-    sqlx::query("UPDATE library SET root = '../etc' WHERE id = $1")
-        .bind(seeded().as_uuid())
-        .execute(&pool)
-        .await
-        .expect("a hand edit");
+    sqlx::query(
+        "INSERT INTO library_source (id, library_id, path, kind) VALUES (gen_random_uuid(), $1, '../etc', 'folder')",
+    )
+    .bind(seeded().as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a hand edit");
     let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
     match handler.handle(&scan_job(BatchId::new(), seeded())).await {
         Err(HandlerError::Permanent { .. }) => {}
@@ -2629,7 +2650,7 @@ async fn deleting_a_revised_part_leaves_every_file_and_directory_in_place(pool: 
         .expect("the one part");
     let parts = PgParts(pool.clone());
     let part = lapidary_core::PartId::from_uuid(part);
-    assert!(parts.delete(part).await.expect("delete"));
+    assert!(parts.delete(part).await.expect("delete").is_some());
     lapidary_ingest::reap::sweep(&pool, blob_root.path(), std::time::Duration::ZERO)
         .await
         .expect("sweep");
@@ -3318,4 +3339,130 @@ async fn an_export_of_a_file_changed_in_its_folder_is_refused(pool: PgPool) {
         other => panic!("{other:?}"),
     }
     assert!(derivatives(&pool).await.is_empty());
+}
+
+/// (A2) A scan walks what the library was given — a folder, a single file — and never `_removed/`,
+/// where a removed model's file is moved, so a removed model does not come back.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_walks_what_was_added_and_never_what_was_removed(pool: PgPool) {
+    let models = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        models.path(),
+        "prints/bracket-lp-1042-03.stl",
+        BRACKET_FIXTURE,
+    );
+    stage(
+        models.path(),
+        "gears/spur-gear-m2-20t-lp-5140-00.stl",
+        GEAR_FIXTURE,
+    );
+    stage(
+        models.path(),
+        "gears/spare/spur-gear-copy.stl",
+        GEAR_FIXTURE,
+    );
+    stage(
+        models.path(),
+        "_removed/lena/prints/old-bracket.stl",
+        BRACKET_FIXTURE,
+    );
+    let sources = lapidary_db::PgSources(pool.clone());
+    sources
+        .add(seeded(), "prints", "folder", None, false)
+        .await
+        .expect("a folder");
+    sources
+        .add(
+            seeded(),
+            "gears/spur-gear-m2-20t-lp-5140-00.stl",
+            "file",
+            None,
+            false,
+        )
+        .await
+        .expect("one file of another folder");
+    let handler = handler_over(&pool, models.path(), blob_root.path());
+    let (batch, _) = lapidary_db::PgJobs(pool.clone())
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues");
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("scans");
+    assert_eq!(
+        ingest_paths_in(&pool, batch).await,
+        [
+            "gears/spur-gear-m2-20t-lp-5140-00.stl",
+            "prints/bracket-lp-1042-03.stl"
+        ]
+    );
+
+    // The whole folder: everything, still never `_removed/`.
+    sources
+        .add(seeded(), "", "folder", None, false)
+        .await
+        .expect("the whole folder");
+    let (batch, _) = lapidary_db::PgJobs(pool.clone())
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues");
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("scans");
+    let found = ingest_paths_in(&pool, batch).await;
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(
+        found.iter().all(|path| !path.starts_with("_removed")),
+        "{found:?}"
+    );
+}
+
+/// (A2) The pictures a person chose while adding a folder go to each part found in it, once: filing
+/// the same file again gives it nothing twice.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_part_gets_the_pictures_its_folder_was_added_with_once(pool: PgPool) {
+    let models = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        models.path(),
+        "prints/bracket-lp-1042-03.stl",
+        BRACKET_FIXTURE,
+    );
+    let sources = lapidary_db::PgSources(pool.clone());
+    let source = sources
+        .add(seeded(), "prints", "folder", None, false)
+        .await
+        .expect("a folder");
+    let webp = lapidary_storage::images::normalize(include_bytes!(
+        "../../../fixtures/bracket-lp-1042-03.thumb.webp"
+    ))
+    .expect("normalizes")
+    .webp;
+    sources
+        .add_image(source.id, &webp)
+        .await
+        .expect("a picture");
+    let handler = handler_over(&pool, models.path(), blob_root.path());
+    let job = job_for_library(seeded(), "prints/bracket-lp-1042-03.stl");
+    assert_eq!(
+        handler.handle(&job).await.expect("files"),
+        Outcome::Ingested
+    );
+    let gallery = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT i.origin FROM part_image i JOIN part p ON p.id = i.part_id WHERE p.source_path = $1",
+        )
+        .bind("prints/bracket-lp-1042-03.stl")
+        .fetch_all(&pool)
+        .await
+        .expect("gallery")
+    };
+    assert_eq!(gallery().await, ["uploaded"]);
+    // Changed bytes at the same path: a revision, and still one picture.
+    stage(models.path(), "prints/bracket-lp-1042-03.stl", GEAR_FIXTURE);
+    assert_eq!(handler.handle(&job).await.expect("files"), Outcome::Revised);
+    assert_eq!(gallery().await, ["uploaded"]);
 }

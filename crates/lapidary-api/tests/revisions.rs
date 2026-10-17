@@ -191,7 +191,13 @@ async fn an_old_revision_no_longer_on_disk_answers_gone(pool: sqlx::PgPool) {
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_deleted_part_and_one_that_never_existed_have_no_history(pool: sqlx::PgPool) {
     let part = two_revisions(&pool).await;
-    assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
+    assert!(
+        PgParts(pool.clone())
+            .delete(part)
+            .await
+            .expect("delete")
+            .is_some()
+    );
     let (deleted, _) = send(
         pool.clone(),
         request("GET", &format!("/api/parts/{part}/revisions")),

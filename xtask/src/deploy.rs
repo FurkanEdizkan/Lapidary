@@ -4,9 +4,11 @@
 //! linked the kernel, which role each set, which build target each named. One process now runs both,
 //! so those rules went with the split. What is left guards two things that are still true:
 //!
-//! - **The owner's folders are never written** (M4). `lapidary-api` may name the one handle that
-//!   writes a source file, `InboxWriter`, only in the upload route, and the ingest mount is
-//!   read-only in every compose file. Textual, so a lint against the mistake rather than a seal.
+//! - **A model file is written once and moved, never deleted** (A2, owner 2026-10-17). In
+//!   `lapidary-api`, `InboxWriter` (which writes an upload) is named only in the upload route,
+//!   `move_to_removed` (which moves a removed model's file into `_removed/`) only in `retire.rs`,
+//!   and `remove_file` / `remove_dir` only in the upload route, for its own staging files. Textual,
+//!   so a lint against the mistake rather than a seal.
 //! - **Named volumes are directories the image creates for `lapidary`**, or a fresh volume comes up
 //!   owned by root and the server cannot write to it.
 //!
@@ -26,11 +28,16 @@ const LAPIDARY_SERVER_DOCKERFILE: &str = "deploy/Containerfile";
 /// the route a user hands bytes to. The three handles this table used to hold went with the store
 /// Lapidary filed sources into: the download route reads through `LibraryReader`, which writes
 /// nothing and needs no exemption, and nothing renames a model's directory any more.
-const SOURCE_HANDLE_EXEMPTIONS: &[(&str, &str)] =
-    &[("InboxWriter", "crates/lapidary-api/src/upload.rs")];
-
-/// Where the owner's folders are mounted in the container, as `deploy/compose.yaml` mounts them.
-const INGEST_MOUNT: &str = "/ingest";
+///
+/// A2 added the mover and the two unlinks: a removed model's file is moved into `_removed/` by
+/// `retire.rs` and by nothing else, and the only file this crate ever deletes is an upload's own
+/// staging copy, in `upload.rs`.
+const SOURCE_HANDLE_EXEMPTIONS: &[(&str, &str)] = &[
+    ("InboxWriter", "crates/lapidary-api/src/upload.rs"),
+    ("move_to_removed", "crates/lapidary-api/src/retire.rs"),
+    ("remove_file", "crates/lapidary-api/src/upload.rs"),
+    ("remove_dir", "crates/lapidary-api/src/upload.rs"),
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -38,9 +45,6 @@ pub enum Violation {
     ComposeMissingServicesKey,
     /// Parse-stale: a `services:` key was found but no service blocks parsed under it.
     ComposeNoServicesParsed,
-    /// A service that runs `lapidary-server` mounts the owner's folders without `ro`: the code never
-    /// writes there, and the read-only mount is the backstop that makes that a fact of the deploy.
-    IngestMountWritable { service: String },
     /// A service that runs `lapidary-server` mounts a named volume at a path `deploy/Containerfile` does not create
     /// owned by `lapidary`, so the volume comes up owned by root and the service cannot write to it.
     NamedVolumeNotOwned { service: String, target: String },
@@ -78,13 +82,6 @@ impl std::fmt::Display for Violation {
                  directory at the mount point, ownership included; with none there it comes up owned by root, \
                  and the service, which runs as `lapidary`, cannot write to it. Add {target} to the runtime \
                  stage's `install -d -o lapidary -g lapidary` line."
-            ),
-            Violation::IngestMountWritable { service } => write!(
-                f,
-                "service '{service}' mounts {INGEST_MOUNT} without `ro`. That is the owner's own \
-                 folders: Lapidary indexes them where they are and must never be able to write, \
-                 rename or remove anything there. Add `ro` to the mount's options \
-                 (`...:{INGEST_MOUNT}:ro,z`)."
             ),
             Violation::OpenPathNamesSourceHandleOutsideItsModule {
                 path,
@@ -330,33 +327,6 @@ pub fn check_open_path_boundary(api_sources: &[(String, String)]) -> Vec<Violati
         .collect()
 }
 
-/// Every `lapidary-server` service that mounts the owner's folders mounts them read-only (M4).
-pub fn check_ingest_read_only(compose_files: &[&str]) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for contents in compose_files {
-        let services = match parse_services(contents) {
-            Ok(services) => services,
-            Err(stale) => {
-                violations.push(stale);
-                continue;
-            }
-        };
-        violations.extend(
-            services
-                .iter()
-                .filter(|service| {
-                    service.mounts.iter().any(|(target, options)| {
-                        target == INGEST_MOUNT && !options.split(',').any(|o| o == "ro")
-                    })
-                })
-                .map(|service| Violation::IngestMountWritable {
-                    service: service.name.clone(),
-                }),
-        );
-    }
-    violations
-}
-
 /// Is this the single file a handle is allowed in? `Path::ends_with` is
 /// *component-wise*, not a string suffix, which is the whole reason it is the right
 /// primitive here: it rejects `bulk_download.rs` (a different final component, not a
@@ -472,41 +442,6 @@ mod tests {
             violations[2]
                 .to_string()
                 .contains("crates/lapidary-api/src/upload.rs")
-        );
-    }
-
-    /// The owner's folders are mounted read-only, and a mount without `ro` is refused, whatever
-    /// the source spells or how the options are ordered.
-    #[test]
-    fn a_writable_ingest_mount_is_refused() {
-        let compose = |options: &str| {
-            format!(
-                "\
-services:
-  app:
-    build:
-      dockerfile: deploy/Containerfile
-    volumes:
-      - ${{LAPIDARY_INGEST_DIR:-../example/parts}}:/ingest{options}
-      - ${{LAPIDARY_INBOX_DIR:-../inbox}}:/inbox:z
-"
-            )
-        };
-        assert_eq!(check_ingest_read_only(&[&compose(":ro,z")]), vec![]);
-        assert_eq!(check_ingest_read_only(&[&compose(":z,ro")]), vec![]);
-        for writable in [":z", "", ":rw,z"] {
-            assert_eq!(
-                check_ingest_read_only(&[&compose(writable)]),
-                vec![Violation::IngestMountWritable {
-                    service: "app".to_owned()
-                }],
-                "{writable:?}"
-            );
-        }
-        assert_eq!(
-            check_ingest_read_only(&[include_str!("../../deploy/compose.yaml")]),
-            vec![],
-            "the real compose file mounts the owner's folders read-only"
         );
     }
 

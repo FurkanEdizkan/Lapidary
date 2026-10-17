@@ -776,6 +776,7 @@ async fn a_deleted_part_is_not_found_and_its_blob_stays_cold(pool: sqlx::PgPool)
             .delete(seeded.part)
             .await
             .expect("delete")
+            .is_some()
     );
 
     // A download URL is held by whoever was last shown the grid: the link must stop serving
@@ -1733,6 +1734,7 @@ async fn a_deleted_or_unknown_parts_file_link_is_a_404_that_says_what_to_do(pool
             .delete(seeded.part)
             .await
             .expect("deletes")
+            .is_some()
     );
     let app = app_over(&pool, root.path());
     for part in [seeded.part, PartId::new()] {

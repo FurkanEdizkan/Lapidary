@@ -248,18 +248,26 @@ pub async fn patch(
 /// `DELETE /api/folders/{id}` — delete the category and everything under it, for good.
 ///
 /// The counts come back so the caller can check what it warned about against what
-/// happened. Nothing here removes a file, and the wording says so in the one place a user
-/// might reasonably fear otherwise.
-pub async fn delete(State(state): State<AppState>, Path(folder): Path<FolderId>) -> Response {
-    match PgFolders(state.db).delete_subtree(folder).await {
+/// happened. Nothing here deletes a file: the parts' files are moved into `_removed/`.
+pub async fn delete(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    Path(folder): Path<FolderId>,
+) -> Response {
+    match PgFolders(state.db.clone()).delete_subtree(folder).await {
         // Nothing deleted at all means there was nothing there: an unknown id, or a folder
         // somebody else already deleted.
-        Ok((0, 0)) => no_such_folder(),
-        Ok((folders, parts)) => Json(serde_json::json!({
-            "foldersDeleted": folders,
-            "partsDeleted": parts,
-        }))
-        .into_response(),
+        Ok((0, 0, _)) => no_such_folder(),
+        // The parts' files go where a removed part's file goes: into `_removed/` (A2).
+        Ok((folders, parts, files)) => {
+            let retired = crate::retire::retire(state.roots(), user.username, files).await;
+            Json(serde_json::json!({
+                "foldersDeleted": folders,
+                "partsDeleted": parts,
+                "filesMoved": retired.moved.len(),
+            }))
+            .into_response()
+        }
         Err(err) => internal_error(&err, "folder delete failed"),
     }
 }

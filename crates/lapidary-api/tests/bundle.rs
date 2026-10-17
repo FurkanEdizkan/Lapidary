@@ -463,7 +463,13 @@ async fn a_deleted_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
         b"solid flange-dn40\n",
     )
     .await;
-    assert!(PgParts(pool.clone()).delete(flange).await.expect("deletes"));
+    assert!(
+        PgParts(pool.clone())
+            .delete(flange)
+            .await
+            .expect("deletes")
+            .is_some()
+    );
     assert_eq!(
         plan(pool.clone(), root, serde_json::json!([vee, flange]))
             .await

@@ -172,8 +172,10 @@ WORK=$ROOT/target/e2e/$LANE$AS
 ENVFILE=$WORK/e2e.env
 STORE=$WORK/store
 INGEST=$WORK/ingest
-# Where the app writes uploads and link imports, once, before indexing them (M4). Never under $INGEST.
-INBOX=$WORK/inbox
+# Since A2 the models folder is one directory: the person's folders, and Lapidary's own under it —
+# uploads/, imports/, examples/ and _removed/, the only ones the app writes, and the only ones it owns.
+INBOX=$INGEST
+OWN_DIRS=(uploads imports examples _removed)
 RUNS=$WORK/runs
 # The rig's session (A1): written by `sign_in_rig`, sent by every `curl` below and handed to the flows.
 COOKIES=$WORK/cookies.txt
@@ -203,7 +205,7 @@ CORPUS_SLICE=${CORPUS_SLICE:-400}
 # would then chown and delete.
 COMPOSE_UNSET=()
 for var in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB LAPIDARY_LOG \
-  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR \
+  LAPIDARY_STORAGE_ROOT LAPIDARY_INGEST_DIR LAPIDARY_INBOX_DIR LAPIDARY_MODELS_DIR \
   LAPIDARY_PORT_WEB LAPIDARY_PORT_API LAPIDARY_PORT_WORKER LAPIDARY_PORT_PEER \
   LAPIDARY_WORKER_CONCURRENCY LAPIDARY_JOB_LEASE_SECS LAPIDARY_KERNEL_TIMEOUT \
   LAPIDARY_JOB_POLL_SECS LAPIDARY_WORKER_ID LAPIDARY_SETUP_CODE LAPIDARY_COOKIE_SECURE; do
@@ -338,13 +340,16 @@ chown_store() { # owner, e.g. 10001:10001
   for candidate in "$PROJECT-app" docker.io/library/postgres:18; do
     docker image inspect "$candidate" > /dev/null 2>&1 && { image=$candidate; break; }
   done
-  [ -n "$image" ] || { echo "  no local image to chown with; leaving $STORE and $INBOX as they are"; return 1; }
-  mkdir -p "$STORE" "$INBOX"
-  # The inbox too (M4): the app writes uploads there as uid 10001, exactly as it writes the store.
+  [ -n "$image" ] || { echo "  no local image to chown with; leaving $STORE and Lapidary's folders as they are"; return 1; }
+  mkdir -p "$STORE"
+  local own=() dir
+  for dir in "${OWN_DIRS[@]}"; do mkdir -p "$INGEST/$dir"; own+=("/models/$dir"); done
+  # Lapidary's own folders in the models folder too (A2): it writes uploads, imports and examples there,
+  # and moves a removed model's file into _removed, as uid 10001. The person's folders stay theirs.
   docker run --rm --pull never --user 0 --entrypoint chown \
-    -v "$STORE:/var/lib/lapidary" -v "$INBOX:/var/lib/lapidary-inbox" "$image" \
-    -R "$1" /var/lib/lapidary /var/lib/lapidary-inbox > /dev/null &&
-    echo "  $STORE and $INBOX now owned by $1 (through $image)"
+    -v "$STORE:/var/lib/lapidary" -v "$INGEST:/models" "$image" \
+    -R "$1" /var/lib/lapidary "${own[@]}" > /dev/null &&
+    echo "  $STORE and ${OWN_DIRS[*]} under $INGEST now owned by $1 (through $image)"
 }
 
 # `rm -rf` on a path built from variables gets its own gate. `set -u` is not a safety net for a
@@ -354,12 +359,8 @@ remove_store() {
     "$ROOT"/target/e2e/[0-4]/store | "$ROOT"/target/e2e/[0-4][abc]/store) ;;
     *) die "refusing to remove \`$STORE\`: that is not target/e2e/<lane>[a|b|c]/store." ;;
   esac
-  case "$INBOX" in
-    "$ROOT"/target/e2e/[0-4]/inbox | "$ROOT"/target/e2e/[0-4][abc]/inbox) ;;
-    *) die "refusing to remove \`$INBOX\`: that is not target/e2e/<lane>[a|b|c]/inbox." ;;
-  esac
   local dir
-  for dir in "$STORE" "$INBOX"; do
+  for dir in "$STORE"; do
     [ -e "$dir" ] || continue
     rm -rf "$dir" || die "could not remove $dir. If it is still root-owned the reverse chown above
   failed — fix that before the lead runs scripts/release-goal.sh, or the worktree cannot be deleted."
@@ -371,7 +372,10 @@ remove_store() {
 # them; this is how the rig checks that from the host, before and after a scan, a move, a revision and
 # an upload.
 ingest_fingerprint() {
-  (cd "$INGEST" && find . -printf '%P %s %T@\n' | sort | sha256sum | cut -d' ' -f1)
+  # The person's folders only: Lapidary's own (uploads/, imports/, examples/, _removed/) are where it
+  # writes, by design (A2).
+  (cd "$INGEST" && find . \( -path ./uploads -o -path ./imports -o -path ./examples -o -path ./_removed \) -prune \
+    -o -printf '%P %s %T@\n' | sort | sha256sum | cut -d' ' -f1)
 }
 
 # `e2e.env`. The password is generated **only when the file is absent**: `POSTGRES_PASSWORD` is applied
@@ -399,8 +403,8 @@ LAPIDARY_LOG=info
 # Absolute, both of them: compose resolves a relative path against deploy/, and the api additionally
 # shows LAPIDARY_STORAGE_ROOT to the person as where their model is, which only means anything absolute.
 LAPIDARY_STORAGE_ROOT=$STORE
-LAPIDARY_INGEST_DIR=$INGEST
-LAPIDARY_INBOX_DIR=$INBOX
+# The one models folder (A2).
+LAPIDARY_MODELS_DIR=$INGEST
 # Interpolated into scripts/e2e/e2e.override.yaml, which is the only thing that moves the published
 # ports off deploy/compose.yaml's literals.
 LAPIDARY_PORT_WEB=$LAPIDARY_PORT_WEB
@@ -654,7 +658,9 @@ build_ingest_tree() {
   # reported `total=1 ingested=0` and looked like a broken scan route. Measured proof, for anyone who
   # doubts it: host inode 16909401, container /ingest inode 16908512, after one `rm -rf`.
   mkdir -p "$INGEST"
-  find "$INGEST" -mindepth 1 -delete
+  # Never Lapidary's own folders: they are the app's (uid 10001), and the examples in them are seeded.
+  find "$INGEST" -mindepth 1 -maxdepth 1 ! -name uploads ! -name imports ! -name examples ! -name _removed \
+    -exec rm -rf {} +
   mkdir -p "$INGEST/step" "$INGEST/misc" "$INGEST/alike"
 
   # step/: the six B-rep fixtures, kept on purpose and for the opposite reason they were put here.
@@ -755,13 +761,13 @@ build_ingest_tree() {
 check_worker_sees_ingest() {
   local host_files seen
   host_files=$(find "$INGEST" -type f ! -name .seeded | wc -l)
-  seen=$(compose exec -T app sh -c 'find /ingest -type f ! -name .seeded | wc -l' 2>/dev/null | tr -dc '0-9')
+  seen=$(compose exec -T app sh -c 'find /models -type f ! -name .seeded | wc -l' 2>/dev/null | tr -dc '0-9')
   [ "${seen:-0}" = "$host_files" ] || die "the host has $host_files files under $INGEST but the worker sees
-  ${seen:-0} in /ingest, so the bind mount is not showing this directory and every scan will find nothing.
+  ${seen:-0} in /models, so the bind mount is not showing this directory and every scan will find nothing.
   A bind mount follows the inode, not the path: if anything replaced the directory rather than its
   contents, only \`stack.sh down\` then \`up\` reattaches it. Compare \`stat -c %i $INGEST\` with
-  \`compose exec -T app stat -c %i /ingest\` to confirm that is what happened."
-  echo "  the worker sees all $seen of them in /ingest"
+  \`compose exec -T app stat -c %i /models\` to confirm that is what happened."
+  echo "  the worker sees all $seen of them in /models"
 }
 
 # A library by name, made if it is not there. Names, not ids, so `seed` is re-runnable.
@@ -850,6 +856,13 @@ cmd_seed() {
   local sweep began batch
   sweep=$(library_named Sweep)
   [ -n "$sweep" ] || die "could not create the Sweep library."
+  # Sweep holds every folder of the tree, added as a person adds them with Import (A2) — and not
+  # Lapidary's own, which hold what other libraries uploaded and imported.
+  local top
+  while IFS= read -r top; do
+    json POST "$API/api/libraries/$sweep/sources" "{\"path\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$top")}" > /dev/null ||
+      die "could not add $top to Sweep"
+  done < <(find "$INGEST" -mindepth 1 -maxdepth 1 ! -name uploads ! -name imports ! -name examples ! -name _removed ! -name .seeded -printf '%f\n' | sort)
   # One scan is the whole ingest directory into one library: POST /scan takes no subpath.
   began=$SECONDS
   batch=$(json POST "$API/api/libraries/$sweep/scan" | field 'value["batchId"]')

@@ -279,7 +279,13 @@ async fn a_part_deleted_while_its_change_was_measured_is_not_revised(pool: sqlx:
         .expect("reads")
         .expect("the seeded part")
         .revision;
-    assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
+    assert!(
+        PgParts(pool.clone())
+            .delete(part)
+            .await
+            .expect("delete")
+            .is_some()
+    );
 
     let m = measurements();
     let error = revisions

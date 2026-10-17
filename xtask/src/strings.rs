@@ -134,11 +134,6 @@ pub const EXEMPT: &[Exemption] = &[
     },
     Exemption {
         file: "xtask/src/deploy.rs",
-        content: "623bf4fbbec5bf2d",
-        reason: "a compose.yaml fixture (an app service mounting the owner's folders with the options under test, and the inbox) for M4's read-only ingest mount rule; the YAML indentation is the structure under test",
-    },
-    Exemption {
-        file: "xtask/src/deploy.rs",
         content: "e424f2cca583b454",
         reason: "a compose.yaml fixture with a column-0 banner comment above its one service, for parse_services; the indentation is the structure under test",
     },

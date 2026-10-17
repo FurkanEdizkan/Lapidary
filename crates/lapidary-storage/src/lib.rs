@@ -582,6 +582,52 @@ fn stat(path: &Path) -> Result<FileStat, StorageError> {
     Ok(FileStat::of(&std::fs::metadata(path).map_err(io(path))?))
 }
 
+/// The folder, at the top of the models folder, that a removed model's file is moved into (A2).
+/// A scan and the Import browser never look inside it.
+pub const REMOVED_DIR: &str = "_removed";
+
+/// Move a removed model's file out of the way, into `_removed/<owner>/<its path>` under the same
+/// root, and answer where it went, relative to that root (A2, owner 2026-10-17: "it can't delete the
+/// real model, only remove it from its library").
+///
+/// **Never an unlink, and never over another file.** A `rename(2)` within one root, so the bytes are
+/// not copied and nothing is deleted at any step; a name already taken under `_removed/` gets the
+/// upload's `name (2).stl` treatment. A file that is not there any more is `Ok(None)`: there is
+/// nothing to keep out of the way.
+///
+/// `ponytail:` the free name is checked, then renamed onto, so two removals racing for one name in
+/// the same instant could have the second replace the first; `renameat2(RENAME_NOREPLACE)` closes
+/// that if it is ever seen.
+pub fn move_to_removed(
+    root: &Path,
+    rel: &str,
+    owner: &str,
+) -> Result<Option<String>, StorageError> {
+    let from = resolve(root, rel)?;
+    if !from.is_file() {
+        return Ok(None);
+    }
+    let base = format!("{REMOVED_DIR}/{owner}/{rel}");
+    let mut target = base.clone();
+    let mut n = 2;
+    while resolve(root, &target)?.exists() {
+        if n > 999 {
+            return Err(StorageError::Io {
+                path: base,
+                source: std::io::Error::other("a thousand removed files already have this name"),
+            });
+        }
+        target = alternative(&base, n);
+        n += 1;
+    }
+    let to = resolve(root, &target)?;
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(io(parent))?;
+    }
+    std::fs::rename(&from, &to).map_err(io(&from))?;
+    Ok(Some(target))
+}
+
 /// `uploads/brackets/bracket.stl` as `uploads/brackets/bracket (n).stl`.
 fn alternative(rel: &str, n: u32) -> String {
     let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
@@ -600,6 +646,34 @@ fn alternative(rel: &str, n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_removed_file_is_moved_beside_the_others_never_over_one_and_never_deleted() {
+        let dir = tree(&[
+            ("prints/benchy.stl", b"solid benchy"),
+            ("_removed/lena/prints/benchy.stl", b"solid an older benchy"),
+        ]);
+        let moved = move_to_removed(dir.path(), "prints/benchy.stl", "lena")
+            .expect("moves")
+            .expect("it was there");
+        assert_eq!(moved, "_removed/lena/prints/benchy (2).stl");
+        assert!(!dir.path().join("prints/benchy.stl").exists());
+        assert_eq!(
+            std::fs::read(dir.path().join(&moved)).expect("kept"),
+            b"solid benchy"
+        );
+        // The one already there is untouched.
+        assert_eq!(
+            std::fs::read(dir.path().join("_removed/lena/prints/benchy.stl")).expect("kept"),
+            b"solid an older benchy"
+        );
+        // Gone already is nothing to move; a path out of the root is refused.
+        assert_eq!(
+            move_to_removed(dir.path(), "prints/benchy.stl", "lena").expect("asks"),
+            None
+        );
+        assert!(move_to_removed(dir.path(), "../outside.stl", "lena").is_err());
+    }
 
     fn tree(files: &[(&str, &[u8])]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");

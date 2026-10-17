@@ -79,13 +79,13 @@
 //! candidates the walk finds.
 
 use crate::AppState;
-use crate::handler::WorkerHandler;
+use crate::handler::{WorkerHandler, classify_db};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BatchId, JobPayload, LibraryId, Outcome, ScanAccepted};
-use lapidary_db::{DbError, PgJobs};
+use lapidary_db::{DbError, PgJobs, PgSources};
 use lapidary_jobs::HandlerError;
 use std::path::Path as FsPath;
 
@@ -128,25 +128,49 @@ impl WorkerHandler {
         batch: BatchId,
         library: LibraryId,
     ) -> Result<Outcome, HandlerError> {
-        // The library's own folder under the mount (`0062`); `''` is the whole of it. Each path
-        // the walk finds is relative to it, and that is the part's `source_path`.
-        let root = self.library_root(library).await?;
-        let dir = if root.trim_matches('/').is_empty() {
-            self.ingest_dir.clone()
-        } else {
-            lapidary_core::slug::reject_escaping_path(&root).map_err(|e| {
-                HandlerError::Permanent {
-                    message: format!("This library's folder {root:?} is refused: {e}"),
+        // What the library holds (A2): each file and folder a person added from the models folder.
+        // Every path is relative to the models folder, and that is the part's `source_path`.
+        let sources = PgSources(self.db.clone())
+            .list(library)
+            .await
+            .map_err(classify_db)?;
+        let mut paths = Vec::new();
+        for source in &sources {
+            let at = source.path.trim_matches('/');
+            if !at.is_empty() {
+                lapidary_core::slug::reject_escaping_path(at).map_err(|e| {
+                    HandlerError::Permanent {
+                        message: format!("The added path {at:?} is refused: {e}"),
+                    }
+                })?;
+            }
+            let full = self.ingest_dir.join(at);
+            if source.kind == "file" {
+                if is_model_candidate(&full) {
+                    paths.push(at.to_owned());
+                } else {
+                    tracing::warn!(
+                        path = at,
+                        "an added file is not in the models folder any more, or is not a model; skipped"
+                    );
                 }
-            })?;
-            self.ingest_dir.join(root.trim_matches('/'))
-        };
-        let mut paths = walk(&dir)?;
+                continue;
+            }
+            for found in walk(&full)? {
+                paths.push(if at.is_empty() {
+                    found
+                } else {
+                    format!("{at}/{found}")
+                });
+            }
+        }
+        // Two sources can cover one file; it is filed once.
+        paths.sort();
+        paths.dedup();
 
         // Deterministic order, so the job ids a scan issues are ordered the way a person
         // reading the tree would expect. The whole relative path sorts, not the basename,
-        // so a folder's files stay together. `unnest` preserves array order.
-        paths.sort();
+        // so a folder's files stay together. `unnest` preserves array order. (Sorted above.)
 
         let jobs: Vec<JobPayload> = paths
             .into_iter()
@@ -239,6 +263,11 @@ fn walk(root: &FsPath) -> Result<Vec<String>, HandlerError> {
             // part of their library, and walking a `.git` on a large corpus is pure waste. Skipped as
             // silently as any other non-candidate.
             if lapidary_core::is_ignored(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            // Where removed models' files are moved (A2). Never walked, so a removed model does not
+            // come back on the next scan.
+            if entry.file_name() == lapidary_storage::REMOVED_DIR {
                 continue;
             }
 

@@ -360,20 +360,12 @@ async fn main() -> Result<()> {
                 .clone()
                 .context("Could not start: LAPIDARY_UPLOAD_DIR is not set. It names where an upload waits until its bytes are checked.")?;
 
+        // Since A2 the inbox is the models folder itself: one storage location, where uploads and
+        // imports are written under their own folders. Unset means exactly that.
         let inbox_dir = config
-                .inbox_dir
-                .clone()
-                .context("Could not start: LAPIDARY_INBOX_DIR is not set. It names the folder Lapidary writes uploads and link imports into before indexing them; keep it outside the folders you scan.")?;
-        refuse_inbox_inside(&inbox_dir, &ingest_dir)?;
-        // And on the host: inside the containers the two are `/inbox` and `/ingest`, which never nest,
-        // while the folders they are mounted from can. Both host paths come from the same `.env`.
-        if let (Some(host_inbox), Some(host_ingest)) =
-            (&config.host_inbox_root, &config.host_ingest_root)
-            && host_inbox.is_absolute()
-            && host_ingest.is_absolute()
-        {
-            refuse_inbox_inside(host_inbox, host_ingest)?;
-        }
+            .inbox_dir
+            .clone()
+            .unwrap_or_else(|| ingest_dir.clone());
 
         // The worker's own pool, with the long ceiling: nobody waits on a job, and a job that
         // runs long is not a stuck query. The API keeps the interactive one, so a slow job can
@@ -518,26 +510,6 @@ async fn reset_password(db: lapidary_db::PgPool, username: &str) -> Result<()> {
 fn absolute(path: Option<&PathBuf>) -> Option<String> {
     path.filter(|path| path.is_absolute())
         .map(|path| path.display().to_string())
-}
-
-/// The inbox is written to; the owner's folders never are (M4). An inbox inside them would make
-/// every upload a write into a folder the owner keeps, so the server does not start. Compared
-/// after resolving both, so a symlink or a `..` cannot hide it; a path that does not exist yet is
-/// compared as written.
-fn refuse_inbox_inside(inbox: &std::path::Path, ingest: &std::path::Path) -> Result<()> {
-    let resolve =
-        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let (inbox_at, ingest_at) = (resolve(inbox), resolve(ingest));
-    if inbox_at.starts_with(&ingest_at) {
-        bail!(
-            "Could not start: LAPIDARY_INBOX_DIR ({}) is inside LAPIDARY_INGEST_DIR ({}). Lapidary \
-             never writes into the folders it scans, and the inbox is written to. Point the inbox \
-             at a folder outside them.",
-            inbox.display(),
-            ingest.display()
-        );
-    }
-    Ok(())
 }
 
 /// `LAPIDARY_ROLE` chose between the processes this server used to be split into. One process does
@@ -717,32 +689,5 @@ mod tests {
             .await
             .expect("responds");
         assert_eq!(absent.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn an_inbox_inside_the_scanned_folders_does_not_start() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let ingest = root.path().join("ingest");
-        std::fs::create_dir_all(ingest.join("parts")).expect("mkdir");
-        let message = refuse_inbox_inside(&ingest.join("parts/inbox"), &ingest)
-            .expect_err("an inbox under the owner's folders is refused")
-            .to_string();
-        assert!(
-            message.contains("never writes into the folders it scans"),
-            "{message}"
-        );
-        refuse_inbox_inside(&ingest, &ingest).expect_err("the same folder is refused too");
-        refuse_inbox_inside(&root.path().join("inbox"), &ingest).expect("a sibling folder is fine");
-        // The host's folders, which need not exist where the server runs: compared as written.
-        refuse_inbox_inside(
-            std::path::Path::new("/srv/parts/inbox"),
-            std::path::Path::new("/srv/parts"),
-        )
-        .expect_err("an inbox inside the owner's folders on the host is refused too");
-        refuse_inbox_inside(
-            std::path::Path::new("/srv/lapidary-inbox"),
-            std::path::Path::new("/srv/parts"),
-        )
-        .expect("beside them is fine");
     }
 }

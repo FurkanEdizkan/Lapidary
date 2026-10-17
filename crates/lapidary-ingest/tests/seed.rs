@@ -148,6 +148,7 @@ async fn deleting_every_seeded_part_does_not_bring_them_back(pool: PgPool) {
                 .delete(lapidary_core::PartId::from_uuid(id))
                 .await
                 .expect("delete")
+                .is_some()
         );
     }
 

@@ -402,7 +402,13 @@ async fn a_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
         })
         .await
         .expect("records");
-    assert!(PgParts(pool.clone()).delete(id).await.expect("deletes"));
+    assert!(
+        PgParts(pool.clone())
+            .delete(id)
+            .await
+            .expect("deletes")
+            .is_some()
+    );
 
     let page = PgParts(pool)
         .page(&GridQuery::new(library(), 50), Sort::Newest)
@@ -1767,7 +1773,7 @@ async fn deleting_a_part_takes_its_bytes_off_the_library_panel(pool: sqlx::PgPoo
         "the fixture has to cost something, or the comparison below proves nothing"
     );
 
-    assert!(parts.delete(id).await.expect("deletes"));
+    assert!(parts.delete(id).await.expect("deletes").is_some());
 
     let after = parts
         .storage_totals(library())
@@ -1833,7 +1839,7 @@ async fn deleting_a_part_that_has_been_moved_takes_its_move_history_with_it(pool
     );
 
     assert!(
-        parts.delete(id).await.expect("delete"),
+        parts.delete(id).await.expect("delete").is_some(),
         "a delete must not fail on the audit trail of a move"
     );
 
@@ -2025,9 +2031,15 @@ async fn deleting_a_part_queues_nothing_for_removal_and_leaves_no_row_behind(poo
     let part = seed_part(&ingest, library(), "Hex spacer, M4x20", 0xb4).await;
     let before = parts.instance_storage().await.expect("instance totals");
 
-    assert!(parts.delete(part).await.expect("deletes the part"));
     assert!(
-        !parts.delete(part).await.expect("asks again"),
+        parts
+            .delete(part)
+            .await
+            .expect("deletes the part")
+            .is_some()
+    );
+    assert!(
+        parts.delete(part).await.expect("asks again").is_none(),
         "a second delete finds nothing, so the route answers 404"
     );
 
@@ -2097,6 +2109,7 @@ async fn deleting_a_part_takes_its_gallery_and_its_provenance_with_it(pool: sqlx
             .delete(part)
             .await
             .expect("deletes it, foreign keys and all")
+            .is_some()
     );
 
     let orphans: i64 = sqlx::query_scalar(
@@ -2303,7 +2316,7 @@ async fn a_two_word_query_finds_a_name_holding_both_words_apart(pool: sqlx::PgPo
 async fn search_never_finds_a_deleted_part(pool: sqlx::PgPool) {
     let part = seed_named(&pool, 0xdc, "vee-block-lp-3072-02", None).await;
     let parts = PgParts(pool.clone());
-    assert!(parts.delete(part).await.expect("deletes it"));
+    assert!(parts.delete(part).await.expect("deletes it").is_some());
 
     assert!(
         parts
@@ -2513,7 +2526,7 @@ async fn the_format_facet_counts_what_the_grid_shows_and_the_filter_narrows_it(p
         .expect("search");
     assert_eq!(found.len(), 2, "a search narrows the same way");
 
-    assert!(parts.delete(plate).await.expect("deletes"));
+    assert!(parts.delete(plate).await.expect("deletes").is_some());
     let live = parts
         .format_facet(library(), None, None, None, None, None, None)
         .await

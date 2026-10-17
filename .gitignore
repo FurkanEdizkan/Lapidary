@@ -28,6 +28,8 @@ volumes/
 /storage/
 # The default inbox, for the same reason: ${LAPIDARY_INBOX_DIR:-../inbox} (M4).
 /inbox/
+# The default models folder since A2: ${LAPIDARY_MODELS_DIR:-../models}.
+/models/
 
 # Generated
 crates/*/bindings/

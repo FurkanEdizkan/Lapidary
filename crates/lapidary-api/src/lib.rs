@@ -2,6 +2,7 @@
 //! and never forked per distribution.
 
 // `pub` for `CurrentUser`, `prepare_setup` and `hash_password`, which the server binary and the tests use.
+mod added;
 pub mod auth;
 mod blob;
 mod dashboard;
@@ -24,6 +25,8 @@ mod moves;
 mod part_number;
 mod parts;
 mod profile;
+// `pub` for `Retired`, the shape a delete answers with.
+pub mod retire;
 mod revisions;
 mod scan;
 mod site_settings;
@@ -31,6 +34,7 @@ mod sources;
 mod tags;
 mod upload;
 
+pub use added::{BrowseEntry, BrowseListing, LibrarySource, NewSourceRequest};
 pub use detail::PartDetail;
 pub use error::ApiError;
 pub use folders::FolderNode;
@@ -213,6 +217,25 @@ fn guarded(db: PgPool) -> Router<AppState> {
         // route the api serves. It enqueues a `scan_directory` job and walks
         // nothing — see `scan.rs`.
         .route("/api/libraries/{id}/scan", post(scan::scan))
+        // What the library holds (A2): the Import browser over the models folder, the files and
+        // folders added from it, and the pictures a person chose for one. See `added.rs`.
+        .route("/api/storage/browse", get(added::browse))
+        .route(
+            "/api/libraries/{id}/sources",
+            get(added::list_sources).post(added::add_source),
+        )
+        .route(
+            "/api/libraries/{library}/sources/{source}",
+            axum::routing::delete(added::remove_source),
+        )
+        .route(
+            "/api/libraries/{library}/sources/{source}/pictures",
+            post(added::add_source_picture).layer(DefaultBodyLimit::max(
+                lapidary_storage::images::MAX_INPUT_BYTES,
+            )),
+        )
+        // "Fetch details": a part described from its page, nothing downloaded (A2).
+        .route("/api/parts/{id}/describe", post(site_settings::describe))
         // Importing a model from its page, and the Settings page's keys for the sites it
         // reads (F3). See `site_settings.rs`.
         .route(
@@ -222,6 +245,10 @@ fn guarded(db: PgPool) -> Router<AppState> {
         // This install's display name (M2). See `profile.rs`.
         .route("/api/profile", get(profile::get).put(profile::set))
         .route("/api/settings/sites", get(site_settings::list))
+        .route(
+            "/api/settings/import",
+            get(profile::import_settings).put(profile::set_import_settings),
+        )
         .route(
             "/api/settings/sites/{site}",
             put(site_settings::set).delete(site_settings::clear),

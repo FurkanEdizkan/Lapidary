@@ -92,7 +92,13 @@ async fn retire(pool: &PgPool, part: PartId) {
     .fetch_all(pool)
     .await
     .expect("the part's files");
-    assert!(PgParts(pool.clone()).delete(part).await.expect("delete"));
+    assert!(
+        PgParts(pool.clone())
+            .delete(part)
+            .await
+            .expect("delete")
+            .is_some()
+    );
     for hash in files {
         sqlx::query(
             "UPDATE blob SET ref_count = (SELECT count(*) FROM file WHERE blake3 = $1), \
@@ -411,7 +417,7 @@ async fn a_deleted_parts_model_file_survives_every_sweep_and_only_its_export_lea
         .expect("the export lands");
 
     let parts = PgParts(pool.clone());
-    assert!(parts.delete(part).await.expect("delete"));
+    assert!(parts.delete(part).await.expect("delete").is_some());
     assert_eq!(
         parts
             .instance_storage()

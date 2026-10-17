@@ -1,7 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { checkSiteKey, clearSiteKey, fetchSiteSettings, saveSiteKey } from '../lib/api'
+import {
+  checkSiteKey,
+  clearSiteKey,
+  fetchImportSettings,
+  fetchSiteSettings,
+  saveImportSettings,
+  saveSiteKey,
+} from '../lib/api'
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
@@ -49,8 +56,39 @@ export function SettingsPage() {
             </ul>
           </>
         )}
+        <ImportSettingsSection />
       </section>
     </AppFrame>
+  )
+}
+
+/** How Import starts (A2): whether a file added with a page link fetches the page's details. */
+function ImportSettingsSection() {
+  const queryClient = useQueryClient()
+  const current = useQuery({ queryKey: ['import-settings'], queryFn: fetchImportSettings })
+  const save = useMutation({
+    mutationFn: (fetchDetails: boolean) => saveImportSettings({ fetchDetails }),
+    onSuccess: (saved) => queryClient.setQueryData(['import-settings'], saved),
+  })
+  return (
+    <>
+      <h3 className="mt-10 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+        {strings.settings.importHeading}
+      </h3>
+      <label className="mt-3 flex items-start gap-3 text-sm">
+        <input
+          type="checkbox"
+          checked={current.data?.fetchDetails ?? false}
+          disabled={current.isPending || save.isPending}
+          onChange={(event) => save.mutate(event.target.checked)}
+          className="mt-0.5 size-4 accent-[var(--color-accent)]"
+        />
+        <span className="flex flex-col gap-1">
+          {strings.settings.fetchDetails}
+          <span className="text-xs text-[var(--color-dim)]">{strings.settings.fetchDetailsHint}</span>
+        </span>
+      </label>
+    </>
   )
 }
 
