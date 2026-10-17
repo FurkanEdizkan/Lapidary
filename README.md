@@ -56,18 +56,20 @@ moment and predates it.
 
 ## Running it
 
-Container-first. Podman is recommended; Docker is supported. Copy the env file, set a password,
-and pass it explicitly with `--env-file` — Podman and Docker do not agree on auto-loading it.
+Container-first: Podman or Docker, with compose. One command:
 
 ```sh
-cp deploy/.env.example deploy/.env   # then edit it and set POSTGRES_PASSWORD
-podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
-podman compose --env-file deploy/.env -f deploy/compose.yaml logs app   # the URL and a setup code
+./install.sh
 ```
 
-Open the URL it prints (port 3000, or the first free one after it) and follow the setup wizard:
-the setup code from the log, your admin account, the port, and **your models folder**, picked
-from a folder browser. Lapidary restarts on that folder; add the folders you want in your library
+It writes `deploy/.env` the first time (a random database password), builds and starts Lapidary,
+and prints its address and a setup code. Run it again to rebuild; your settings are kept. By hand,
+it is `cp deploy/.env.example deploy/.env`, a password in it, and
+`podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build`.
+
+Open the address (port 3000, or the first free one after it) and follow the setup wizard: the
+setup code, your admin account, the port, **your models folder** and **where Lapidary keeps its
+own files**, each picked from a folder browser. Lapidary restarts on that folder; add the folders you want in your library
 from it with **Import**. Everyone else gets an account from the admin, starts with an empty
 library, and sees only their own models and the ones shared with them.
 
@@ -88,7 +90,7 @@ library, and sees only their own models and the ones shared with them.
 - **Or fix the folder outright** with `LAPIDARY_MODELS_DIR=/srv/models`; the wizard and Settings
   then show it instead of offering a choice — the right setting for a scripted or shared server.
 - **Docker Desktop on macOS or Windows:** `/` there is Docker's own Linux VM, not your disk, so
-  set `LAPIDARY_BROWSE_ROOT` to a shared folder (`/Users/you/Models`, or a path Docker Desktop
+  `install.sh` sets `LAPIDARY_BROWSE_ROOT` to your home folder; set it to another shared folder (`/Users/you/Models`, or a path Docker Desktop
   shares from `C:\`), and turn on host networking in Docker Desktop's settings. Linux needs neither.
 - **SELinux hosts (Fedora, RHEL):** the browse root is mounted without relabelling, so point
   `LAPIDARY_BROWSE_ROOT` or `LAPIDARY_MODELS_DIR` at a folder you have labelled for containers.
