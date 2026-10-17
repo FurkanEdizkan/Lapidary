@@ -62,6 +62,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Sharing and people: share a model (or a selection) with chosen people or everybody, to look and download; Shared with me; the admin adds, resets and removes accounts (a removed person's models become the admin's); change your own password | A4, built |
 | The port: 3000 or the first free one at first start, remembered, and moved from Settings with no restart (the old port answers a minute more); fixed by LAPIDARY_PORT when set. Skeleton pages while loading | A5, built |
 | The models folder: chosen in the setup wizard and Settings › Server from a folder picker over the machine (LAPIDARY_BROWSE_ROOT), Lapidary restarting on it; fixed by LAPIDARY_MODELS_DIR when set. Refused while models are read from the current folder | A6, built |
+| Runs as the person who installed it (the owner of deploy/, or LAPIDARY_UID/GID), so their folders open with no permission command and what Lapidary writes is theirs; never root | A7, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped

@@ -123,7 +123,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A4](A4.md) | Sharing and the accounts admin | 11 | Rust + web | A3 | see [ACCOUNTS.md](ACCOUNTS.md) | 0066 | merged `ad97e81` | `feat/sharing-users` |
 | [A5](A5.md) | The port, moved live, and skeleton pages | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | — | merged `d23e3ca` | `feat/live-port` |
 | [A6](A6.md) | The models folder, chosen in the wizard and Settings | 12 | Rust + web + deploy | A5 | see [A6.md](A6.md) | — | merged `20322ba` | `feat/models-folder-picker` |
-| [A7](A7.md) | Lapidary runs as the person who installed it | 12 | deploy + Rust | A6 | see [A7.md](A7.md) | — | open | `feat/run-as-owner` |
+| [A7](A7.md) | Lapidary runs as the person who installed it | 12 | deploy + Rust | A6 | see [A7.md](A7.md) | — | merged `201bfb9` | `feat/run-as-owner` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 

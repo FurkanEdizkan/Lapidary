@@ -59,7 +59,8 @@ area — these encode decisions that are expensive to reverse.
 - **Container-first.** Podman and Docker. The Tauri app is a later phase and bundles
   **only our own binaries** — never Postgres. The app container runs with host networking and owns
   its port (A5): `bin/lapidary-server/src/ports.rs` binds, moves and closes listeners; the database
-  is published on loopback only.
+  is published on loopback only. It runs as the person who installed it (A7, `deploy/entrypoint.sh`),
+  never as root.
 - **No SQL outside `lapidary-db`.** Everything goes through repository traits.
 - **Opening a part reads metadata and pictures, never a model file.** The one exception is
   deliberate and asked for: pressing **view** hands the browser the original mesh to draw, which is the
