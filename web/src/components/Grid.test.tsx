@@ -200,7 +200,7 @@ test('a card with several pictures flips through them, fetching the set only whe
     image: picture(WEBP),
     imageCount: 1,
   })
-  const fetchMock = vi.fn(async () => ({
+  const fetchMock = vi.fn(async (_url: string) => ({
     ok: true,
     status: 200,
     json: async () => [picture(WEBP), picture(SECOND)],
