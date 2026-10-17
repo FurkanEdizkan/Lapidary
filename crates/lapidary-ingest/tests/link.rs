@@ -64,7 +64,7 @@ async fn serve(stls: Value) -> String {
                             "license": {"name": "Creative Commons — Attribution"},
                             "user": {"publicUsername": "3Diocrity"},
                             "tags": [{"name": "Motorcycles"}, {"name": "cruisecontrol"}],
-                            "images": [{"filePath": "media/prints/482910/images/go-cruise.webp"}],
+                            "images": [{"filePath": "media/prints/482910/images/go-cruise.webp"}, {"filePath": "media/prints/482910/images/fitted.webp"}],
                             "stls": stls
                         }}})
                     })
@@ -153,13 +153,46 @@ async fn a_printables_link_files_its_mesh_with_its_page_and_imports_again_as_a_r
             .tags,
         ["motorcycles", "cruisecontrol"]
     );
-    let origins: Vec<String> =
-        sqlx::query_scalar("SELECT origin FROM part_image WHERE part_id = $1")
-            .bind(part.as_uuid())
-            .fetch_all(&pool)
-            .await
-            .expect("gallery");
-    assert_eq!(origins, ["url_supplied"]);
+    let gallery = || async {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT origin, source_url FROM part_image WHERE part_id = $1 ORDER BY position",
+        )
+        .bind(part.as_uuid())
+        .fetch_all(&pool)
+        .await
+        .expect("gallery")
+    };
+    // (M5) Every picture on the page, in the page's order.
+    let page: Vec<_> = gallery().await;
+    assert_eq!(page.len(), 2);
+    assert!(page.iter().all(|(origin, _)| origin == "url_supplied"));
+    assert!(
+        page[0]
+            .1
+            .as_deref()
+            .is_some_and(|u| u.ends_with("go-cruise.webp"))
+    );
+    assert!(
+        page[1]
+            .1
+            .as_deref()
+            .is_some_and(|u| u.ends_with("fitted.webp"))
+    );
+    // A person adds one of their own; the re-import below must neither move it nor repeat the page's.
+    let webp = lapidary_storage::images::normalize(PICTURE)
+        .expect("normalizes")
+        .webp;
+    parts
+        .add_part_image(
+            part,
+            lapidary_db::NewPartImage {
+                bytes: lapidary_db::ImageBytes::Inline(&webp),
+                origin: "uploaded",
+                source_url: None,
+            },
+        )
+        .await
+        .expect("an upload");
 
     // The same link again is a re-scan: nothing new, and no second source row.
     assert_eq!(
@@ -170,6 +203,10 @@ async fn a_printables_link_files_its_mesh_with_its_page_and_imports_again_as_a_r
         Outcome::Skipped
     );
     assert_eq!(parts.part_sources(part).await.expect("sources").len(), 1);
+    let again: Vec<_> = gallery().await;
+    assert_eq!(again[..2], page[..]);
+    assert_eq!(again.len(), 3);
+    assert_eq!(again[2].0, "uploaded");
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]

@@ -73,6 +73,7 @@ function card(suffix: string, name: string, path: string): PartCard {
     sourcePath: path,
     sourceFormat: 'stl',
     image: null,
+    imageCount: 0,
     triangleCount: 48112,
     approximate: true,
     sourceHash: null,

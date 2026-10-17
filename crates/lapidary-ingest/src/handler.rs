@@ -478,7 +478,9 @@ impl WorkerHandler {
     /// `normalize` every upload takes, and stored the way the gallery stores one: on its row under
     /// the inline limit, in the store above.
     ///
-    /// **A person's picture always wins**: `adopt_part_image` adds nothing to a part that has one.
+    /// **A person's picture always wins.** One with no `source_url` — a thumbnail — goes only to a
+    /// part with no picture (`adopt_part_image`); one from a page is appended after whatever the part
+    /// has, once per URL (`add_page_image`), so a set grows and nothing a person chose moves.
     /// Warn-only throughout: the part is committed, and a picture it lacks is not a failure.
     pub(crate) async fn adopt_picture(
         &self,
@@ -518,19 +520,19 @@ impl WorkerHandler {
                 }
             }
         };
-        let adopted = PgParts(self.db.clone())
-            .adopt_part_image(
-                part,
-                lapidary_db::NewPartImage {
-                    bytes: match &blob {
-                        Some(hash) => lapidary_db::ImageBytes::Blob(hash),
-                        None => lapidary_db::ImageBytes::Inline(&image.webp),
-                    },
-                    origin,
-                    source_url,
-                },
-            )
-            .await;
+        let row = lapidary_db::NewPartImage {
+            bytes: match &blob {
+                Some(hash) => lapidary_db::ImageBytes::Blob(hash),
+                None => lapidary_db::ImageBytes::Inline(&image.webp),
+            },
+            origin,
+            source_url,
+        };
+        let parts = PgParts(self.db.clone());
+        let adopted = match source_url {
+            Some(_) => parts.add_page_image(part, row).await,
+            None => parts.adopt_part_image(part, row).await,
+        };
         if let Err(error) = adopted {
             tracing::warn!(source_path, %error, "could not attach a found picture; the part has no picture from it");
         }

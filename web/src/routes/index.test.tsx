@@ -370,6 +370,7 @@ const MOTOR_MOUNT: PartCard = {
   partNumber: "LP-3105-A",
   sourceFormat: "stl",
   image: picture(WEBP_BLUE),
+  imageCount: 1,
   triangleCount: 12486,
   approximate: true,
   sourceHash:
@@ -393,6 +394,7 @@ const HEX_NUT: PartCard = {
   partNumber: "DIN934-M8-A2",
   sourceFormat: "stl",
   image: picture(WEBP_ORANGE),
+  imageCount: 1,
   triangleCount: 1984,
   approximate: true,
   sourceHash:
@@ -423,6 +425,7 @@ const SHAFT_COUPLER: PartCard = {
   partNumber: "LP-4420-B",
   sourceFormat: "3mf",
   image: null,
+  imageCount: 0,
   triangleCount: 7320,
   approximate: true,
   sourceHash:
@@ -2433,6 +2436,7 @@ const CLIFF_FACE: PartCard & { directory: string } = {
   partNumber: "LP-7710-C",
   sourceFormat: "stl",
   image: null,
+  imageCount: 0,
   triangleCount: 148_302,
   approximate: true,
   sourceHash:
@@ -2457,6 +2461,7 @@ const OLD_BRACKET: PartCard & { directory: null } = {
   partNumber: "LP-2280-A",
   sourceFormat: "stl",
   image: null,
+  imageCount: 0,
   triangleCount: 3204,
   approximate: true,
   sourceHash:

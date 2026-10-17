@@ -24,6 +24,9 @@ pub struct PartRow {
     /// card. Over the 64 KB line it carries a hash instead of bytes and the card addresses
     /// `/api/blob/{hash}`; under it the bytes ride on the row.
     pub image: Option<PartImageRow>,
+    /// How many pictures the part has, `image` among them (M5): a card with more than one
+    /// offers the rest, and fetches them only when asked.
+    pub image_count: u32,
     /// The directory holding the part's file, relative to its root — the parent of
     /// `file.storage_path`. Shown, never acted on: since M4 a move renames nothing.
     pub directory: Option<String>,
@@ -1344,7 +1347,8 @@ macro_rules! grid_columns {
      img.id AS image_id, img.image_webp AS image_webp, img.blake3 AS image_blake3, \
      img.origin AS image_origin, img.source_url AS image_source_url, \
      img.position AS image_position, img.fit AS image_fit, \
-     img.focus_x AS image_focus_x, img.focus_y AS image_focus_y"
+     img.focus_x AS image_focus_x, img.focus_y AS image_focus_y, \
+     (SELECT count(*) FROM part_image ic WHERE ic.part_id = p.id)::int AS image_count"
     };
 }
 
@@ -3057,7 +3061,7 @@ impl PgParts {
         part: PartId,
         image: NewPartImage<'_>,
     ) -> Result<PartImageId, DbError> {
-        self.insert_part_image(part, image, false)
+        self.insert_part_image(part, image, Guard::Always)
             .await
             .map(|id| id.expect("an unconditional insert always inserts"))
     }
@@ -3073,17 +3077,29 @@ impl PgParts {
         part: PartId,
         image: NewPartImage<'_>,
     ) -> Result<Option<PartImageId>, DbError> {
-        self.insert_part_image(part, image, true).await
+        self.insert_part_image(part, image, Guard::IfNone).await
+    }
+
+    /// One of a model page's pictures (M5): appended to the gallery, after whatever is there, unless
+    /// the part already holds a picture from this `source_url`. Nothing a person chose moves or
+    /// goes, and a re-import of the same page adds nothing. `Ok(None)` when it was already there.
+    pub async fn add_page_image(
+        &self,
+        part: PartId,
+        image: NewPartImage<'_>,
+    ) -> Result<Option<PartImageId>, DbError> {
+        self.insert_part_image(part, image, Guard::NewSourceUrl)
+            .await
     }
 
     async fn insert_part_image(
         &self,
         part: PartId,
         image: NewPartImage<'_>,
-        only_if_none: bool,
+        guard: Guard,
     ) -> Result<Option<PartImageId>, DbError> {
         let mut tx = self.0.begin().await?;
-        if only_if_none {
+        if guard != Guard::Always {
             sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR UPDATE")
                 .bind(part.as_uuid())
                 .execute(&mut *tx)
@@ -3096,7 +3112,18 @@ impl PgParts {
         .bind(part.as_uuid())
         .fetch_one(&mut *tx)
         .await?;
-        if only_if_none && next > 0 {
+        let held = match guard {
+            Guard::Always => false,
+            Guard::IfNone => next > 0,
+            Guard::NewSourceUrl => sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM part_image WHERE part_id = $1 AND source_url = $2)",
+            )
+            .bind(part.as_uuid())
+            .bind(image.source_url)
+            .fetch_one(&mut *tx)
+            .await?,
+        };
+        if held {
             tx.rollback().await?;
             return Ok(None);
         }
@@ -3281,6 +3308,15 @@ pub enum ImageBytes<'a> {
     Blob(&'a BlobHash),
 }
 
+/// When `insert_part_image` writes its row. The part is locked for every guard but
+/// `Always`, so the check and the insert see the same gallery.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guard {
+    Always,
+    IfNone,
+    NewSourceUrl,
+}
+
 /// What [`PgParts::add_part_image`] needs to write a gallery row.
 #[derive(Debug)]
 pub struct NewPartImage<'a> {
@@ -3339,6 +3375,7 @@ struct GridRow {
     image_fit: Option<String>,
     image_focus_x: Option<f64>,
     image_focus_y: Option<f64>,
+    image_count: i32,
 }
 
 fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
@@ -3372,6 +3409,7 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
         image_fit,
         image_focus_x,
         image_focus_y,
+        image_count,
     } = row;
     {
         // `as u32` previously turned a negative column value into a number
@@ -3470,6 +3508,7 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
             },
             source_format,
             image,
+            image_count: u32::try_from(image_count).unwrap_or(0),
             directory: storage_path.as_deref().and_then(model_directory),
             storage_path,
             root: root.as_deref().map(file_root).transpose()?,

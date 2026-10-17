@@ -26,6 +26,7 @@ const BASALT: PartCard = {
   sourcePath: 'Terrain/Rocks/basalt-cliff-face.stl',
   sourceFormat: 'stl',
   image: null,
+  imageCount: 0,
   triangleCount: 184_320,
   approximate: true,
   sourceHash: null,
