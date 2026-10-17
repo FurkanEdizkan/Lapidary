@@ -5,7 +5,8 @@
 //! through [`WorkerHandler::index`] — the path a scan and an upload take, hash first — as the part
 //! `<site>/<creator>/<model>/<file>`, and then each part gets what the page said about it: a source
 //! row naming the page, the site, the model's id and its licence; the creator's tags when the part has
-//! none; the page's first picture when the part has none. What a person already gave a part wins.
+//! none; every picture on the page, to [`MAX_PICTURES`], after the ones it has and once per URL (M5).
+//! What a person already gave a part wins.
 //!
 //! Nothing is written before a file's bytes are in hand: a file that cannot be fetched fails the job
 //! before ingest sees it, so there is no staging directory to leak. A re-import of the same model is
@@ -27,6 +28,8 @@ use lapidary_storage::InboxWriter;
 
 /// The most tags a page gives a part; past this a creator's tag list is a keyword dump.
 const MAX_TAGS: usize = 20;
+/// A page's pictures past this many are its gallery, not the model's.
+const MAX_PICTURES: usize = 12;
 
 impl WorkerHandler {
     pub(crate) async fn import_link(
@@ -77,17 +80,16 @@ impl WorkerHandler {
             });
         }
 
-        // Fetched once, attached to each part that has no picture.
-        let picture = match model.images.first() {
-            Some(url) => match self.sites.image(url).await {
-                Ok(bytes) => Some((url.clone(), bytes)),
+        // Fetched once, each attached to every part of the set (M5).
+        let mut pictures = Vec::new();
+        for url in model.images.iter().take(MAX_PICTURES) {
+            match self.sites.image(url).await {
+                Ok(bytes) => pictures.push((url.clone(), bytes)),
                 Err(error) => {
-                    tracing::warn!(site = site.slug(), %error, "could not fetch the model's picture; its parts have none from it");
-                    None
+                    tracing::warn!(site = site.slug(), %url, %error, "could not fetch one of the model's pictures; its parts go without it");
                 }
-            },
-            None => None,
-        };
+            }
+        }
 
         let folder = format!(
             "{}/{}/{}",
@@ -127,13 +129,13 @@ impl WorkerHandler {
                 )
                 .await?;
             outcome = most_telling(outcome, filed);
-            self.describe_from_page(library, &source_path, site, &model, picture.as_ref())
+            self.describe_from_page(library, &source_path, site, &model, &pictures)
                 .await;
         }
         Ok(outcome)
     }
 
-    /// The source row, the tags and the picture, each only where the part lacks it. Warn-only: the
+    /// The source row and the tags, each only where the part lacks it, and the page's pictures it lacks. Warn-only: the
     /// part is filed, and what the page adds is not a reason to fail it.
     async fn describe_from_page(
         &self,
@@ -141,7 +143,7 @@ impl WorkerHandler {
         source_path: &str,
         site: Site,
         model: &lapidary_sites::Model,
-        picture: Option<&(String, Vec<u8>)>,
+        pictures: &[(String, Vec<u8>)],
     ) {
         let part = match PgRevisions(self.db.clone())
             .current(library, source_path)
@@ -197,7 +199,7 @@ impl WorkerHandler {
                 tracing::warn!(source_path, %error, "could not record the imported part's tags");
             }
         }
-        if let Some((url, bytes)) = picture {
+        for (url, bytes) in pictures {
             self.adopt_picture(part, bytes, "url_supplied", Some(url), source_path)
                 .await;
         }

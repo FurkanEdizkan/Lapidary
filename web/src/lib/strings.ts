@@ -383,6 +383,10 @@ export const strings = {
     failed: 'Could not load the parts in this library. Check that the api service is running, then reload.',
     /** The part's own picture, which is what a card shows since R1. */
     pictureAlt: (name: string) => `Picture of ${name}`,
+    /** A card with several pictures (M5): its arrows, and where in the set the one shown sits. */
+    previousPicture: 'Previous picture',
+    nextPicture: 'Next picture',
+    pictureOf: (index: number, total: number) => `${index} of ${total}`,
     /**
      * A card for a part nobody has given a picture to.
      *

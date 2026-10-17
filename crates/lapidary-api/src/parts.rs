@@ -107,6 +107,9 @@ pub struct PartCard {
     /// and holding that hash is not authorization, because `blob.rs` checks reachability
     /// before it serves anything.
     pub image: Option<crate::images::PartImage>,
+    /// How many pictures the part has, `image` among them (M5). A card with more than one
+    /// offers the rest, fetched from `/api/parts/{id}/images` only when a person asks.
+    pub image_count: u32,
     /// The directory holding the part's file, relative to its root: the parent of
     /// `storagePath`. Shown, never opened, and never a move target — since M4 a move renames
     /// nothing.
@@ -891,6 +894,7 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         compressed: summary.compressed,
         source_format: row.source_format,
         image: row.image.map(crate::images::part_image),
+        image_count: row.image_count,
         directory: row.directory,
         storage_path: row.storage_path,
         file_root: row.root,

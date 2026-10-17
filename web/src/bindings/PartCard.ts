@@ -73,6 +73,11 @@ sourceFormat: string | null,
  */
 image: PartImage | null, 
 /**
+ * How many pictures the part has, `image` among them (M5). A card with more than one
+ * offers the rest, fetched from `/api/parts/{id}/images` only when a person asks.
+ */
+imageCount: number, 
+/**
  * The directory holding the part's file, relative to its root: the parent of
  * `storagePath`. Shown, never opened, and never a move target — since M4 a move renames
  * nothing.

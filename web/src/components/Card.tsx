@@ -1,5 +1,8 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { useRef, type CSSProperties, type ReactNode } from 'react'
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { fetchPartImages } from '../lib/api'
+import { Icon } from './Icon'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
@@ -75,6 +78,15 @@ const FOOTER: Record<Layout, string> = {
 }
 
 /**
+ * A card's picture arrows: shown under a pointer, always where there is no hover to reveal them.
+ * Whole strings, for the reason `CARD_SHAPE`'s are.
+ */
+const FLIP_LEFT =
+  'ease-mechanical absolute top-1/2 left-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
+const FLIP_RIGHT =
+  'ease-mechanical absolute top-1/2 right-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
+
+/**
  * A stored framing as the two CSS properties that apply it (`0019_image_framing.sql`).
  *
  * **The browser does the framing**, here and in the gallery's `Framed` alike, so this is one
@@ -121,7 +133,24 @@ export function Card({
     fallback has no producer and no field on the wire. A part nobody has photographed names its
     format instead of apologising for a picture it does not have.
   */
-  const src = part.image?.src ?? null
+  /*
+    **The rest of a set, only when asked** (M5). The page carries the first picture and how many
+    there are; the gallery is fetched on the first arrow press, under the part page's own key, so a
+    grid of forty cards costs no request until someone flips one. A list row's well is too small to
+    flip in, and the part's page shows every picture to a keyboard.
+  */
+  const [shown, setShown] = useState(0)
+  const flips = layout !== 'list' && part.imageCount > 1
+  const gallery = useQuery({
+    queryKey: ['part-images', part.id],
+    queryFn: () => fetchPartImages(part.id),
+    enabled: flips && shown !== 0,
+  })
+  const set = gallery.data ?? []
+  const total = set.length > 0 ? set.length : part.imageCount
+  const image = shown === 0 || set.length === 0 ? part.image : (set[shown % set.length] ?? part.image)
+  const flip = (step: number) => setShown((index) => (index + step + total) % total)
+  const src = image?.src ?? null
   return (
     <article
       aria-labelledby={nameId}
@@ -213,9 +242,39 @@ export function Card({
             src={src}
             alt={strings.parts.pictureAlt(part.name)}
             className="h-full w-full"
-            style={pictureStyle(part.image)}
+            style={pictureStyle(image)}
           />
         )}
+        {flips ? (
+          <>
+            {/*
+              Out of the tab order, like everything on a card but its name: forty cards with two
+              arrows each is eighty stops between a person and the fiftieth part. The arrows are a
+              pointer's shortcut; the part's page is where every picture is for a keyboard.
+            */}
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label={strings.parts.previousPicture}
+              onClick={() => flip(-1)}
+              className={FLIP_LEFT}
+            >
+              <Icon name="caretLeft" />
+            </button>
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label={strings.parts.nextPicture}
+              onClick={() => flip(1)}
+              className={FLIP_RIGHT}
+            >
+              <Icon name="caretRight" />
+            </button>
+            <span className="tabular absolute top-2 right-2 rounded-[var(--radius-ctl)] bg-[rgba(18,18,20,0.8)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)]">
+              {strings.parts.pictureOf((shown % total) + 1, total)}
+            </span>
+          </>
+        ) : null}
       </div>
 
       {/*
