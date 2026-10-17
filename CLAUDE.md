@@ -65,7 +65,11 @@ area — these encode decisions that are expensive to reverse.
 - **Generated columns are explicitly `STORED`.** PG 18 defaults to virtual, and virtual
   columns cannot be indexed. Our `tsvector` search column must be STORED.
 - **Content addressing is not authorization.** Knowing a blob hash must never grant
-  access. Always check tenant + part reachability.
+  access. Always check that the hash is reachable from one of the viewer's own parts.
+- **A person reaches their own models and the ones shared with them** (owner, 2026-10-17, A3).
+  Every route that names a library, part, category or revision is checked against the signed-in
+  person in `auth::scope`; somebody else's is the same 404 as an unknown id. Admin manages
+  accounts, not other people's models.
 - **Pin everything.** Exact image digests, `Cargo.lock` committed, GitHub Actions pinned
   to commit SHAs.
 - **`lapidary-api` is a library that builds a Router.** Never a binary. Never fork it per

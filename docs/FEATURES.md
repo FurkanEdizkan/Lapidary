@@ -58,6 +58,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | A model's pictures as a set: an import brings every picture on the page (up to 12) to each part, and a card with several flips through them without opening the part | M5, built |
 | Accounts: a first-run setup wizard (with a setup code from the server log), sign-in and sign-out, and every route behind a session; `reset-password` for a lost admin password | A1, built |
 | One models folder: Import browses it and adds files or folders (with a page link, its details and your pictures) without copying; removing a model moves its file into `_removed/`, never deletes it; "Fetch details" fills a part from its page | A2, built |
+| Models per person: each person sees their own libraries, models, pictures and site keys; somebody else's is a 404 like an unknown id | A3, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped

@@ -119,7 +119,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 |---|---|---|---|---|---|---|---|---|
 | [A1](A1.md) | Accounts, sign-in and the setup wizard | 10 | Rust + web | M5 | see [ACCOUNTS.md](ACCOUNTS.md) | 0063 | merged `d1458e1` | `feat/accounts` |
 | [A2](A2.md) | One storage location: browse, add, remove to `_removed/` | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | 0064 | merged `13feff4` | `feat/one-storage` |
-| [A3](A3.md) | Models per person | 11 | Rust + web | A2 | see [ACCOUNTS.md](ACCOUNTS.md) | 0065 | open | `feat/models-per-person` |
+| [A3](A3.md) | Models per person | 11 | Rust + web | A2 | see [ACCOUNTS.md](ACCOUNTS.md) | 0065 | merged `e71a5ee` | `feat/models-per-person` |
 | [A4](A4.md) | Sharing and the accounts admin | 11 | Rust + web | A3 | see [ACCOUNTS.md](ACCOUNTS.md) | 0066 | open | `feat/sharing-users` |
 | [A5](A5.md) | The port, moved live, and skeleton pages | 10 | Rust + web + deploy | A1 | see [ACCOUNTS.md](ACCOUNTS.md) | — | open | `feat/live-port` |
 
