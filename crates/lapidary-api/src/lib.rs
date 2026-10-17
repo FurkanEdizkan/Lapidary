@@ -246,6 +246,10 @@ fn guarded(db: PgPool) -> Router<AppState> {
         .route("/api/profile", get(profile::get).put(profile::set))
         .route("/api/settings/sites", get(site_settings::list))
         .route(
+            "/api/settings/import",
+            get(profile::import_settings).put(profile::set_import_settings),
+        )
+        .route(
             "/api/settings/sites/{site}",
             put(site_settings::set).delete(site_settings::clear),
         )

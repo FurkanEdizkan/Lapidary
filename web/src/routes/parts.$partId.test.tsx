@@ -803,7 +803,7 @@ test('delete asks first, says the file stays on disk, and leaves the page once d
   const menu = await openMenu(strings.detail.more)
   fireEvent.click(within(menu).getByRole('button', { name: strings.removal.remove }))
   const dialog = await screen.findByRole('dialog', { name: strings.removal.confirmTitle(PART.name) })
-  expect(dialog.textContent).toContain('The file itself stays where it is on disk.')
+  expect(dialog.textContent).toContain('moved into _removed in your models folder, never deleted')
   expect(dialog.textContent).toContain('cannot be undone')
 
   fireEvent.click(within(dialog).getByRole('button', { name: strings.removal.confirm }))

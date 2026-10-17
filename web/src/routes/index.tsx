@@ -71,6 +71,7 @@ import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import { ImportLinkDialog } from '../components/ImportLink'
+import { ImportDialog } from '../components/ImportDialog'
 import type { BatchKind } from '../components/Upload'
 
 export const Route = createFileRoute('/')({
@@ -753,6 +754,8 @@ export function Index({
   })
   // Importing a model from its page (F3): the dialog, and the server's refusal shown inside it.
   const [linking, setLinking] = useState(false)
+  // The Import dialog over the models folder (A2).
+  const [adding, setAdding] = useState(false)
   const [linkNote, setLinkNote] = useState<string | null>(null)
   const fromLink = useMutation({
     mutationFn: (url: string) => importLink(library, url),
@@ -849,6 +852,13 @@ export function Index({
             onImportLink={() => setLinking(true)}
             importBusy={importing.isPending}
           />
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="ease-mechanical flex min-h-8 flex-none items-center gap-2 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
+          >
+            {strings.addModels.button}
+          </button>
           <UploadButton onUpload={() => picker.current?.click()} busy={upload.isPending} progress={uploading} />
         </>
       }
@@ -997,6 +1007,21 @@ export function Index({
         />
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
+        )}
+        {!adding ? null : (
+          <ImportDialog
+            library={library}
+            onClose={() => setAdding(false)}
+            onScan={() => scanNow.mutate()}
+            onUpload={() => {
+              setAdding(false)
+              picker.current?.click()
+            }}
+            onFromLink={() => {
+              setAdding(false)
+              setLinking(true)
+            }}
+          />
         )}
         {!linking ? null : (
           <ImportLinkDialog

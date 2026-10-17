@@ -3734,7 +3734,7 @@ test("deleting a selection asks first, and cancelling deletes nothing", async ()
 
   const confirm = await screen.findByRole("dialog", { name: strings.removal.confirmTitleMany(2) });
   expect(confirm.textContent).toContain(strings.removal.confirmBodyMany(2));
-  expect(confirm.textContent).toContain("stay where they are on disk");
+  expect(confirm.textContent).toContain("moved into _removed in your models folder, never deleted");
   fireEvent.click(within(confirm).getByRole("button", { name: strings.folders.cancel }));
 
   expect(screen.queryByRole("dialog")).toBeNull();

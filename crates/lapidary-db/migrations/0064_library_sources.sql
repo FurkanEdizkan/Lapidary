@@ -23,6 +23,10 @@ CREATE TABLE library_source_image (
   PRIMARY KEY (source_id, position)
 );
 
+-- Whether a file added with a page link fetches that page's details unless the person says otherwise:
+-- the Import dialog's starting answer, set in Settings.
+ALTER TABLE app_user ADD COLUMN fetch_details boolean NOT NULL DEFAULT false;
+
 -- A library that had its own folder keeps it, as its one source, and its parts' paths become paths
 -- under the models folder, which is what a scan now produces for them. '' was the whole mount and
 -- becomes nothing: a library holds what was added to it.

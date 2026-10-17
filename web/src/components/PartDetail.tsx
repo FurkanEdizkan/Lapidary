@@ -14,6 +14,7 @@ import {
   fetchLibraries,
   fetchPartImages,
   fetchPartSources,
+  describePart,
   fetchRevisions,
   requestExport,
   setFieldValue,
@@ -331,7 +332,65 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
           {refusal}
         </p>
       )}
+      {recordable ? <FetchDetails part={part} /> : null}
     </section>
+  )
+}
+
+/**
+ * "Fetch details" (A2): the model's page fills in the part — source, licence, tags, pictures — and
+ * nothing is downloaded. It runs as a job, so the page asks again a moment later rather than waiting.
+ */
+function FetchDetails({ part }: { part: PartId }) {
+  const queryClient = useQueryClient()
+  const [url, setUrl] = useState('')
+  const [note, setNote] = useState<string | null>(null)
+  const fetchNow = useMutation({
+    mutationFn: () => describePart(part, url.trim()),
+    onSuccess: () => {
+      setNote(strings.sources.fetching)
+      setUrl('')
+      // ponytail: two timed re-reads rather than watching the batch; the job is one page and its pictures.
+      for (const wait of [2500, 8000]) {
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ['part-sources', part] })
+          picturesChanged(queryClient, part)
+          void queryClient.invalidateQueries({ queryKey: ['part', part] })
+        }, wait)
+      }
+    },
+    onError: (error) => setNote(error.message),
+  })
+  return (
+    <form
+      className="mt-3 flex max-w-lg flex-wrap items-center gap-2"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (url.trim() !== '' && !fetchNow.isPending) fetchNow.mutate()
+      }}
+    >
+      <input
+        type="url"
+        inputMode="url"
+        value={url}
+        onChange={(event) => setUrl(event.target.value)}
+        aria-label={strings.sources.fetchLabel}
+        placeholder={strings.sources.fetchPlaceholder}
+        className="min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm"
+      />
+      <button
+        type="submit"
+        disabled={url.trim() === '' || fetchNow.isPending}
+        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+      >
+        {strings.sources.fetch}
+      </button>
+      {note === null ? null : (
+        <p role="status" className="w-full text-xs text-[var(--color-muted)]">
+          {note}
+        </p>
+      )}
+    </form>
   )
 }
 

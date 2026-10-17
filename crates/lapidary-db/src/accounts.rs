@@ -186,6 +186,26 @@ impl PgAccounts {
         Ok(true)
     }
 
+    /// Whether this person's Import dialog starts with "fetch details" ticked (A2).
+    pub async fn fetch_details(&self, user: UserId) -> Result<bool, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT fetch_details FROM app_user WHERE id = $1")
+                .bind(user.as_uuid())
+                .fetch_optional(&self.0)
+                .await?
+                .unwrap_or(false),
+        )
+    }
+
+    pub async fn set_fetch_details(&self, user: UserId, on: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE app_user SET fetch_details = $2 WHERE id = $1")
+            .bind(user.as_uuid())
+            .bind(on)
+            .execute(&self.0)
+            .await?;
+        Ok(())
+    }
+
     /// Set a person's display name; `None` clears it.
     pub async fn set_display_name(&self, user: UserId, name: Option<&str>) -> Result<(), DbError> {
         sqlx::query("UPDATE app_user SET display_name = $2 WHERE id = $1")
