@@ -759,7 +759,12 @@ const FLOWS = [
       // `view-original` draws, so a page and a view are tested on one known solid.
       const part = await ctx.partLike(/alike\/flange-dn40-lp-3310-02\.stl$/)
       const net = await watchRequests(page)
-      await page.go(`/parts/${part.id}`, `document.querySelector('h1, h2') !== null`)
+      // The part's own sections, not just a heading: the header's h1 is there before the part is, and
+      // since A1 the session check before the first page makes that gap long enough to land in.
+      await page.go(
+        `/parts/${part.id}`,
+        `document.querySelectorAll('nav[aria-label="On this page"] a').length >= 2`,
+      )
       // The section index is built by a MutationObserver over the sections that actually rendered, so
       // it is the page's own account of itself.
       const page_ = await page.evaluate(`(() => {
