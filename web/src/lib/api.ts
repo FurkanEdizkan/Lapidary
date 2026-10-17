@@ -2,6 +2,7 @@ import type { Sort } from './preferences'
 import type {
   ChooseModelsFolder,
   HostFolders,
+  MakeFolder,
   ModelsFolder,
   MovePort,
   ServerPort,
@@ -1655,6 +1656,18 @@ export async function fetchHostFolders(path: string | null, code: string | null 
   const [url, init] = folderRoute(code, `/folders${path === null ? '' : `?path=${encodeURIComponent(path)}`}`)
   const response = await fetch(url, init)
   if (!response.ok) throw await sentence(response, `listing folders returned ${response.status}`)
+  return (await response.json()) as HostFolders
+}
+
+/** `POST …/storage/folders` (A9) — make folder `name` inside `path`; answers the new folder's listing. */
+export async function makeHostFolder(path: string, name: string, code: string | null = null): Promise<HostFolders> {
+  const [url, init] = folderRoute(code, '/folders')
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ...init.headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ path, name } satisfies MakeFolder),
+  })
+  if (!response.ok) throw await sentence(response, `making the folder returned ${response.status}`)
   return (await response.json()) as HostFolders
 }
 

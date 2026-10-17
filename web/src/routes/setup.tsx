@@ -240,6 +240,7 @@ function Wizard({ status }: { status: SetupStatus }) {
             ) : null}
             {folder.data?.canChoose && folder.data.lockedBy === null ? (
               <Choose
+                title={strings.folderPicker.modelsTitle}
                 open={picking === MODELS}
                 start={chosen ?? folder.data.path}
                 code={code}
@@ -264,6 +265,7 @@ function Wizard({ status }: { status: SetupStatus }) {
             </p>
             {folder.data?.canChoose && folder.data.storeLockedBy === null ? (
               <Choose
+                title={strings.folderPicker.storeTitle}
                 open={picking === STORE}
                 start={store ?? folder.data.store ?? chosen ?? folder.data.path}
                 code={code}
@@ -324,8 +326,9 @@ function Wizard({ status }: { status: SetupStatus }) {
   )
 }
 
-/** "Choose…", or the folder picker it opens. */
+/** "Choose…", and the folder picker it opens. */
 function Choose({
+  title,
   open,
   start,
   code,
@@ -333,6 +336,7 @@ function Choose({
   onChoose,
   onCancel,
 }: {
+  title: string
   open: boolean
   start: string | null
   code: string
@@ -340,11 +344,13 @@ function Choose({
   onChoose: (path: string) => void
   onCancel: () => void
 }) {
-  if (open) return <FolderPicker start={start} code={code} onChoose={onChoose} onCancel={onCancel} />
   return (
-    <button type="button" onClick={onOpen} className={`${QUIET} self-start border border-[var(--color-edge)]`}>
-      {strings.folderPicker.choose}
-    </button>
+    <>
+      <button type="button" onClick={onOpen} className={`${QUIET} self-start border border-[var(--color-edge)]`}>
+        {strings.folderPicker.choose}
+      </button>
+      {open ? <FolderPicker title={title} start={start} code={code} onChoose={onChoose} onCancel={onCancel} /> : null}
+    </>
   )
 }
 

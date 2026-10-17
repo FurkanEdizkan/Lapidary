@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, test, vi } from 'vitest'
 import { strings } from '../lib/strings'
@@ -43,10 +43,22 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
       return json(403, { code: 'wrong_code', message: 'That setup code is not the one this server printed.' })
     }
     if (url === '/api/setup/storage') return json(200, FOLDER)
+    if (url === '/api/setup/storage/folders' && init?.method === 'POST') {
+      const { path, name } = JSON.parse(String(init.body)) as { path: string; name: string }
+      return json(201, {
+        path: `${path}/${name}`,
+        root: '/',
+        parent: path,
+        folders: [],
+        choosable: true,
+        problem: null,
+      })
+    }
     if (url.startsWith('/api/setup/storage/folders')) {
       const path = new URL(url, 'http://lapidary.test').searchParams.get('path') ?? '/srv/models'
       return json(200, {
         path,
+        root: '/',
         parent: path === '/' ? null : '/',
         folders: path === '/srv/models' ? ['printables'] : [],
         choosable: true,
@@ -76,11 +88,29 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
   if (chooseModels === undefined) throw new Error('no Choose button')
   fireEvent.click(chooseModels)
   fireEvent.click(await screen.findByRole('button', { name: strings.folderPicker.open('printables') }))
-  expect(await screen.findByText('/srv/models/printables')).toBeTruthy()
+  expect(await screen.findByDisplayValue('/srv/models/printables')).toBeTruthy()
   // Listed, so it can be chosen.
   await screen.findByText(strings.folderPicker.empty)
+  // New folder makes one inside it, with the setup code, and opens it.
+  // Escape leaves the name, not the whole picker.
+  fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.newFolder }))
+  fireEvent.keyDown(screen.getByLabelText(strings.folderPicker.newName), { key: 'Escape' })
+  expect(screen.queryByLabelText(strings.folderPicker.newName)).toBeNull()
+  expect(screen.getByRole('dialog')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.newFolder }))
+  fireEvent.change(screen.getByLabelText(strings.folderPicker.newName), { target: { value: 'Benchy' } })
+  fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.make }))
+  expect(await screen.findByDisplayValue('/srv/models/printables/Benchy')).toBeTruthy()
+  const made = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === '/api/setup/storage/folders' && init?.method === 'POST',
+  )
+  expect(JSON.parse(String(made?.[1]?.body))).toEqual({ path: '/srv/models/printables', name: 'Benchy' })
+  expect(new Headers(made?.[1]?.headers).get('x-setup-code')).toBe('K7QF-M2XD-PR4T')
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: strings.folderPicker.use })).toHaveProperty('disabled', false),
+  )
   fireEvent.click(screen.getByRole('button', { name: strings.folderPicker.use }))
-  expect(screen.getByText('/srv/models/printables')).toBeTruthy()
+  expect(screen.getByText('/srv/models/printables/Benchy')).toBeTruthy()
   // Lapidary's own files have a picker of their own.
   expect(screen.getAllByRole('button', { name: strings.folderPicker.choose })).toHaveLength(2)
   const listed = fetchMock.mock.calls.find(([url]) => String(url).startsWith('/api/setup/storage/folders'))
@@ -92,7 +122,7 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
 
   expect(await screen.findByText('That setup code is not the one this server printed.')).toBeTruthy()
   expect(screen.getByText(strings.setup.step(1, 3))).toBeTruthy()
-  const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
+  const post = fetchMock.mock.calls.find(([url, init]) => url === '/api/setup' && init?.method === 'POST')
   expect(JSON.parse(String(post?.[1]?.body))).toEqual({
     code: 'K7QF-M2XD-PR4T',
     username: 'furkan',

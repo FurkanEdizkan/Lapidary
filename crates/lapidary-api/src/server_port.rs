@@ -48,6 +48,8 @@ pub struct ModelsFolder {
 #[serde(rename_all = "camelCase")]
 pub struct HostFolders {
     pub path: String,
+    /// The browse root: the top of what can be opened (A9).
+    pub root: String,
     pub parent: Option<String>,
     /// The folders inside it, by name. Symbolic links are left out.
     pub folders: Vec<String>,
@@ -67,4 +69,13 @@ pub struct ChooseModelsFolder {
     /// Lapidary's own files (A8), or `null` to keep them where they are.
     #[serde(default)]
     pub store: Option<String>,
+}
+
+/// New folder in the folder picker (A9): one folder named `name` inside `path`.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct MakeFolder {
+    pub path: String,
+    pub name: String,
 }

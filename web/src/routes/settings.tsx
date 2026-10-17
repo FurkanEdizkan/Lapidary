@@ -327,20 +327,20 @@ function ModelsFolderSection() {
                 : strings.settings.modelsFolderAdminsOnly}
         </p>
         {data.canChoose && locked === null && admin ? (
-          picking ? (
-            <FolderPicker
-              start={data.path}
-              onChoose={(path) => {
-                setPicking(false)
-                choose.mutate(path)
-              }}
-              onCancel={() => setPicking(false)}
-            />
-          ) : (
-            <button type="button" onClick={() => setPicking(true)} className={`${BUTTON} self-start`}>
-              {strings.folderPicker.choose}
-            </button>
-          )
+          <button type="button" onClick={() => setPicking(true)} className={`${BUTTON} self-start`}>
+            {strings.folderPicker.choose}
+          </button>
+        ) : null}
+        {picking ? (
+          <FolderPicker
+            title={strings.folderPicker.modelsTitle}
+            start={data.path}
+            onChoose={(path) => {
+              setPicking(false)
+              choose.mutate(path)
+            }}
+            onCancel={() => setPicking(false)}
+          />
         ) : null}
         {choose.isError ? (
           <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">

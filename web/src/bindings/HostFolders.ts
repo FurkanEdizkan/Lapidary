@@ -3,7 +3,11 @@
 /**
  * One folder of the host, as the models-folder picker lists it.
  */
-export type HostFolders = { path: string, parent: string | null, 
+export type HostFolders = { path: string, 
+/**
+ * The browse root: the top of what can be opened (A9).
+ */
+root: string, parent: string | null, 
 /**
  * The folders inside it, by name. Symbolic links are left out.
  */

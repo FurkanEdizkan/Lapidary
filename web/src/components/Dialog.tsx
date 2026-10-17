@@ -52,8 +52,8 @@ export function Dialog({
   title: string
   onClose: () => void
   children: ReactNode
-  /** `stage` is the quick look's: most of the window, for a part in 3D. */
-  size?: 'default' | 'stage'
+  /** `stage` is the quick look's: most of the window, for a part in 3D. `wide` is the folder picker's. */
+  size?: 'default' | 'wide' | 'stage'
   /**
    * Where focus goes on close, when that is not what opened the dialog: the quick look steps from
    * part to part, and closing it returns to the card now on screen rather than the first one.
@@ -178,7 +178,7 @@ export function Dialog({
         className={
           size === 'stage'
             ? 'panel-in flex h-[min(88vh,56rem)] max-h-full w-[min(92vw,80rem)] flex-col overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay'
-            : 'panel-in max-h-full w-full max-w-md overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay'
+            : `panel-in max-h-full w-full ${size === 'wide' ? 'max-w-2xl' : 'max-w-md'} overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay`
         }
       >
         <div className="flex items-start justify-between gap-4">

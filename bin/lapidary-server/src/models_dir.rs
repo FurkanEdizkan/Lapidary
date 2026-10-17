@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use lapidary_api::auth::CurrentUser;
-use lapidary_api::server_port::{ChooseModelsFolder, HostFolders, ModelsFolder};
+use lapidary_api::server_port::{ChooseModelsFolder, HostFolders, MakeFolder, ModelsFolder};
 use lapidary_db::{PgPool, PgSettings, PgSources};
 use serde::Deserialize;
 use std::path::{Component, Path, PathBuf};
@@ -181,7 +181,7 @@ pub fn routes(
     };
     let signed_in = Router::new()
         .route("/api/settings/storage", get(status).put(choose))
-        .route("/api/settings/storage/folders", get(folders))
+        .route("/api/settings/storage/folders", get(folders).post(make))
         .route_layer(axum::middleware::from_fn_with_state(
             db,
             lapidary_api::auth::require_user,
@@ -189,7 +189,10 @@ pub fn routes(
     // The wizard's, before anybody can sign in: they answer only with the setup code.
     let setup = Router::new()
         .route("/api/setup/storage", get(setup_status))
-        .route("/api/setup/storage/folders", get(setup_folders));
+        .route(
+            "/api/setup/storage/folders",
+            get(setup_folders).post(setup_make),
+        );
     signed_in
         .merge(setup)
         .layer(axum::middleware::from_fn(lapidary_api::auth::same_origin))
@@ -259,6 +262,87 @@ async fn setup_folders(
     list(&picker, at.path).await
 }
 
+async fn make(
+    State(picker): State<Picker>,
+    Extension(user): Extension<CurrentUser>,
+    body: Result<Json<MakeFolder>, JsonRejection>,
+) -> Response {
+    if !user.is_admin {
+        return refused(StatusCode::FORBIDDEN, ADMINS_ONLY);
+    }
+    new_folder(&picker, body).await
+}
+
+async fn setup_make(
+    State(picker): State<Picker>,
+    headers: HeaderMap,
+    body: Result<Json<MakeFolder>, JsonRejection>,
+) -> Response {
+    if !setup_open(&picker, &headers).await {
+        return refused(StatusCode::FORBIDDEN, CODE_NEEDED);
+    }
+    new_folder(&picker, body).await
+}
+
+/// New folder (A9): one plain name inside a folder Lapidary may write, never over anything there.
+/// It answers the new folder's listing.
+async fn new_folder(picker: &Picker, body: Result<Json<MakeFolder>, JsonRejection>) -> Response {
+    let Ok(Json(asked)) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "Say which folder to make, and its name.",
+        );
+    };
+    let Some(host) = picker.host.clone() else {
+        return refused(StatusCode::CONFLICT, NO_BROWSE_ROOT);
+    };
+    match tokio::task::spawn_blocking(move || make_in(&host, &asked.path, asked.name.trim())).await
+    {
+        Ok(Ok(listing)) => (StatusCode::CREATED, Json(listing)).into_response(),
+        Ok(Err((status, sentence))) => refused(status, &sentence),
+        Err(_) => refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Making the folder failed. Try again.",
+        ),
+    }
+}
+
+fn make_in(host: &Host, parent: &str, name: &str) -> Result<HostFolders, (StatusCode, String)> {
+    let bad = |sentence: String| Err((StatusCode::BAD_REQUEST, sentence));
+    if name.is_empty() || name.len() > 255 {
+        return bad("Give the new folder a name.".to_owned());
+    }
+    if name.contains(['/', '\0']) || name.starts_with('.') || name == REMOVED {
+        return bad(format!(
+            "A folder can't be called {name}. Use a plain name, without / and not starting with a dot."
+        ));
+    }
+    let Some(inner) = host.inside(Path::new(parent)) else {
+        return bad(format!(
+            "{parent} is outside the folders Lapidary can see, {}.",
+            host.root.display()
+        ));
+    };
+    // Where it really is, so a link can't put it outside the browse root.
+    let listing = read(host, &inner)?;
+    let real = host.inside(Path::new(&listing.path)).unwrap_or(inner);
+    if off_limits(&listing.path) || !writable(&real) {
+        return Err((StatusCode::BAD_REQUEST, cannot_make(&listing.path)));
+    }
+    let made = real.join(name);
+    match std::fs::create_dir(&made) {
+        Ok(()) => read(host, &made),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "{name} already exists in {}. Open it, or pick another name.",
+                listing.path
+            ),
+        )),
+        Err(_) => Err((StatusCode::BAD_REQUEST, cannot_make(&listing.path))),
+    }
+}
+
 const NO_BROWSE_ROOT: &str = "This deployment mounts no folder to choose from. Set LAPIDARY_MODELS_DIR in deploy/.env and run `docker compose up -d`, or mount LAPIDARY_BROWSE_ROOT as deploy/compose.yaml does.";
 
 async fn list(picker: &Picker, path: Option<String>) -> Response {
@@ -326,6 +410,7 @@ fn read(host: &Host, inner: &Path) -> Result<HostFolders, (StatusCode, String)> 
     }
     Ok(HostFolders {
         path: shown,
+        root: host.outside(&host.dir),
         parent,
         folders,
         choosable: choosable && problem.is_none(),
@@ -349,6 +434,14 @@ fn writable(dir: &Path) -> bool {
 fn cannot_open(shown: &str) -> String {
     format!(
         "Lapidary can't open {shown}. It runs as user {uid}; give it access with `sudo setfacl -m u:{uid}:rx \"{shown}\"` (and on each folder above it that it can't enter), then reload.",
+        uid = rustix::process::getuid().as_raw()
+    )
+}
+
+/// Not `cannot_write`'s recipe: that is for a folder somebody chose, never for `/` or `/proc`.
+fn cannot_make(shown: &str) -> String {
+    format!(
+        "Lapidary can't make a folder in {shown}. It runs as user {uid}; open a folder that user owns and make it there.",
         uid = rustix::process::getuid().as_raw()
     )
 }
@@ -673,6 +766,43 @@ mod tests {
         Host {
             dir: dir.to_path_buf(),
             root: PathBuf::from("/"),
+        }
+    }
+
+    #[test]
+    fn a_new_folder_is_one_plain_name_and_never_over_anything() {
+        let root = tempfile::tempdir().expect("a folder");
+        let host = host(root.path());
+        let made = make_in(&host, "/", "Printables").expect("made");
+        assert_eq!(made.path, "/Printables");
+        assert!(root.path().join("Printables").is_dir());
+        assert_eq!(
+            make_in(&host, "/", "Printables")
+                .map(|_| ())
+                .expect_err("a second one is refused")
+                .0,
+            StatusCode::CONFLICT
+        );
+        for name in ["", "a/b", "..", ".hidden", REMOVED] {
+            assert_eq!(
+                make_in(&host, "/", name)
+                    .map(|_| ())
+                    .expect_err("refused")
+                    .0,
+                StatusCode::BAD_REQUEST,
+                "{name:?}"
+            );
+        }
+        assert!(make_in(&host, "/../x", "y").is_err());
+        // Where it may not write, it says so, and never hands out a setfacl for the folder.
+        let shut = root.path().join("shut");
+        std::fs::create_dir(&shut).expect("shut");
+        std::fs::set_permissions(&shut, std::os::unix::fs::PermissionsExt::from_mode(0o555))
+            .expect("read-only");
+        if !writable(&shut) {
+            let (status, said) = make_in(&host, "/shut", "x").expect_err("refused");
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(said.contains("can't make a folder in /shut") && !said.contains("setfacl"));
         }
     }
 
