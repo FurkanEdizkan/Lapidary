@@ -1016,6 +1016,8 @@ pub(crate) async fn delete_parts(
     for statement in [
         "DELETE FROM part_image WHERE part_id = ANY($1)",
         "DELETE FROM part_source WHERE part_id = ANY($1)",
+        // Who it was shared with (A4): nobody, once it is gone.
+        "DELETE FROM part_share WHERE part_id = ANY($1)",
         "DELETE FROM derivative WHERE revision_id IN (SELECT id FROM revision WHERE part_id = ANY($1))",
         "DELETE FROM file WHERE revision_id IN (SELECT id FROM revision WHERE part_id = ANY($1))",
         "DELETE FROM revision WHERE part_id = ANY($1)",
