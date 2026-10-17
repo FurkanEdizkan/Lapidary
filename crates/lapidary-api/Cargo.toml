@@ -16,6 +16,8 @@ lapidary-targets.workspace = true
 # Reading a model from Printables, Thingiverse or MyMiniFactory, through the client that refuses
 # private addresses (F3).
 lapidary-sites.workspace = true
+argon2.workspace = true
+rand_core.workspace = true
 axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
@@ -49,6 +51,7 @@ zip.workspace = true
 zstd.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 

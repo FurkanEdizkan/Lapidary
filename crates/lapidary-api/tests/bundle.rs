@@ -3,7 +3,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId, RevisionOrigin};
 use lapidary_db::{
     IngestRequest, NewPartSource, PgIngest, PgParts, PgRevisions, RevisionRequest, StoredBlobRow,
@@ -428,10 +430,12 @@ async fn forty_parts_are_planned_in_two_queries(pool: sqlx::PgPool) {
         plan(pool.clone(), root.path(), serde_json::json!(parts)).await
     };
     assert_eq!(response.status(), StatusCode::OK);
+    // Since A1 the request also passes the sign-in guard: the test account's two idempotent writes
+    // (`tests/common`) and the guard's one session lookup, none of them per part.
     assert_eq!(
         statements.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the library's row, then the selection's"
+        3 + 2,
+        "the session's three, then the library's row and the selection's"
     );
 }
 

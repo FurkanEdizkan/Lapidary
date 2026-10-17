@@ -309,6 +309,10 @@ export async function session({
 
   await send('Page.enable')
   await send('Runtime.enable')
+  // Signed in as the rig's account (A1): `stack.sh` passes its session cookie.
+  if (process.env.LAPIDARY_E2E_COOKIE) {
+    await send('Network.setCookie', { name: 'lapidary_session', value: process.env.LAPIDARY_E2E_COOKIE, url: base })
+  }
   await send('Emulation.setDeviceMetricsOverride', {
     width,
     height,

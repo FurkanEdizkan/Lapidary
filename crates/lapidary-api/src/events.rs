@@ -197,9 +197,15 @@ async fn run(
 }
 
 /// `GET /api/events`, and the hub as its state. Merged by `bin/lapidary-server` for the api role.
-pub fn router(hub: Hub) -> Router {
+/// Signed in only (A1), like every route that says anything about a library. `db` is what the guard
+/// looks the session up in.
+pub fn router(hub: Hub, db: lapidary_db::PgPool) -> Router {
     Router::new()
         .route("/api/events", get(events))
+        .route_layer(axum::middleware::from_fn_with_state(
+            db,
+            crate::auth::require_user,
+        ))
         .with_state(hub)
 }
 

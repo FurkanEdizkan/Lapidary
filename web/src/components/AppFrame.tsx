@@ -6,6 +6,7 @@ import type { LibraryId } from '../lib/types'
 import { Icon } from './Icon'
 import { JumpSearch } from './Search'
 import { Menu } from './Menu'
+import { LOGIN_PATH, forgetSession, signOut } from '../lib/session'
 
 /**
  * A square on its corner with a square inside it — the facet-and-table of a cut stone,
@@ -13,7 +14,7 @@ import { Menu } from './Menu'
  * and an SVG file would be a second request and a second place for the brand to be defined.
  * 1.5px and not 1px — at 19px a hairline outline disappears against the bar.
  */
-function BrandMark() {
+export function BrandMark() {
   return (
     <span
       aria-hidden="true"
@@ -96,8 +97,8 @@ const MENU_ITEM =
   'ease-mechanical rounded-[var(--radius-ctl)] px-3 py-1.5 text-left text-sm duration-[var(--duration-fast)] hover:bg-[var(--color-raised)]'
 
 /**
- * The user menu, at the far right of every page's header (M2): this install's profile and its
- * settings. The page you are on is marked and not linked, as the places are.
+ * The user menu, at the far right of every page's header (M2): the signed-in person's profile, the
+ * settings, and signing out (A1). The page you are on is marked and not linked, as the places are.
  */
 function UserMenu({ current }: { current?: Place }) {
   const inProfile = current === 'profile'
@@ -122,6 +123,17 @@ function UserMenu({ current }: { current?: Place }) {
           {strings.settings.title}
         </Link>
       )}
+      {/* A full load to the sign-in page, so nothing cached for this person outlives the session (A1). */}
+      <button
+        type="button"
+        onClick={() => {
+          forgetSession()
+          void signOut().finally(() => window.location.assign(LOGIN_PATH))
+        }}
+        className={MENU_ITEM}
+      >
+        {strings.user.signOut}
+      </button>
     </Menu>
   )
 }

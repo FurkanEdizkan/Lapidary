@@ -7,7 +7,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use lapidary_core::{BlobHash, LibraryId, MeshMeasurements, PartId};
 use lapidary_db::{IngestRequest, PgIngest, PgParts, StoredBlobRow};
 use tower::ServiceExt;

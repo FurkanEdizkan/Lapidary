@@ -309,6 +309,27 @@ async fn main() -> Result<()> {
         .await
         .context("Could not start: the database schema could not be brought up to date.")?;
 
+    // `lapidary-server reset-password <username>`: the way back in for a lost admin password, run as
+    // `docker compose exec app lapidary-server reset-password <username>`. Prints a new password and
+    // signs that person out everywhere; serves nothing.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [command, username] = args.as_slice()
+        && command == "reset-password"
+    {
+        return reset_password(db, username).await;
+    }
+
+    // While nobody has an account, the wizard asks for this code, so the first person to find the
+    // port is not the one who becomes admin. It is in the log and nowhere else.
+    match lapidary_api::auth::prepare_setup(&db).await {
+        Ok(Some(code)) => tracing::info!(
+            setup_code = %code,
+            "nobody has an account yet: open Lapidary in a browser and enter this setup code"
+        ),
+        Ok(None) => {}
+        Err(err) => bail!("Could not start: preparing first-run setup failed: {err}"),
+    }
+
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| {
@@ -400,6 +421,7 @@ async fn main() -> Result<()> {
         // (`crates/lapidary-api/src/events.rs`). It holds one pooled connection for as long as
         // the process runs, and `shutdown` ends it, which is what ends every open stream.
         let hub = lapidary_api::events::Hub::spawn(db.clone(), shutdown.clone()).await;
+        let events_db = db.clone();
         let api = router(
             AppState {
                 db,
@@ -417,7 +439,7 @@ async fn main() -> Result<()> {
             },
             Role::Api,
         )
-        .merge(lapidary_api::events::router(hub));
+        .merge(lapidary_api::events::router(hub, events_db));
         let app = match &config.web_dir {
             Some(dist) => {
                 if !dist.join("index.html").is_file() {
@@ -464,6 +486,30 @@ async fn main() -> Result<()> {
             .context("The job worker did not shut down cleanly")?;
     }
 
+    Ok(())
+}
+
+/// `reset-password`: a new random password for `username`, printed once, and every session of theirs
+/// ended. The password is 20 letters from the setup code's alphabet, so it reads off a terminal.
+async fn reset_password(db: lapidary_db::PgPool, username: &str) -> Result<()> {
+    let username = username.trim().to_lowercase();
+    let password = lapidary_api::auth::new_password();
+    let hash = lapidary_api::auth::hash_password(password.clone())
+        .await
+        .map_err(|_| anyhow::anyhow!("Could not hash the new password. Try again."))?;
+    let found = lapidary_db::PgAccounts(db)
+        .set_password(&username, &hash)
+        .await
+        .context("Could not save the new password.")?;
+    if !found {
+        bail!(
+            "There is no account called {username}. Check the spelling; usernames are lowercase."
+        );
+    }
+    println!("New password for {username}: {password}");
+    println!(
+        "They are signed out everywhere. Sign in with it, then change it on the Profile page."
+    );
     Ok(())
 }
 
@@ -596,6 +642,7 @@ mod tests {
     // clean 404, while `lapidary_ingest::scan` enqueues blind and answers 500 on the foreign key.
     #[sqlx::test(migrations = "../../crates/lapidary-db/migrations")]
     async fn the_api_role_router_serves_its_own_scan_and_not_ingests(pool: sqlx::PgPool) {
+        let pool_for_setup = pool.clone();
         let app = router(
             AppState {
                 db: pool,
@@ -613,6 +660,34 @@ mod tests {
             Role::Api,
         );
 
+        // Signed in the way a person is (A1): the logged code, the wizard's account, its cookie.
+        let code = lapidary_api::auth::prepare_setup(&pool_for_setup)
+            .await
+            .expect("prepares")
+            .expect("nobody has an account yet");
+        let made = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"code":"{code}","username":"furkan","password":"correct horse battery"}}"#
+                    )))
+                    .expect("builds"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(made.status(), StatusCode::OK);
+        let cookie = made
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .expect("setup signs the admin in")
+            .to_owned();
+
         // Mounted: the browser's scan button has a route to reach.
         let seeded = app
             .clone()
@@ -620,6 +695,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/libraries/{SEEDED_LIBRARY}/scan"))
+                    .header("cookie", &cookie)
                     .body(Body::empty())
                     .expect("builds"),
             )
@@ -634,6 +710,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/libraries/01931b6e-0000-7000-8000-00000000dead/scan")
+                    .header("cookie", &cookie)
                     .body(Body::empty())
                     .expect("builds"),
             )

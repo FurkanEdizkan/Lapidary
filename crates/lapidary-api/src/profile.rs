@@ -1,14 +1,15 @@
-//! `GET`/`PUT /api/profile` — this install's display name (M2). There is no sign-in: one person runs
-//! an install, and this is what the user menu and the Profile page call them.
+//! `GET`/`PUT /api/profile` — the signed-in person's display name (M2, per person since A1). What the
+//! user menu and the Profile page call them.
 
 use crate::AppState;
+use crate::auth::CurrentUser;
 use crate::derive::internal_error;
-use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_db::PgProfile;
+use axum::{Extension, Json};
+use lapidary_db::PgAccounts;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -23,15 +24,16 @@ pub struct Profile {
     pub display_name: Option<String>,
 }
 
-pub async fn get(State(state): State<AppState>) -> Response {
-    match PgProfile(state.db).display_name().await {
-        Ok(display_name) => Json(Profile { display_name }).into_response(),
-        Err(err) => internal_error(&err, "profile read failed"),
-    }
+pub async fn get(Extension(user): Extension<CurrentUser>) -> Response {
+    Json(Profile {
+        display_name: user.display_name,
+    })
+    .into_response()
 }
 
 pub async fn set(
     State(state): State<AppState>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<Profile>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -47,7 +49,7 @@ pub async fn set(
             "A display name is at most {MAX_NAME} characters. Shorten it and save again."
         ));
     }
-    match PgProfile(state.db).set_display_name(name).await {
+    match PgAccounts(state.db).set_display_name(user.id, name).await {
         Ok(()) => Json(Profile {
             display_name: name.map(str::to_owned),
         })

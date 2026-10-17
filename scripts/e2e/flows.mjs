@@ -36,6 +36,8 @@ for (const required of ['out', 'web', 'api', 'seed']) {
   if (args[required] === undefined) throw new Error(`--${required} is required`)
 }
 const seed = JSON.parse(readFileSync(args.seed, 'utf8'))
+// The rig's session (A1), from `stack.sh`; every request here is the rig's account.
+const SIGNED_IN = process.env.LAPIDARY_E2E_COOKIE ? { cookie: `lapidary_session=${process.env.LAPIDARY_E2E_COOKIE}` } : {}
 const only = args.only?.split(',').map((s) => s.trim())
 
 // ---------------------------------------------------------------------------------------------------
@@ -757,7 +759,12 @@ const FLOWS = [
       // `view-original` draws, so a page and a view are tested on one known solid.
       const part = await ctx.partLike(/alike\/flange-dn40-lp-3310-02\.stl$/)
       const net = await watchRequests(page)
-      await page.go(`/parts/${part.id}`, `document.querySelector('h1, h2') !== null`)
+      // The part's own sections, not just a heading: the header's h1 is there before the part is, and
+      // since A1 the session check before the first page makes that gap long enough to land in.
+      await page.go(
+        `/parts/${part.id}`,
+        `document.querySelectorAll('nav[aria-label="On this page"] a').length >= 2`,
+      )
       // The section index is built by a MutationObserver over the sections that actually rendered, so
       // it is the page's own account of itself.
       const page_ = await page.evaluate(`(() => {
@@ -908,7 +915,7 @@ const FLOWS = [
         expect(confirmed, `the confirmation has no "${T.deletePart}" button`)
         // It invalidates the grid and navigates back to it, because the part no longer exists.
         await page.waitFor(`new URL(location.href).pathname === '/'`, 20_000)
-        const gone = await fetch(`${args.api}/api/parts/${victim.id}`)
+        const gone = await fetch(`${args.api}/api/parts/${victim.id}`, { headers: SIGNED_IN })
         expect(gone.status === 404, `the detail route answered ${gone.status} for a deleted part`)
         deleted = true
         const after = await ctx.countParts(ctx.uploaded.id)
@@ -1107,7 +1114,11 @@ const ctx = {
   async request(method, path, body) {
     const response = await fetch(args.api + path, {
       method,
-      ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      headers: {
+        ...SIGNED_IN,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
     if (!response.ok) throw new Error(`${method} ${path} answered ${response.status}`)
     const payload = await response.text()

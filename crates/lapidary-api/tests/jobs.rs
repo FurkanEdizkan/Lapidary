@@ -4,7 +4,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use lapidary_core::{BatchId, BatchStatus, LibraryId};
 use lapidary_db::PgJobs;
 use tower::ServiceExt;

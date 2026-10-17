@@ -2,7 +2,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use lapidary_api::{AppState, Role, router};
+mod common;
+use common::router;
+use lapidary_api::{AppState, Role};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -44,9 +46,10 @@ async fn send(pool: &sqlx::PgPool, method: &str, body: Option<Value>) -> (Status
 async fn a_display_name_is_kept_trimmed_cleared_by_a_blank_and_refused_when_too_long(
     pool: sqlx::PgPool,
 ) {
+    // The signed-in account's own name (A1), not the install's.
     assert_eq!(
         send(&pool, "GET", None).await.1,
-        json!({ "displayName": null })
+        json!({ "displayName": "Lena Kowalski" })
     );
     let (status, saved) = send(&pool, "PUT", Some(json!({ "displayName": "  Furkan  " }))).await;
     assert_eq!(status, StatusCode::OK);
