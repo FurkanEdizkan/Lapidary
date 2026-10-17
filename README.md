@@ -56,42 +56,45 @@ moment and predates it.
 
 ## Running it
 
-Container-first. Podman is recommended; Docker is supported. Copy the env file and set
-a password before the first run, then pass it explicitly with `--env-file` — Podman and
-Docker do not agree on auto-loading it.
+Container-first. Podman is recommended; Docker is supported. Copy the env file, set a password,
+and pass it explicitly with `--env-file` — Podman and Docker do not agree on auto-loading it.
 
 ```sh
 cp deploy/.env.example deploy/.env   # then edit it and set POSTGRES_PASSWORD
 podman compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
-open http://localhost:3000
+podman compose --env-file deploy/.env -f deploy/compose.yaml logs app   # the URL and a setup code
 ```
 
-**Upgrading an existing deployment?** Read `docs/DATA.md` §1.1, *"Upgrading a store created
-before this layout"*, **before** you bring the stack up. The store moved out of a named volume
-and into a host directory, and nothing copies it across for you. Nothing fails at boot if you
-skip it — the grid still renders, because a card's picture comes from `part_image` and not from
-the store — so the first sign is a download returning 500.
+Open the URL it prints (port 3000, or the first free one after it) and follow the setup wizard:
+the setup code from the log, your admin account, the port, and **your models folder**, picked
+from a folder browser. Lapidary restarts on that folder; add the folders you want in your library
+from it with **Import**. Everyone else gets an account from the admin, starts with an empty
+library, and sees only their own models and the ones shared with them.
 
-Then press **Scan the ingest folder** in the grid. Or, headless, post the same route the
-button does — the same job, and the same batch to poll:
+### What Lapidary can open
 
-```sh
-curl -X POST http://localhost:3000/api/libraries/01931b6e-0000-7000-8000-000000000001/scan
-```
+- **It runs as you.** The container takes on the user who owns this checkout's `deploy/` folder,
+  so it opens exactly the folders you can, and what it writes is yours. Nothing to grant.
+  `LAPIDARY_UID` / `LAPIDARY_GID` in `deploy/.env` run it as somebody else; it never runs as root.
+- **The wizard browses the whole machine by default.** Set `LAPIDARY_BROWSE_ROOT` in
+  `deploy/.env` to narrow what the folder browser offers, for example to one drive:
 
-The scan walks the directory mounted at `/ingest`, which defaults to this repository's
-`example/parts` — a DN40 flange, a module-2 spur gear, a vee block, a mounting plate, a
-hex spacer and an idler pulley, so a first run shows a populated grid rather than an empty
-one. They are modelled to real dimensions by `example/parts/generate.py` (stdlib Python,
-deterministic, watertight), which is committed so the STLs have a source rather than being
-opaque binaries. Point `LAPIDARY_INGEST_DIR` in `deploy/.env` at your own folder to scan
-that instead; see `deploy/.env.example`. The UUID is the library seeded by migration
-`0002_parts.sql`; slice 1 has no library picker, so it is the only one there is.
+  ```sh
+  LAPIDARY_BROWSE_ROOT=/mnt/models-drive
+  ```
 
-Scanning is idempotent. BLAKE3 is computed before anything else, and a hash already in
-the blob store short-circuits the whole pipeline — no parse, no measurement, no write. Run
-the same scan twice and the second batch settles every file as `skipped` rather than
-`ingested`, which the grid reports as "6 already here".
+  then `compose up -d` again. The models folder is chosen inside it, and Settings › Server can
+  choose another later.
+- **Or fix the folder outright** with `LAPIDARY_MODELS_DIR=/srv/models`; the wizard and Settings
+  then show it instead of offering a choice — the right setting for a scripted or shared server.
+- **Docker Desktop on macOS or Windows:** `/` there is Docker's own Linux VM, not your disk, so
+  set `LAPIDARY_BROWSE_ROOT` to a shared folder (`/Users/you/Models`, or a path Docker Desktop
+  shares from `C:\`), and turn on host networking in Docker Desktop's settings. Linux needs neither.
+- **SELinux hosts (Fedora, RHEL):** the browse root is mounted without relabelling, so point
+  `LAPIDARY_BROWSE_ROOT` or `LAPIDARY_MODELS_DIR` at a folder you have labelled for containers.
+
+Lapidary reads every model where it is and never deletes one: removing a model moves its file
+into `_removed/` in the models folder. `deploy/.env.example` documents every setting.
 
 ### Two containers
 
