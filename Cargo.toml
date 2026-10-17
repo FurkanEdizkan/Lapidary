@@ -115,7 +115,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # the crate does not compile.
 ts-rs = { version = "12.0.1", features = ["uuid-impl", "jiff-impl"] }
 uuid = { version = "1.26.0", features = ["v7", "serde"] }
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate", "deflate64"] }
+sevenz-rust2 = { version = "0.24.0", default-features = false }
 zstd = "0.13.3"
 
 [workspace.lints.clippy]

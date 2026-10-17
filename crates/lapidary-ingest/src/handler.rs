@@ -110,7 +110,8 @@ impl JobHandler for WorkerHandler {
             // finds belong in the batch the browser is already polling. See `scan.rs`.
             JobPayload::ScanDirectory => self.scan_directory(job.batch_id, job.library_id).await,
             JobPayload::IngestInbox { path, source_path } => {
-                self.ingest_inbox(job.library_id, &path, &source_path).await
+                self.ingest_upload(job.batch_id, job.library_id, &path, &source_path)
+                    .await
             }
             // A model from the page a person pasted, through ordinary ingest; see `link.rs`.
             JobPayload::ImportLink { url } => self.import_link(job.library_id, &url).await,
@@ -274,6 +275,28 @@ impl WorkerHandler {
 
     /// One file Lapidary wrote into the inbox — an upload — indexed from there. `path` is where
     /// it is under the inbox; `source_path` is the part it belongs to.
+    /// An uploaded file's job: an archive is opened (A10), anything else indexed.
+    async fn ingest_upload(
+        &self,
+        batch: lapidary_core::BatchId,
+        library: LibraryId,
+        path: &str,
+        source_path: &str,
+    ) -> Result<Outcome, HandlerError> {
+        refuse_escaping(path)?;
+        refuse_escaping(source_path)?;
+        let format = source_format(path);
+        if crate::archive::ARCHIVES.contains(&format.as_str()) {
+            return self.unpack_upload(batch, library, path, source_path).await;
+        }
+        if crate::archive::REFUSED_ARCHIVES.contains(&format.as_str()) {
+            return Err(HandlerError::Permanent {
+                message: crate::archive::rar_refusal(source_path),
+            });
+        }
+        self.ingest_inbox(library, path, source_path).await
+    }
+
     pub(crate) async fn ingest_inbox(
         &self,
         library: LibraryId,
@@ -304,6 +327,57 @@ impl WorkerHandler {
             at,
         )
         .await
+    }
+
+    /// An uploaded zip or 7z (A10): its models unpacked beside it, each queued into this batch as an
+    /// uploaded file is. See `archive.rs`.
+    async fn unpack_upload(
+        &self,
+        batch: lapidary_core::BatchId,
+        library: LibraryId,
+        path: &str,
+        source_path: &str,
+    ) -> Result<Outcome, HandlerError> {
+        let inbox = self.inbox_dir.clone();
+        let at = path.to_owned();
+        let unpacked = tokio::task::spawn_blocking(move || {
+            crate::archive::unpack(&inbox, &at, crate::archive::LIMITS)
+        })
+        .await
+        .map_err(|e| HandlerError::Transient {
+            message: format!("Unpacking {source_path} stopped: {e}"),
+        })?
+        .map_err(|message| HandlerError::Permanent { message })?;
+        if !unpacked.skipped.is_empty() {
+            tracing::warn!(source_path, skipped = ?unpacked.skipped, "left out of an uploaded archive");
+        }
+        if unpacked.placed.is_empty() {
+            let left = if unpacked.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" Left out: {}.", unpacked.skipped.join(", "))
+            };
+            return Err(HandlerError::Permanent {
+                message: format!("{source_path} holds no stl, obj or 3mf file.{left}"),
+            });
+        }
+        let under = crate::archive::without_extension(source_path);
+        let jobs: Vec<JobPayload> = unpacked
+            .placed
+            .into_iter()
+            .map(|(inside, placed)| JobPayload::IngestInbox {
+                path: placed,
+                source_path: format!("{under}/{inside}"),
+            })
+            .collect();
+        // `enqueue_into`, as a bundle's parts are: they belong to the batch the browser follows.
+        lapidary_db::PgJobs(self.db.clone())
+            .enqueue_into(batch, library, &jobs)
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })?;
+        Ok(Outcome::Scanned)
     }
 
     /// Steps 3 through 8: short-circuit, parse, and the one transaction. Writes no file.

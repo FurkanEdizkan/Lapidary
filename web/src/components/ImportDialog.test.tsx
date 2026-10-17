@@ -44,7 +44,7 @@ test('a folder is opened, a file ticked and added with its page and picture, the
   const onScan = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ImportDialog library={LIBRARY} onClose={() => {}} onScan={onScan} onUpload={() => {}} onFromLink={() => {}} />
+      <ImportDialog library={LIBRARY} onClose={() => {}} onScan={onScan} onUpload={() => {}} onUploadFolder={() => {}} onFromLink={() => {}} />
     </QueryClientProvider>,
   )
   fireEvent.click(await screen.findByRole('button', { name: strings.addModels.open('Printables') }))

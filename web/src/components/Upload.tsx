@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { fetchFailures, retryFailed } from '../lib/api'
 import { strings } from '../lib/strings'
 import { filesFromDrop, filesFromInput } from '../lib/upload'
 import type { PickedFile, UploadProgress } from '../lib/upload'
 import type { BatchId, BatchStatus, JobFailure, JobId, LibraryId } from '../lib/types'
+import { closeMenu } from './Dialog'
 import { Icon } from './Icon'
 
 /**
@@ -114,10 +115,13 @@ function progressText(status: BatchStatus, kind: BatchKind): string {
 export function DropOverlay({
   onFiles,
   picker,
+  filePicker,
 }: {
   onFiles: (picked: PickedFile[]) => void
-  /** The hidden folder input, opened by the header's Upload button. */
+  /** The hidden folder input, opened by the Upload menu's A folder…. */
   picker: RefObject<HTMLInputElement | null>
+  /** The hidden files input (A10), opened by its Files…: a single model or an archive of them. */
+  filePicker?: RefObject<HTMLInputElement | null>
 }) {
   const [depth, setDepth] = useState(0)
   // The latest handler without re-subscribing four window listeners on every render.
@@ -196,6 +200,19 @@ export function DropOverlay({
           event.target.value = ''
         }}
       />
+      <input
+        ref={filePicker}
+        type="file"
+        multiple
+        accept={UPLOAD_ACCEPT}
+        hidden
+        onChange={(event) => {
+          if (event.target.files !== null) {
+            onFiles(filesFromInput(event.target.files))
+          }
+          event.target.value = ''
+        }}
+      />
     </>
   )
 }
@@ -215,7 +232,15 @@ export function uploadFraction(progress: UploadProgress): number {
 }
 
 /**
- * The header's one standing button.
+ * What the files picker offers (A10). A RAR, STEP or IGES file is offered too, so its upload says by name
+ * why it isn't taken rather than the picker hiding it.
+ */
+const UPLOAD_ACCEPT = '.stl,.obj,.3mf,.zip,.7z,.rar,.step,.stp,.iges,.igs'
+
+const UPLOAD_MENU = 'upload-menu'
+
+/**
+ * The header's one standing button, and the menu it opens (A10): Files… or A folder….
  *
  * Quiet at rest: an edge and no accent. Layout Blue marks what is live (DESIGN.md), and an
  * Upload button waiting for a click is not; an upload running is, so the accent arrives as the
@@ -223,39 +248,72 @@ export function uploadFraction(progress: UploadProgress): number {
  * phase stays in the page's status line, because a percentage alone cannot say "hashing".
  */
 export function UploadButton({
-  onUpload,
+  onFiles,
+  onFolder,
   busy,
   progress,
 }: {
-  onUpload: () => void
+  onFiles: () => void
+  onFolder: () => void
   busy: boolean
   progress: UploadProgress | undefined
 }) {
   const fraction = busy && progress !== undefined ? uploadFraction(progress) : null
+  const anchor = { '--anchor': `--${UPLOAD_MENU}` } as CSSProperties
+  // The menu closes before the picker opens, and the click on the item is the user activation the
+  // browser asks for to open one.
+  const choose = (open: () => void) => (event: { currentTarget: Element }) => {
+    closeMenu(event.currentTarget)
+    open()
+  }
   return (
-    <button
-      type="button"
-      onClick={onUpload}
-      disabled={busy}
-      className="ease-mechanical relative flex min-h-8 flex-none items-center gap-2 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:hover:translate-y-0"
-    >
-      <Icon name="upload" />
-      <span className="max-sm:sr-only">{strings.toolbar.upload}</span>
-      {fraction === null ? null : (
-        <>
-          <span aria-hidden="true" className="tabular text-[11px] font-normal text-[var(--color-muted)]">
-            {Math.round(fraction * 100)}%
-          </span>
-          <span
-            aria-hidden="true"
-            style={{ transform: `scaleX(${fraction})` }}
-            className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-[var(--color-accent)]"
-          />
-        </>
-      )}
-    </button>
+    <>
+      <button
+        type="button"
+        popoverTarget={UPLOAD_MENU}
+        style={anchor}
+        disabled={busy}
+        className="menu-anchor ease-mechanical relative flex min-h-8 flex-none items-center gap-2 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:hover:translate-y-0"
+      >
+        <Icon name="upload" />
+        <span className="max-sm:sr-only">{strings.toolbar.upload}</span>
+        {fraction === null ? null : (
+          <>
+            <span aria-hidden="true" className="tabular text-[11px] font-normal text-[var(--color-muted)]">
+              {Math.round(fraction * 100)}%
+            </span>
+            <span
+              aria-hidden="true"
+              style={{ transform: `scaleX(${fraction})` }}
+              className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-[var(--color-accent)]"
+            />
+          </>
+        )}
+      </button>
+      <div
+        id={UPLOAD_MENU}
+        popover="auto"
+        data-menu
+        role="group"
+        aria-label={strings.toolbar.upload}
+        style={anchor}
+        className="menu panel-in w-64 flex-col gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-1.5 text-[var(--color-text)] shadow-overlay open:flex"
+      >
+        <button type="button" onClick={choose(onFiles)} className={UPLOAD_ITEM}>
+          <span className="text-sm">{strings.toolbar.uploadFiles}</span>
+          <span className="text-xs text-[var(--color-muted)]">{strings.toolbar.uploadFilesHint}</span>
+        </button>
+        <button type="button" onClick={choose(onFolder)} className={UPLOAD_ITEM}>
+          <span className="text-sm">{strings.toolbar.uploadAFolder}</span>
+          <span className="text-xs text-[var(--color-muted)]">{strings.toolbar.uploadAFolderHint}</span>
+        </button>
+      </div>
+    </>
   )
 }
+
+const UPLOAD_ITEM =
+  'ease-mechanical flex flex-col items-start gap-0.5 rounded-[var(--radius-ctl)] px-2.5 py-2 text-left duration-[var(--duration-fast)] hover:bg-[var(--color-raised)]'
 
 /** One line for whichever phase the upload is in. Each phase has a different number
  *  worth showing, which is why this is a switch and not one string with holes in it. */

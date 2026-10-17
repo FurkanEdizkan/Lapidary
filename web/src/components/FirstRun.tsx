@@ -27,7 +27,7 @@ export function FirstRun({ onUpload }: { onUpload: () => void }) {
           className="ease-mechanical mt-6 flex min-h-9 items-center gap-2 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
         >
           <Icon name="upload" />
-          {strings.toolbar.upload}
+          {strings.toolbar.uploadFolder}
         </button>
         <p className="mt-3 text-xs text-[var(--color-muted)]">{strings.emptyLibrary.dropHint}</p>
       </div>

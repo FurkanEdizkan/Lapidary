@@ -203,6 +203,9 @@ pub fn source_format(source_path: &str) -> String {
 /// watches a folder all read this one list.
 pub const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
 
+/// The archives an upload opens and unpacks the meshes of (A10), lowercase.
+pub const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "7z"];
+
 /// The B-rep extensions this library refuses by name, lowercase.
 ///
 /// Still chained into [`is_model_file`] below, deliberately. Lapidary does not read these, but a

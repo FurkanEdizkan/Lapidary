@@ -21,6 +21,7 @@
 //! either: this crate has exactly one router, always fully mounted, and the caller
 //! decides whether to include it at all.
 
+mod archive;
 mod derive;
 mod handler;
 mod import;
