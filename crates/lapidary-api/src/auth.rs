@@ -20,7 +20,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::UserId;
-use lapidary_db::{PgAccounts, PgPool, PgProfile, PgSettings, UserRow};
+use lapidary_db::{PgAccounts, PgPool, PgSettings, UserRow};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -121,13 +121,92 @@ pub struct SignIn {
 /// Every route but the public ones goes through this. A request with a live session gets a
 /// [`CurrentUser`]; one without gets 409 `setup_required` while nobody has an account, else 401.
 pub async fn require_user(State(db): State<PgPool>, mut request: Request, next: Next) -> Response {
-    match who(db, request.headers()).await {
+    match who(db.clone(), request.headers()).await {
         Ok(user) => {
+            if let Some(refusal) = scope(&db, &user, request.method(), request.uri().path()).await {
+                return refusal;
+            }
             request.extensions_mut().insert(user);
             next.run(request).await
         }
         Err(refusal) => refusal,
     }
+}
+
+/// **A person reaches their own models and nobody else's** (A3). Every route that names a library, a
+/// part, a category or a revision in its path is checked here, once, before its handler runs: a
+/// library or category must be theirs, and a part (or a revision of one) must be theirs to change it,
+/// or theirs or shared with them to read it.
+///
+/// Somebody else's is refused with the same `404` an unknown library or part gets, so a person learns
+/// nothing about anybody else's models — except a shared part they try to change, which is a `403`,
+/// because they can already see it. An id that names nothing at all is left to the handler, which
+/// answers it exactly as it always has; so is a path whose id is not a uuid.
+async fn scope(db: &PgPool, user: &CurrentUser, method: &Method, path: &str) -> Option<Response> {
+    use lapidary_core::{FolderId, LibraryId, PartId, RevisionId};
+    let mut segments = path.trim_start_matches('/').split('/');
+    let (Some("api"), Some(kind), Some(id)) = (segments.next(), segments.next(), segments.next())
+    else {
+        return None;
+    };
+    let id = uuid::Uuid::parse_str(id).ok()?;
+    let parts = lapidary_db::PgParts(db.clone());
+    let reads = matches!(*method, Method::GET | Method::HEAD);
+    let checked = async {
+        match kind {
+            "libraries" => library_refusal(&parts, LibraryId::from_uuid(id), user).await,
+            "parts" => part_refusal(&parts, PartId::from_uuid(id), user, reads).await,
+            "revisions" => match parts.revision_part(RevisionId::from_uuid(id)).await? {
+                Some(part) => part_refusal(&parts, part, user, reads).await,
+                None => Ok(None),
+            },
+            "folders" => match parts.folder_library(FolderId::from_uuid(id)).await? {
+                Some(library) => Ok(library_refusal(&parts, library, user)
+                    .await?
+                    .map(|_| crate::folders::no_such_folder())),
+                None => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    };
+    match checked.await {
+        Ok(refusal) => refusal,
+        Err(err) => Some(internal_error(&err, "access check failed")),
+    }
+}
+
+/// `Some` refusal when the library exists and is somebody else's.
+async fn library_refusal(
+    parts: &lapidary_db::PgParts,
+    library: lapidary_core::LibraryId,
+    user: &CurrentUser,
+) -> Result<Option<Response>, lapidary_db::DbError> {
+    if parts.library_owner(library).await? == Some(user.id)
+        || !parts.library_exists(library).await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(crate::derive::no_such_library()))
+}
+
+/// `Some` refusal when the part exists and this person may not do this to it.
+async fn part_refusal(
+    parts: &lapidary_db::PgParts,
+    part: lapidary_core::PartId,
+    user: &CurrentUser,
+    reads: bool,
+) -> Result<Option<Response>, lapidary_db::DbError> {
+    Ok(match parts.part_access(part, user.id).await? {
+        Some(lapidary_db::Access::Owner) => None,
+        Some(lapidary_db::Access::Reader) if reads => None,
+        Some(lapidary_db::Access::Reader) => Some(answer(
+            StatusCode::FORBIDDEN,
+            "shared",
+            "This model was shared with you to look at and download. Only its owner can change it.",
+        )),
+        None if parts.part_exists(part).await? => Some(crate::derive::no_such_part()),
+        None => None,
+    })
 }
 
 /// The person a request's cookie names, or the answer for nobody: 409 `setup_required` while nobody
@@ -186,18 +265,10 @@ pub async fn setup_status(State(state): State<AppState>) -> Response {
         Ok(any) => !any,
         Err(err) => return internal_error(&err, "account lookup failed"),
     };
-    // The suggestion is only for the wizard; once anybody has an account it is nobody's business.
-    let suggested_name = if required {
-        match PgProfile(state.db.clone()).display_name().await {
-            Ok(name) => name,
-            Err(err) => return internal_error(&err, "profile read failed"),
-        }
-    } else {
-        None
-    };
     Json(SetupStatus {
         required,
-        suggested_name,
+        // 0060's profile row, which offered a name here, went with A3: the wizard asks for one.
+        suggested_name: None,
         host_ingest_root: state.host_ingest_root.clone().filter(|_| required),
         host_inbox_root: state.host_inbox_root.clone().filter(|_| required),
         host_storage_root: state.host_storage_root.clone().filter(|_| required),

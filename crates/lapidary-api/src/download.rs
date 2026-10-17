@@ -1066,8 +1066,10 @@ async fn plan_bundle(
     }
 
     let repo = PgParts(state.db.clone());
+    // The sign-in guard has already checked the library is the caller's (A3); this reads its row.
+    let whose = repo.library_owner(library).await.map_err(failed)?;
     let Some(owner) = repo
-        .libraries()
+        .libraries(whose.unwrap_or_default())
         .await
         .map_err(failed)?
         .into_iter()

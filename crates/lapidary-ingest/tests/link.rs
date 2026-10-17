@@ -233,8 +233,22 @@ async fn a_model_with_no_mesh_or_a_site_with_no_key_is_refused_with_what_to_do(p
         }
         other => panic!("{other:?}"),
     }
-    // A saved key the site refuses says to check it in Settings.
-    PgSiteKeys(pool.clone())
+    // A saved key the site refuses says to check it in Settings. The key is the library owner's (A3).
+    let owner = lapidary_core::UserId::new();
+    sqlx::query(
+        "INSERT INTO app_user (id, username, password_hash, is_admin) VALUES ($1, 'mira.okafor', 'x', true)",
+    )
+    .bind(owner.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("an owner");
+    sqlx::query("UPDATE library SET owner_id = $1 WHERE id = $2")
+        .bind(owner.as_uuid())
+        .bind(seeded().as_uuid())
+        .execute(&pool)
+        .await
+        .expect("the library is theirs");
+    PgSiteKeys(pool.clone(), owner)
         .set("thingiverse", "expired-token")
         .await
         .expect("saves");

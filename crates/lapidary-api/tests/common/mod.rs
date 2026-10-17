@@ -62,4 +62,13 @@ pub async fn ensure_session(pool: &PgPool) {
     .bind(USER)
     .execute(pool)
     .await;
+    // What setup does (A1): the account owns every library and model nobody owns yet — the seeded
+    // library, and whatever a test filed before its first request. A test about a second person
+    // makes that person's rows itself.
+    for claim in [
+        "UPDATE library SET owner_id = $1 WHERE owner_id IS NULL",
+        "UPDATE part SET owner_id = $1 WHERE owner_id IS NULL",
+    ] {
+        let _ = sqlx::query(claim).bind(USER).execute(pool).await;
+    }
 }

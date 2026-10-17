@@ -63,23 +63,26 @@ impl WorkerHandler {
         source_path: &str,
         url: &str,
     ) -> Result<Outcome, HandlerError> {
-        let page = self.page(url).await?;
+        let page = self.page(library, url).await?;
         self.describe_from_page(library, source_path, page.site, &page.model, &page.pictures)
             .await;
         Ok(Outcome::Described)
     }
 
-    /// The page at `url`, read through the site's key, from the cache when it was read lately.
-    async fn page(&self, url: &str) -> Result<Arc<Page>, HandlerError> {
+    /// The page at `url`, read through the library owner's key, from the cache when that person read
+    /// it lately. Kept per person (A3): what a page shows can depend on whose key read it.
+    async fn page(&self, library: LibraryId, url: &str) -> Result<Arc<Page>, HandlerError> {
         let pages = PAGES.get_or_init(|| Mutex::new(HashMap::new()));
+        let owner = self.owner_of(library).await?;
+        let cached = format!("{}:{url}", owner.map(|o| o.to_string()).unwrap_or_default());
         if let Ok(mut kept) = pages.lock() {
             kept.retain(|_, (read, _)| read.elapsed() < PAGE_LIFE);
-            if let Some((_, page)) = kept.get(url) {
+            if let Some((_, page)) = kept.get(&cached) {
                 return Ok(page.clone());
             }
         }
         let (site, id) = identify(url).map_err(permanent)?;
-        let key = self.site_key(site).await?;
+        let key = self.site_key(library, site).await?;
         let model = self
             .sites
             .model(site, &id, key.as_deref())
@@ -100,16 +103,37 @@ impl WorkerHandler {
             {
                 kept.remove(&oldest);
             }
-            kept.insert(url.to_owned(), (Instant::now(), page.clone()));
+            kept.insert(cached, (Instant::now(), page.clone()));
         }
         Ok(page)
     }
 
-    async fn site_key(&self, site: Site) -> Result<Option<String>, HandlerError> {
+    /// Who the library belongs to (A3): whose keys read its pages. `None` before setup claims it.
+    async fn owner_of(
+        &self,
+        library: LibraryId,
+    ) -> Result<Option<lapidary_core::UserId>, HandlerError> {
+        PgParts(self.db.clone())
+            .library_owner(library)
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: e.to_string(),
+            })
+    }
+
+    /// The library owner's key for `site` (A3): each person imports with their own.
+    async fn site_key(
+        &self,
+        library: LibraryId,
+        site: Site,
+    ) -> Result<Option<String>, HandlerError> {
         if !site.needs_key() {
             return Ok(None);
         }
-        PgSiteKeys(self.db.clone())
+        let Some(owner) = self.owner_of(library).await? else {
+            return Ok(None);
+        };
+        PgSiteKeys(self.db.clone(), owner)
             .secret(site.slug())
             .await
             .map_err(|e| HandlerError::Transient {
@@ -138,7 +162,7 @@ impl WorkerHandler {
         url: &str,
     ) -> Result<Outcome, HandlerError> {
         let (site, id) = identify(url).map_err(permanent)?;
-        let key = self.site_key(site).await?;
+        let key = self.site_key(library, site).await?;
         let model = self
             .sites
             .model(site, &id, key.as_deref())

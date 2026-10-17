@@ -49,8 +49,12 @@ pub struct LibrarySummary {
 ///
 /// No pagination. A deployment has a handful of libraries, not a page of them, and a
 /// switcher that paged would be a control nobody could scan.
-pub async fn list_libraries(State(state): State<AppState>) -> Response {
-    match PgParts(state.db).libraries().await {
+pub async fn list_libraries(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+) -> Response {
+    // Only this person's (A3).
+    match PgParts(state.db).libraries(user.id).await {
         Ok(rows) => Json(
             rows.into_iter()
                 .map(|row| LibrarySummary {
@@ -86,6 +90,7 @@ pub struct NewLibrary {
 /// but it is no longer the only one there can be.
 pub async fn create_library(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     body: Result<Json<NewLibrary>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -115,7 +120,10 @@ pub async fn create_library(
             ),
         );
     }
-    match PgParts(state.db).create_library(name, root).await {
+    match PgParts(state.db)
+        .create_library_for(name, root, Some(user.id))
+        .await
+    {
         Ok(id) => (
             StatusCode::CREATED,
             Json(LibrarySummary {

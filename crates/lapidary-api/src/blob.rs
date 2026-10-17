@@ -21,7 +21,11 @@ use lapidary_storage::DerivativeStore;
 /// cannot change. `immutable` additionally tells a browser not to revalidate on reload.
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) -> Response {
+pub async fn by_hash(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    Path(hash): Path<String>,
+) -> Response {
     // A hash that is not 64 hex characters cannot name anything, but it must not say so:
     // a distinct 400 here would tell a caller their guess was well-formed but absent.
     let Ok(hash) = BlobHash::parse_hex(&hash) else {
@@ -37,10 +41,13 @@ pub async fn by_hash(State(state): State<AppState>, Path(hash): Path<String>) ->
     // just uploaded would be on disk and served to nobody, including them.
     //
     // `CLAUDE.md`: content addressing is not authorization. Knowing a hash is not a reason
-    // to be given the bytes — something in this instance has to point at them.
-    let reachable = match blobs.derivative_is_reachable(&hash).await {
+    // to be given the bytes — one of **this person's** parts has to point at them (A3).
+    let reachable = match blobs.derivative_is_reachable(&hash, user.id).await {
         Ok(true) => true,
-        Ok(false) => match PgParts(state.db.clone()).image_is_reachable(&hash).await {
+        Ok(false) => match PgParts(state.db.clone())
+            .image_is_reachable(&hash, user.id)
+            .await
+        {
             Ok(reachable) => reachable,
             Err(err) => return internal_error(&err),
         },

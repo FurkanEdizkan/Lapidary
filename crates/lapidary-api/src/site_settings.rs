@@ -134,8 +134,11 @@ fn unknown_site() -> Response {
 }
 
 /// `GET /api/settings/sites`
-pub async fn list(State(state): State<AppState>) -> Response {
-    let rows = match PgSiteKeys(state.db.clone()).list().await {
+pub async fn list(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+) -> Response {
+    let rows = match PgSiteKeys(state.db.clone(), user.id).list().await {
         Ok(rows) => rows,
         Err(err) => return internal_error(&err, "site key list failed"),
     };
@@ -165,6 +168,7 @@ pub async fn list(State(state): State<AppState>) -> Response {
 /// `PUT /api/settings/sites/{site}` — save a key, replacing the one there. `204`.
 pub async fn set(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(slug): Path<String>,
     body: Result<Json<SetSiteKey>, JsonRejection>,
 ) -> Response {
@@ -189,18 +193,25 @@ pub async fn set(
             "That key is empty. Paste the key itself, or use Remove to forget the saved one.",
         );
     }
-    match PgSiteKeys(state.db).set(site.slug(), &body.key).await {
+    match PgSiteKeys(state.db, user.id)
+        .set(site.slug(), &body.key)
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => internal_error(&err, "site key save failed"),
     }
 }
 
 /// `DELETE /api/settings/sites/{site}` — forget the key. `204` whether or not there was one.
-pub async fn clear(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
+pub async fn clear(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    Path(slug): Path<String>,
+) -> Response {
     let Some(site) = Site::from_slug(&slug) else {
         return unknown_site();
     };
-    match PgSiteKeys(state.db).clear(site.slug()).await {
+    match PgSiteKeys(state.db, user.id).clear(site.slug()).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => internal_error(&err, "site key clear failed"),
     }
@@ -213,6 +224,7 @@ pub async fn clear(State(state): State<AppState>, Path(slug): Path<String>) -> R
 /// "the key does not work" is the check working.
 pub async fn check(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(slug): Path<String>,
     body: Option<Json<CheckSiteKey>>,
 ) -> Response {
@@ -225,7 +237,7 @@ pub async fn check(
     let offered = body
         .and_then(|Json(body)| body.key)
         .filter(|key| !key.trim().is_empty());
-    let keys = PgSiteKeys(state.db.clone());
+    let keys = PgSiteKeys(state.db.clone(), user.id);
     let (key, saved) = match offered {
         Some(key) => (Some(key), false),
         None => match keys.secret(site.slug()).await {
@@ -267,6 +279,7 @@ pub async fn check(
 /// batch to watch, or a refusal that names the site or the missing key before anything is queued.
 pub async fn import(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(library): Path<LibraryId>,
     body: Result<Json<ImportLink>, JsonRejection>,
 ) -> Response {
@@ -284,7 +297,10 @@ pub async fn import(
         Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
     };
     if site.needs_key() {
-        match PgSiteKeys(state.db.clone()).secret(site.slug()).await {
+        match PgSiteKeys(state.db.clone(), user.id)
+            .secret(site.slug())
+            .await
+        {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return refused(
@@ -315,6 +331,7 @@ pub async fn import(
 /// gives before anything is queued.
 pub async fn describe(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Path(part): Path<lapidary_core::PartId>,
     body: Result<Json<ImportLink>, JsonRejection>,
 ) -> Response {
@@ -332,7 +349,10 @@ pub async fn describe(
         Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
     };
     if site.needs_key() {
-        match PgSiteKeys(state.db.clone()).secret(site.slug()).await {
+        match PgSiteKeys(state.db.clone(), user.id)
+            .secret(site.slug())
+            .await
+        {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return refused(
