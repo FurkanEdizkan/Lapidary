@@ -245,7 +245,7 @@ export default function Viewer({
                   type="button"
                   aria-pressed={tools[tool]}
                   onClick={() => toggle(tool)}
-                  className={`${TOOL} ${tools[tool] ? 'bg-[var(--color-raised)] text-[var(--color-bright)]' : 'text-[var(--color-muted)]'}`}
+                  className={`${TOOL} ${tools[tool] ? 'bg-[var(--color-raised)] text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}
                 >
                   {strings.viewer.tool[tool]}
                 </button>
