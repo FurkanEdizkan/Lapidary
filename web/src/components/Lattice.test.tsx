@@ -1,8 +1,9 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import Lattice from './Lattice'
 import { lattice } from '../lib/lattice'
+import { strings } from '../lib/strings'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -38,4 +39,37 @@ test('the draw head exists only on a lattice that is about to draw', () => {
   expect(firstFrame(<Lattice />, true)).toContain('var(--color-accent)')
   expect(firstFrame(<Lattice still />, true)).not.toContain('var(--color-accent)')
   expect(firstFrame(<Lattice />, false)).not.toContain('var(--color-accent)')
+})
+
+/** A26: sign-in's drawing keeps turning once drawn, so it carries a Pause (WCAG 2.2.2); nothing else does. */
+test('a live drawing can be paused and played, and only a live one offers to', async () => {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({ matches: false })),
+  )
+  render(<Lattice live />)
+  // In jsdom a path has no length, so the drawing is done at once and the turn begins.
+  const pause = await screen.findByRole('button', { name: strings.doorway.pause })
+  expect(pause.getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(pause)
+  const play = screen.getByRole('button', { name: strings.doorway.play })
+  expect(play.getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(play)
+  expect(screen.getByRole('button', { name: strings.doorway.pause })).toBeTruthy()
+})
+
+test('nothing offers a pause where nothing loops', () => {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({ matches: false })),
+  )
+  render(<Lattice />)
+  render(<Lattice still />)
+  expect(screen.queryByRole('button')).toBeNull()
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn(() => ({ matches: true })),
+  )
+  render(<Lattice live />)
+  expect(screen.queryByRole('button')).toBeNull()
 })

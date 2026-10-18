@@ -473,9 +473,11 @@ how a rule gets carried out.
   moment, end to end). A key, a click or the visible **Skip** ends a moment at its end state.
   Inside the app there are no authored moments: a person opens it forty times a day, and an
   animation that was charming once is a wait the fortieth time.
-- **Nothing loops.** No shimmer that repeats, no idle drift, no breathing glow. Anything that
-  moves on its own stops within 5 s and stays still (WCAG 2.2.2). A skeleton is static or shimmers
-  once.
+- **Nothing loops, with one exception.** No shimmer that repeats, no idle drift, no breathing
+  glow. Anything that moves on its own stops within 5 s and stays still (WCAG 2.2.2). A skeleton is
+  static or shimmers once. The exception is the sign-in drawing (A26, owner 2026-10-18): it keeps
+  turning, so it carries a visible Pause, stops while the page is hidden, and is still under
+  reduced motion. It is the front door's one loop and nothing inside the app may borrow it.
 - **Only `transform`, `opacity` and SVG `stroke-dashoffset` are animated** — `translate`, `scale`
   and `rotate` are transform. The Lattice is rotated through its SVG `transform` attribute, never
   by animating `d`, `points` or a coordinate. Nothing animates `width`, `height`, `top`, `left`,
@@ -597,9 +599,17 @@ else to show.
 - **The draw head.** While an edge is drawing, its leading end — the last few percent of its
   length — is Layout Blue, the marking dye moving across the bench. The head exists only while the
   stroke is moving; each edge settles to its grey the moment it is complete.
-- **It settles in under 5 s**: on sign-in it draws over 2.4 s, so it reads as drawing rather than
-  a sweep (owner's call, 2026-10-18); setup's intro (A20) keeps inside `--duration-intro`. Then it
-  stays still. **It never loops**, never drifts, never redraws on hover or on focus.
+- **It draws in 2.4 s on sign-in**, so it reads as drawing rather than a sweep (owner's call,
+  2026-10-18); setup's intro (A20) keeps inside `--duration-intro` and then stays still.
+- **On sign-in it keeps moving** (A26, owner 2026-10-18: "it should not stop after one cycle").
+  Once drawn, the gear turns about its axle, one tooth pitch every 3 s — which looks the same as
+  a full turn, so the loop has no seam — and three short Layout Blue marks travel round the tooth
+  profile, the hub's rim (the other way, twice as fast) and the bore, the marking dye still moving
+  across the bench. Blue is on only
+  what moves, so the rule holds. A quiet **Pause the drawing** control sits at the drawing's foot
+  (WCAG 2.2.2), the turn stops while the tab is hidden, and the lines are written straight to the
+  SVG each frame by anime.js's `cycle` (`lib/motion.ts`), never through React.
+- **Everywhere else it never loops**, never drifts, never redraws on hover or on focus.
 - **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
   grey, no blue — and never moves.
 - **Drawing only at the front door.** Sign-in and setup draw it, as a lazy import. Under `lg` the band
@@ -874,6 +884,7 @@ nothing more.
 - **Don't** animate anything but `transform`, `translate`, `opacity` and SVG `stroke-dashoffset`,
   or past 180 ms for a state change; 280 ms is for the flight and a whole arrival run, and the
   scene and intro tokens are for the front door alone.
-- **Don't** loop anything, bounce anything, or put a spring on anything but a layout change.
+- **Don't** loop anything but the sign-in drawing (which has its Pause), bounce anything, or put a
+  spring on anything but a layout change.
 - **Don't** import `framer-motion`, or Motion+.
 - **Don't** show anybody's data, a testimonial or a user count on a signed-out page.
