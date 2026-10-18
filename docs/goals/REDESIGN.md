@@ -120,7 +120,7 @@ only as hairlines.
   - a `motion` or `motion/react` import only in the two files above;
   - `framer-motion` is banned.
   `test-setup.ts` sets `MotionGlobalConfig.skipAnimations = true`.
-- **Budget.** The entry chunk may grow by at most +8 KB gzip over the baseline A18 records. The lattice is a lazy
+- **Budget.** A18 measured the entry at 94.16 kB gzip (+10.3 kB for LazyMotion and MotionConfig); later goals may add at most 4 kB to it. The lattice is a lazy
   import from sign-in and setup only.
 
 ## Goals, in order
