@@ -198,7 +198,7 @@ next worker start. The reason is in the function's own doc; read it before touch
 | Grid | `@tanstack/react-virtual` |
 | Node editor | `@xyflow/react` (React Flow) |
 | Layout | Hand-rolled, on a 12-column CSS grid (`web/src/components/dashboard/layout.ts`, pure and unit-tested). Not `react-grid-layout`: its CSS transitions fight the motion rules, and the keyboard move/resize WCAG needs is code we would write anyway (G5, 2026-09-27) |
-| Motion | CSS transitions for everything a single element does, and **anime.js (pinned)** for sequenced or staggered motion — imported by `web/src/lib/motion.ts` and nowhere else. `CLAUDE.md` § Style holds the durations, the curve and the reduced-motion rule |
+| Motion | CSS transitions for everything a single element does; **anime.js (pinned)** for sequences, staggers and SVG drawing, imported by `web/src/lib/motion.ts` and nowhere else; and **`motion`** (motion.dev, MIT, pinned exactly) for presence and layout, imported by `web/src/lib/motion-react.tsx` and `web/src/lib/motion-features.ts` and nowhere else. `motion` is a deliberate addition (owner, 2026-10-18): anime.js cannot see React's tree, so it cannot animate something leaving it or changing place in it. It is bundled by Vite, so an air-gapped install needs no CDN, and it replaces nothing. Its paid Motion+ components are not used. `CLAUDE.md` § Style and `DESIGN.md` § Motion hold the durations, the curve and the reduced-motion rule |
 
 ### Why not gRPC
 
