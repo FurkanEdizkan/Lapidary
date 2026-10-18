@@ -65,9 +65,10 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | Runs as the person who installed it (the owner of deploy/, or LAPIDARY_UID/GID), so their folders open with no permission command and what Lapidary writes is theirs; never root | A7, built |
 | `./install.sh`: Podman or Docker, deploy/.env written once with a random password, built, started, and the address and setup code printed. Lapidary's own files chosen in the wizard beside the models folder, copied there whole | A8, built |
 | The folder picker as a dialog: a path field, the path bar from the browse root, folders with icons, and New folder (one plain-named empty folder, never over anything, only where Lapidary may write) | A9, built |
-| Upload single files, and zip and 7z archives: kept as sent, their stl, obj and 3mf unpacked beside them into parts, never over a file; RAR and encrypted archives refused by name | A10, built |
+| Upload single files, and zip and 7z archives: kept as sent, their stl, obj and 3mf unpacked beside them into parts, never over a file; encrypted archives refused by name; an uploaded RAR kept as a pack (A13) | A10, built |
 | View in 3D reads the model in a worker, so the page never freezes; a 3MF reader of our own that follows the server's (projects with components in other model parts, transforms, units) | A11, built |
 | The 3D view's tools: a millimetre grid, the part's box and size, a measurement between two clicked points with their coordinates, each figure with its ≈, and an X/Y/Z axis gizmo | A12, built |
+| Packs: a zip, 7z or rar in the models folder kept as one item — read where it is, never unpacked, filed under its folder's category, its contents listed from the archive's index, downloaded byte for byte | A13, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped

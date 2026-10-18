@@ -89,7 +89,7 @@ them into `docs/ROADMAP.md` with the first merge.
 **P2 and P4** wait for the owner. **S1 and S2 are disjoint** and may run at once; everything after is sequential
 through `repo.rs` and `lib.rs`'s route list.
 
-**Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1 · 0059 F3.
+**Migration numbers:** 0056 S3 · 0057 S4 · 0058 F1 · 0059 F3. · 0067 A13.
 
 ## The MVP: a hobbyist library, dashboard and search first (planned 2026-10-17)
 
@@ -129,7 +129,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A10](A10.md) | Upload single files, and zip and 7z archives | 12 | Rust + web | A9 | see [A10.md](A10.md) | — | merged `419f300` | `feat/upload-archives` |
 | [A11](A11.md) | The viewer reads models off the page's thread | 12 | web | A10 | see [A11.md](A11.md) | — | merged `222578c` | `feat/viewer-worker` |
 | [A12](A12.md) | Grid, size, measure and axes in the 3D view | 12 | web | A11 | see [A12.md](A12.md) | — | merged `26b1632` | `feat/viewer-tools` |
-| [A13](A13.md) | Packs: archives in the library, kept packed | 12 | Rust + web | A12 | see [A13.md](A13.md) | 0067 | open | `feat/packs` |
+| [A13](A13.md) | Packs: archives in the library, kept packed | 12 | Rust + web | A12 | see [A13.md](A13.md) | 0067 | merged `b5e01c7` | `feat/packs` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
