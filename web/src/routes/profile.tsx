@@ -24,20 +24,16 @@ export function ProfilePage() {
         <title>{strings.titles.profile}</title>
         <h2 className={HEADLINE}>{strings.profile.title}</h2>
         <p className={LEAD}>{strings.profile.lead}</p>
-        <section className={SECTION} aria-labelledby="profile-name">
-          <h3 id="profile-name" className={SECTION_TITLE}>
-            {strings.profile.nameLabel}
-          </h3>
-          {profile.isPending ? (
-            <p className="mt-4 text-sm text-[var(--color-muted)]">{strings.profile.loading}</p>
-          ) : profile.isError ? (
-            <p role="alert" className="mt-4 max-w-[70ch] text-sm text-[var(--color-muted)]">
-              {strings.profile.failed}
-            </p>
-          ) : (
-            <NameForm key={profile.data.displayName ?? ''} initial={profile.data.displayName ?? ''} />
-          )}
-        </section>
+        {/* The name is the page's subject, so it sits under the lead with no label over it to repeat its own. */}
+        {profile.isPending ? (
+          <p className="mt-6 text-sm text-[var(--color-muted)]">{strings.profile.loading}</p>
+        ) : profile.isError ? (
+          <p role="alert" className="mt-6 max-w-[70ch] text-sm text-[var(--color-muted)]">
+            {strings.profile.failed}
+          </p>
+        ) : (
+          <NameForm key={profile.data.displayName ?? ''} initial={profile.data.displayName ?? ''} />
+        )}
         <PasswordForm />
       </section>
     </AppFrame>
@@ -56,7 +52,7 @@ function NameForm({ initial }: { initial: string }) {
   })
   return (
     <form
-      className="mt-4 flex max-w-md flex-col gap-3"
+      className="mt-6 flex max-w-md flex-col gap-3"
       onSubmit={(event) => {
         event.preventDefault()
         if (!save.isPending) save.mutate()
