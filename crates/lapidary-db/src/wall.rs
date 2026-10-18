@@ -26,21 +26,23 @@ pub struct WallPicture {
     pub focus: (f64, f64),
 }
 
+/// `WallPicture` as it comes off the wire, in the SELECT's order: bytes, hash, fit, focus.
+type Row = (Option<Vec<u8>>, Option<String>, String, f64, f64);
+
 pub struct PgWall(pub PgPool);
 
 impl PgWall {
     /// Up to `limit` pictures, in a new random order each time.
     // ponytail: ORDER BY random() reads every shared part; sample with TABLESAMPLE if a library outgrows it.
     pub async fn pictures(&self, limit: u32) -> Result<Vec<WallPicture>, DbError> {
-        let rows: Vec<(Option<Vec<u8>>, Option<String>, String, f64, f64)> =
-            sqlx::query_as(concat!(
-                "SELECT i.image_webp, i.blake3, i.fit, i.focus_x, i.focus_y",
-                on_the_wall!(),
-                " ORDER BY random() LIMIT $1"
-            ))
-            .bind(i64::from(limit))
-            .fetch_all(&self.0)
-            .await?;
+        let rows: Vec<Row> = sqlx::query_as(concat!(
+            "SELECT i.image_webp, i.blake3, i.fit, i.focus_x, i.focus_y",
+            on_the_wall!(),
+            " ORDER BY random() LIMIT $1"
+        ))
+        .bind(i64::from(limit))
+        .fetch_all(&self.0)
+        .await?;
         rows.into_iter()
             .map(|(inline_webp, hex, fit, focus_x, focus_y)| {
                 let hash = hex
