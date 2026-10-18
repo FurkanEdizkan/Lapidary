@@ -18,6 +18,7 @@ import {
   fetchRevisions,
   requestExport,
   setFieldValue,
+  reorderPartImages,
   setImageFraming,
   setPartMaterials,
   setPartTags,
@@ -26,6 +27,7 @@ import {
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import { Dialog } from './Dialog'
+import { Icon } from './Icon'
 import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
@@ -38,6 +40,7 @@ import type {
   PartDetail as PartDetailData,
   PartId,
   PartImage,
+  PartImageId,
   PartRevision,
   RevisionId,
 } from '../lib/types'
@@ -165,6 +168,27 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
   )
 }
 
+/** What a model's page says about it (A15): four lines, and the rest when asked. */
+function Description({ text }: { text: string }) {
+  const [whole, setWhole] = useState(false)
+  const long = text.length > 320 || text.split('\n').length > 4
+  return (
+    <div className="mt-2 max-w-prose text-xs leading-relaxed text-[var(--color-text)]">
+      <p className={whole || !long ? 'whitespace-pre-line' : 'line-clamp-4 whitespace-pre-line'}>{text}</p>
+      {!long ? null : (
+        <button
+          type="button"
+          aria-expanded={whole}
+          onClick={() => setWhole(!whole)}
+          className="mt-1 text-[var(--color-muted)] underline"
+        >
+          {whole ? strings.sources.showLess : strings.sources.showAll}
+        </button>
+      )}
+    </div>
+  )
+}
+
 /**
  * Where the part came from: the link, the vendor, the price, and the licence.
  *
@@ -276,6 +300,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
                   .filter((part) => part !== null)
                   .join(' · ')}
               </p>
+              {source.description ? <Description text={source.description} /> : null}
             </li>
           ))}
         </ul>
@@ -1525,6 +1550,15 @@ function Row({ label, children, figure = false }: { label: string; children: Rea
   )
 }
 
+/** `images` with the one called `id` moved to `index`. */
+function moved(images: readonly PartImage[], id: PartImageId, index: number): PartImage[] {
+  const rest = images.filter((image) => image.id !== id)
+  const image = images.find((candidate) => candidate.id === id)
+  if (image === undefined) return [...images]
+  rest.splice(Math.max(0, Math.min(index, rest.length)), 0, image)
+  return rest
+}
+
 /**
  * The pictures somebody attached, and the control that attaches one.
  *
@@ -1572,6 +1606,24 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
   })
 
   const gallery = images.data ?? []
+  /** The order being dragged into, shown until the server has it; `null` is the gallery as stored. */
+  const [draft, setDraft] = useState<PartImage[] | null>(null)
+  const [dragged, setDragged] = useState<PartImageId | null>(null)
+  const shown = draft ?? gallery
+  const ordering = editable && gallery.length > 1
+  const reorder = useMutation({
+    mutationFn: (next: PartImage[]) => {
+      setDraft(next)
+      return reorderPartImages(
+        part,
+        next.map((image) => image.id),
+      )
+    },
+    onSettled: async () => {
+      await picturesChanged(queryClient, part)
+      setDraft(null)
+    },
+  })
   return (
     <section className="mb-6">
       <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
@@ -1584,13 +1636,72 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
         </p>
       ) : null}
       {gallery.length === 0 ? null : (
-        <ul role="list" className="mb-2 flex list-none flex-wrap gap-2">
-          {gallery.map((image, index) => (
-            <li key={image.id}>
-              <Framed part={part} image={image} label={strings.images.alt(name, index)} />
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul role="list" className="mb-2 flex list-none flex-wrap gap-2">
+            {shown.map((image, index) => {
+              const label = strings.images.alt(name, index)
+              return (
+                <li
+                  key={image.id}
+                  draggable={ordering}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move'
+                    setDragged(image.id)
+                  }}
+                  onDragOver={(event) => {
+                    if (dragged === null) return
+                    event.preventDefault()
+                    if (dragged !== image.id) setDraft(moved(shown, dragged, index))
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    if (draft !== null) reorder.mutate(draft)
+                    setDragged(null)
+                  }}
+                  onDragEnd={(event) => {
+                    setDragged(null)
+                    // Let go outside the gallery: the order goes back to the stored one.
+                    if (event.dataTransfer.dropEffect === 'none') setDraft(null)
+                  }}
+                  className={dragged === image.id ? 'opacity-50' : undefined}
+                >
+                  <Framed part={part} image={image} label={label} />
+                  {!ordering ? null : (
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        aria-label={strings.images.moveEarlier(label)}
+                        disabled={index === 0 || reorder.isPending}
+                        onClick={() => reorder.mutate(moved(shown, image.id, index - 1))}
+                        className="rounded p-0.5 text-[var(--color-muted)] disabled:opacity-30"
+                      >
+                        <Icon name="caretLeft" />
+                      </button>
+                      {index !== 0 ? null : (
+                        <span className="text-[10px] text-[var(--color-muted)]">{strings.images.onCard}</span>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={strings.images.moveLater(label)}
+                        disabled={index === shown.length - 1 || reorder.isPending}
+                        onClick={() => reorder.mutate(moved(shown, image.id, index + 1))}
+                        className="rounded p-0.5 text-[var(--color-muted)] disabled:opacity-30"
+                      >
+                        <Icon name="caretRight" />
+                      </button>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+          {!ordering ? null : <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.images.orderHint}</p>}
+          {!reorder.isError ? null : (
+            <p role="alert" className="mb-2 max-w-prose text-xs text-[var(--color-muted)]">
+              {strings.images.reorderFailed}
+            </p>
+          )}
+        </>
       )}
       <div className={editable ? 'flex flex-wrap items-center gap-2' : 'hidden'}>
         {/*

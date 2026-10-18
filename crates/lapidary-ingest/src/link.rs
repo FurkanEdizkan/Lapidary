@@ -50,6 +50,8 @@ static PAGES: OnceLock<Pages> = OnceLock::new();
 
 /// The most tags a page gives a part; past this a creator's tag list is a keyword dump.
 const MAX_TAGS: usize = 20;
+/// A page's description is kept to this many characters; past it is a page pasted whole, not a description.
+const MAX_DESCRIPTION: usize = 20_000;
 /// A page's pictures past this many are its gallery, not the model's.
 const MAX_PICTURES: usize = 12;
 
@@ -264,11 +266,25 @@ impl WorkerHandler {
             }
         };
         let parts = PgParts(self.db.clone());
+        let description: Option<String> = model
+            .description
+            .as_deref()
+            .map(|text| text.chars().take(MAX_DESCRIPTION).collect());
         match parts.part_sources(part).await {
+            // Already recorded: what a person may have edited on it stays, and only a missing description is filled.
             Ok(sources)
                 if sources
                     .iter()
-                    .any(|s| s.url.as_deref() == Some(model.url.as_str())) => {}
+                    .any(|s| s.url.as_deref() == Some(model.url.as_str())) =>
+            {
+                if let Some(description) = &description
+                    && let Err(error) = parts
+                        .fill_source_description(part, &model.url, description)
+                        .await
+                {
+                    tracing::warn!(source_path, %error, "could not record the page's description");
+                }
+            }
             Ok(_) => {
                 let written = parts
                     .add_part_source(
@@ -279,6 +295,7 @@ impl WorkerHandler {
                             external_id: Some(&model.id),
                             title: Some(&model.name),
                             license: model.license.as_deref(),
+                            description: description.as_deref(),
                             ..NewPartSource::default()
                         },
                     )
@@ -291,18 +308,21 @@ impl WorkerHandler {
                 tracing::warn!(source_path, %error, "could not read the imported part's sources")
             }
         }
-        if !model.tags.is_empty()
-            && let Ok(Some(detail)) = parts.detail(part).await
-            && detail.tags.is_empty()
-        {
-            let tags: Vec<String> = model
-                .tags
-                .iter()
-                .map(|tag| tag.trim().to_lowercase())
-                .filter(|tag| !tag.is_empty())
-                .take(MAX_TAGS)
-                .collect();
-            if let Err(error) = parts.set_tags(part, &tags).await {
+        // The page's tags and the site's categories join the part's own tags (A15): none is replaced, none doubled.
+        if let Ok(Some(detail)) = parts.detail(part).await {
+            let mut tags = detail.tags.clone();
+            for tag in model.tags.iter().chain(&model.categories) {
+                let tag = tag.trim().to_lowercase();
+                if !tag.is_empty()
+                    && !tags.contains(&tag)
+                    && tags.len() < MAX_TAGS.max(detail.tags.len())
+                {
+                    tags.push(tag);
+                }
+            }
+            if tags != detail.tags
+                && let Err(error) = parts.set_tags(part, &tags).await
+            {
                 tracing::warn!(source_path, %error, "could not record the imported part's tags");
             }
         }

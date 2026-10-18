@@ -41,6 +41,7 @@ pub async fn list(State(state): State<AppState>, Path(part): Path<PartId>) -> Re
                     license: row.license,
                     price_minor: row.price_minor,
                     currency: row.currency,
+                    description: row.description,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -106,6 +107,7 @@ pub async fn create(
                 license: license.as_deref(),
                 price_minor: body.price_minor,
                 currency: currency.as_deref(),
+                description: None,
             },
         )
         .await
@@ -148,6 +150,8 @@ pub struct PartSource {
     pub price_minor: Option<i64>,
     /// ISO 4217. Meaningless without `price_minor`, which the database also insists on.
     pub currency: Option<String>,
+    /// What the model's page says about it, as Fetch details found it (A15).
+    pub description: Option<String>,
 }
 
 /// What the form posts. Every field optional; the route refuses one that is entirely empty.

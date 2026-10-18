@@ -69,8 +69,8 @@ export function PartsBody({ parts }: { parts: readonly PartCard[] }) {
   return (
     <ul role="list" className="flex flex-col">
       {parts.map((part) => (
-        <li key={part.id} className="flex items-center gap-2.5 border-b border-[var(--color-border)] py-1.5 last:border-b-0">
-          <span className="grid size-8 flex-none place-items-center overflow-hidden rounded-[3px] bg-[var(--color-raised)] p-[2px]">
+        <li key={part.id} className="flex items-center gap-3 border-b border-[var(--color-border)] py-2 last:border-b-0">
+          <span className="grid size-14 flex-none place-items-center overflow-hidden rounded-[3px] bg-[var(--color-raised)] p-[2px]">
             {/* The part's own picture, or nothing: there is no render behind it since R3. */}
             {part.image === null ? null : (
               <img

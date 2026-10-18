@@ -295,6 +295,36 @@ pub async fn set_framing(
     }
 }
 
+/// Every picture of a part, in the order it should have.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOrder {
+    pub ids: Vec<PartImageId>,
+}
+
+/// `PUT /api/parts/{id}/images/order` — put the gallery in this order; the first is the card's picture (A15).
+///
+/// The whole set or nothing: a page that is behind the gallery (a picture added in another tab) is told so rather
+/// than having its order applied to some of the pictures.
+pub async fn reorder(
+    State(state): State<AppState>,
+    Path(part): Path<PartId>,
+    Json(body): Json<ImageOrder>,
+) -> Response {
+    match PgParts(state.db).reorder_part_images(part, &body.ids).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "message": STALE_ORDER })),
+        )
+            .into_response(),
+        Err(err) => internal_error(&err, "reordering a part's pictures failed"),
+    }
+}
+
+const STALE_ORDER: &str = "This part's pictures changed since the page showed them. Reload the page and order them again.";
+
 /// The one refusal this route has, and it is a programming error rather than something a
 /// person can do from the interface — the controls only ever send a value from the set.
 const BAD_FRAMING: &str = "That framing is not one Lapidary can apply. `fit` must be `cover` or `contain`, and the focal point must be between 0 and 1 on each axis.";

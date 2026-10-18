@@ -110,6 +110,7 @@ async fn serve() -> String {
                             "name": "David", "description": "When all was finished.",
                             "license": "Download - Share - Maintain License - Credit - Remix - Commercial - Exclusive",
                             "tags": ["david", "sculpture", "Marble"],
+                            "categories": {"total_count": 2, "items": [{"id": 1, "name": "Art"}, {"id": 2, "name": "Scan The World"}]},
                             "designer": {"id": 20099, "username": "scantheworld", "name": "Scan The World"},
                             "images": [
                                 {"id": 1, "is_primary": false, "standard": {"url": format!("{b}/files/side.jpg")}},
