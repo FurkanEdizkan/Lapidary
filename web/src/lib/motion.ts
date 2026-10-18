@@ -98,11 +98,17 @@ export function tween<T extends object>(
  * An authored moment, so it may run past `--duration-slow`: each line takes `--duration-scene` and the run is spread
  * over `total` ms (at most 3 s, so it is still within WCAG 2.2.2's five seconds once it settles). It draws once and
  * stays drawn; nothing here loops. Under reduced motion the lines are simply there. `onDone` runs either way, once.
+ *
+ * `heads`, when given, are accent copies of `lines`, one for one: each rides the tip of its line as a short segment
+ * and fades out before that line is finished, so the accent is only ever where something is being drawn. The caller
+ * removes them on `onDone`; blue at rest is a defect. Under reduced motion they are never animated, so a caller
+ * should not render them then.
  */
 export function drawIn(
   lines: readonly SVGGeometryElement[],
   onDone: () => void = noop,
   total = 1800,
+  heads: readonly SVGGeometryElement[] = [],
 ): () => void {
   const targets = lines.filter((line) => typeof line.getTotalLength === 'function')
   if (targets.length === 0 || reduced()) {
@@ -111,15 +117,38 @@ export function drawIn(
   }
   const t = tokens()
   const spread = Math.max(0, Math.min(total, 3000) - t.scene)
+  const step = targets.length > 1 ? spread / (targets.length - 1) : 0
   const drawables = createDrawable(targets as SVGGeometryElement[])
   const animation = animate(drawables, {
     draw: ['0 0', '0 1'],
     duration: t.scene,
     ease: curve(t),
-    delay: stagger(targets.length > 1 ? spread / (targets.length - 1) : 0),
+    delay: stagger(step),
     onComplete: () => onDone(),
+  })
+  const tips = heads.filter((head) => typeof head.getTotalLength === 'function')
+  if (tips.length === 0) {
+    return () => {
+      animation.revert()
+    }
+  }
+  // The head's segment is the last fifth of what is drawn so far, and it is gone by the time the line is half drawn:
+  // a thin moving band at the drawing's front, never a blue copy of the part.
+  const head = animate(createDrawable(tips as SVGGeometryElement[]), {
+    draw: ['0 0', '0.8 1'],
+    duration: t.scene,
+    ease: curve(t),
+    delay: stagger(step),
+  })
+  const fade = waapi.animate(tips as unknown as HTMLElement[], {
+    opacity: [1, 0],
+    duration: t.base,
+    ease: t.ease,
+    delay: stagger(step, { start: t.fast / 2 }),
   })
   return () => {
     animation.revert()
+    head.revert()
+    fade.revert()
   }
 }
