@@ -370,9 +370,10 @@ Native popover menus sit in the top layer and need no number.
 
 **Flat by doctrine.** Depth on the page is tonal layering and hairlines, never shadow: ground
 → surface → scribe line, plus a 1px hover lift that reads as the object rising toward the lamp.
-The header is the one sticky surface that changes once the page scrolls under it: a Scribe
-Line and a `backdrop-filter` blur behind its Machined Slate, so content passing beneath reads
-as beneath. Blur is for that one sticky thing; nothing that scrolls is ever blurred.
+The header is the one sticky surface that changes once the page scrolls under it: it gains a
+Scribe Line, so content passing beneath reads as beneath. It stays opaque Machined Slate and is
+never blurred (A21): a see-through header over a white picture drops its Edge borders under 3:1
+and its grey labels under 4.5:1.
 A card under the pointer brightens its edge and lifts; it casts nothing.
 
 **One exception in the page: something floating over it.** A dialog, a menu, and the
@@ -641,7 +642,7 @@ above everything at z 50.
   between places (`layoutId`, 180 ms, no bounce). It replaces the old Bench Grey tray (and the
   tray's off-ladder 8px radius). A page in the account menu (Profile, Settings, People) marks the
   account button; the part page keeps Parts marked.
-- **Once the page scrolls**, the header gains its Scribe Line and the blur behind it. At the top
+- **Once the page scrolls**, the header gains its Scribe Line (opaque, never blurred). At the top
   it sits flush on the ground.
 - **One standing control on the right**: Upload. Library and Import are quiet. Two controls with
   one intent side by side read as a choice nobody can make.

@@ -273,10 +273,10 @@ export function UploadButton({
         popoverTarget={UPLOAD_MENU}
         style={anchor}
         disabled={busy}
-        className="menu-anchor ease-mechanical relative flex min-h-8 flex-none items-center gap-2 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:hover:translate-y-0"
+        className="menu-anchor ease-mechanical relative flex min-h-8 flex-none items-center gap-2 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs max-md:px-2 font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:hover:translate-y-0"
       >
         <Icon name="upload" />
-        <span className="max-sm:sr-only">{strings.toolbar.upload}</span>
+        <span className="max-md:sr-only">{strings.toolbar.upload}</span>
         {fraction === null ? null : (
           <>
             <span aria-hidden="true" className="tabular text-[11px] font-normal text-[var(--color-muted)]">

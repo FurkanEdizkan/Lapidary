@@ -334,9 +334,16 @@ export function GridSkeleton({ label }: { label: string }) {
         {Array.from({ length: 12 }, (_, index) => (
           <div key={index} className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
             <div className="aspect-square bg-[var(--color-raised)]" />
-            <div className="flex flex-col gap-2 p-3">
-              <div className="h-3 w-3/4 rounded-sm bg-[var(--color-border)]" />
-              <div className="h-2.5 w-1/2 rounded-sm bg-[var(--color-border)]" />
+            {/* The card's own footer: a two-line name, then the figures line with its format chip (A21). */}
+            <div className="flex flex-col gap-1.5 p-3">
+              <div className="flex min-h-[2.75em] flex-col gap-1.5 text-[13px]">
+                <div className="h-3 w-4/5 rounded-sm bg-[var(--color-border)]" />
+                <div className="h-3 w-2/5 rounded-sm bg-[var(--color-border)]" />
+              </div>
+              <div className="flex items-center gap-1.5 pt-1">
+                <div className="h-3 w-7 rounded-sm bg-[var(--color-raised)]" />
+                <div className="h-2.5 w-1/2 rounded-sm bg-[var(--color-border)]" />
+              </div>
             </div>
           </div>
         ))}

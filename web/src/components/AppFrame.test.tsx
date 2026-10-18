@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
 import { useRef } from 'react'
 import { expect, test, vi } from 'vitest'
@@ -73,6 +73,73 @@ test('the drawer opens, and Escape closes it and returns to its button', async (
   expect(document.activeElement).toBe(screen.getByRole('button', { name: strings.frame.closeDrawer }))
 
   fireEvent.keyDown(document, { key: 'Escape' })
+  expect(open.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(open)
+})
+
+/**
+ * A21: a current place on every page. A page inside Parts (a part's page, the tag index) marks Parts and keeps it a
+ * link back to the grid; the account's pages mark the account button. One marker, always, because it travels by one id.
+ */
+test.each([
+  ['part', strings.frame.parts],
+  ['tags', strings.frame.parts],
+  ['sharedWithMe', strings.sharing.place],
+] as const)('on %s the marker is under %s', async (current, place) => {
+  renderInRouter(() => (
+    <AppFrame current={current}>
+      <p>{strings.parts.loading}</p>
+    </AppFrame>
+  ), '/elsewhere')
+  const nav = await screen.findByRole('navigation', { name: strings.frame.places })
+  const markers = document.querySelectorAll('[data-place-marker]')
+  expect(markers).toHaveLength(1)
+  expect(markers[0]?.parentElement?.textContent).toBe(place)
+  if (current !== 'sharedWithMe') {
+    expect(within(nav).getByRole('link', { name: strings.frame.parts })).toBeDefined()
+    expect(nav.querySelector('[aria-current="page"]')).toBeNull()
+  }
+})
+
+test.each(['siteSettings', 'profile', 'people'] as const)('on %s the account button is marked', async (current) => {
+  renderInRouter(() => (
+    <AppFrame current={current}>
+      <p>{strings.parts.loading}</p>
+    </AppFrame>
+  ), '/elsewhere')
+  const account = await screen.findByRole('button', { name: strings.user.menu })
+  const markers = document.querySelectorAll('[data-place-marker]')
+  expect(markers).toHaveLength(1)
+  expect(markers[0]?.parentElement?.contains(account)).toBe(true)
+})
+
+/** One row under `md`: the page's tools live in the header until the drawer opens, then only in the drawer. */
+test('the tools move into the drawer while it is open, and are never in the page twice', async () => {
+  renderInRouter(() => (
+    <AppFrame current="parts" tools={<button type="button">{strings.addModels.button}</button>}>
+      <p>{strings.parts.loading}</p>
+    </AppFrame>
+  ))
+  const header = await screen.findByRole('banner')
+  expect(within(header).getAllByRole('button', { name: strings.addModels.button })).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', { name: strings.frame.openDrawer }))
+  expect(screen.getAllByRole('button', { name: strings.addModels.button })).toHaveLength(1)
+  expect(document.getElementById('drawer')?.textContent).toContain(strings.addModels.button)
+})
+
+/** The search folds to an icon under `md` and stays in the document, so `/` and the rig still find the field. */
+test('the search button opens the search across the row and focuses it', async () => {
+  renderInRouter(() => (
+    <AppFrame current="dashboard">
+      <p>{strings.parts.loading}</p>
+    </AppFrame>
+  ))
+  const open = await screen.findByRole('button', { name: strings.frame.openSearch })
+  expect(screen.getByRole('searchbox', { name: strings.search.label })).toBeDefined()
+  fireEvent.click(open)
+  expect(open.getAttribute('aria-expanded')).toBe('true')
+  expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: strings.search.label }))
+  fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' })
   expect(open.getAttribute('aria-expanded')).toBe('false')
   expect(document.activeElement).toBe(open)
 })

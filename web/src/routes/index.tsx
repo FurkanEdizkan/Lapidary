@@ -70,6 +70,7 @@ import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
+import { QUIET, SCOPE } from '../components/Page'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import { ImportLinkDialog } from '../components/ImportLink'
 import { ImportDialog } from '../components/ImportDialog'
@@ -846,7 +847,8 @@ export function Index({
           onWiden={() => onSelectFolder?.(null)}
         />
       }
-      actions={
+      // Library and Import are quiet and fold into the drawer under `md`; Upload is the header's one standing control.
+      tools={
         <>
           <LibraryMenu
             library={library}
@@ -857,20 +859,18 @@ export function Index({
             onImportLink={() => setLinking(true)}
             importBusy={importing.isPending}
           />
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="ease-mechanical flex min-h-8 flex-none items-center gap-2 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
+          <button type="button" onClick={() => setAdding(true)} className={QUIET}>
             {strings.addModels.button}
           </button>
-          <UploadButton
-            onFiles={() => filePicker.current?.click()}
-            onFolder={() => picker.current?.click()}
-            busy={upload.isPending}
-            progress={uploading}
-          />
         </>
+      }
+      actions={
+        <UploadButton
+          onFiles={() => filePicker.current?.click()}
+          onFolder={() => picker.current?.click()}
+          busy={upload.isPending}
+          progress={uploading}
+        />
       }
       rail={
         <>
@@ -1092,6 +1092,7 @@ export function Index({
               onWiden={() => onSelectFolder?.(null)}
               onClearSearch={() => onSearch?.('')}
               onUpload={() => picker.current?.click()}
+              onImport={() => setAdding(true)}
             />
           )
         ) : (
@@ -1215,6 +1216,7 @@ function EmptyLibrary({
   onWiden,
   onClearSearch,
   onUpload,
+  onImport,
 }: {
   filtered: boolean
   categoryName: string | null
@@ -1223,8 +1225,10 @@ function EmptyLibrary({
   onWiden: () => void
   /** Drops the query and keeps the category, for the case the sidebar was not the reason. */
   onClearSearch: () => void
-  /** Opens the folder picker: the first run's one standing control. */
+  /** Opens the folder picker: the first run's quiet second way in. */
   onUpload: () => void
+  /** Opens the Import dialog: the first run's one standing control, the lead's first verb. */
+  onImport: () => void
 }) {
   // A search that found nothing is not an empty library, and saying so is worse than
   // useless: the user did not empty anything, they typed something, and "drop a folder of
@@ -1232,7 +1236,7 @@ function EmptyLibrary({
   if (query !== null) {
     return (
       <div className="max-w-prose">
-        <h2 className="text-lg">
+        <h2 className={SCOPE}>
           {filtered ? strings.emptyLibrary.categoryTitle : strings.search.noMatchesTitle}
         </h2>
         <p className="mt-2 text-[var(--color-muted)]">
@@ -1259,10 +1263,10 @@ function EmptyLibrary({
       </div>
     )
   }
-  if (!filtered) return <FirstRun onUpload={onUpload} />
+  if (!filtered) return <FirstRun onImport={onImport} onUpload={onUpload} />
   return (
     <div className="max-w-prose">
-      <h2 className="text-lg">{strings.emptyLibrary.categoryTitle}</h2>
+      <h2 className={SCOPE}>{strings.emptyLibrary.categoryTitle}</h2>
       <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.categoryBody(categoryName)}</p>
     </div>
   )

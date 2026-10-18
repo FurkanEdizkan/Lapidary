@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { fetchPartImages } from '../lib/api'
 import { Icon } from './Icon'
+import Lattice from './Lattice'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
@@ -46,6 +47,23 @@ const WELL: Record<Layout, string> = {
 }
 
 /**
+ * The still lattice's size per layout. The gallery's name sits over the lower third of its well, so there the
+ * drawing is smaller and raised clear of it; the detail card's footer is below the well.
+ */
+const LATTICE: Record<Layout, string> = {
+  detail: 'size-[76%]',
+  gallery: 'size-[56%] -translate-y-[16%]',
+  list: 'size-full',
+}
+
+/** A well with no picture: the lamp's pool under the still lattice, as on a stage (DESIGN.md § Lattice). */
+const BARE_WELL: Record<Layout, string> = {
+  detail: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
+  gallery: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
+  list: 'stage-lamp relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] p-1',
+}
+
+/**
  * The name, per layout. The gallery clamps it to one line, and that is the fix for the first
  * gallery this shipped: a two-line name above the figures made the overlay two-thirds of a
  * square card, which put the name over the middle of the render — the critique's P0, "a tile
@@ -57,7 +75,7 @@ const WELL: Record<Layout, string> = {
 const NAME: Record<Layout, string> = {
   // Two lines, then an ellipsis: a slug of a name is long, and a card that grows a third line
   // for one part pushes its whole row out of step with the rest.
-  detail: 'line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
+  detail: 'line-clamp-2 min-h-[2.75em] text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   gallery: 'truncate text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   list: 'text-sm leading-snug font-semibold',
 }
@@ -73,7 +91,8 @@ const FOOTER: Record<Layout, string> = {
   // stops, the padding or the text sizes here change.
   gallery:
     'absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-[linear-gradient(180deg,rgba(18,18,20,0)_0%,rgba(18,18,20,0.93)_2.5rem,rgba(18,18,20,0.97)_100%)] px-3 pt-6 pb-2.5',
-  list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
+  // Under `sm` the figures always go under the name: wrapping only when the name is long put them in two places.
+  list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1 max-sm:flex-col max-sm:items-start',
 }
 
 /**
@@ -225,15 +244,16 @@ export function Card({
           className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-accent)]"
         />
       ) : null}
-      <div ref={well} className={WELL[layout]}>
+      <div ref={well} className={src === null ? BARE_WELL[layout] : WELL[layout]}>
         {src === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure, and
-          // "nobody has given this part a picture" is not one. It names the format instead —
-          // a 46px list well cannot hold even that, and the row's name already says which
-          // part this is, so there it is read rather than drawn.
-          <span className={layout === 'list' ? 'sr-only' : 'text-xs text-[var(--color-muted)]'}>
-            {strings.parts.noPicture(part.sourceFormat)}
-          </span>
+          // "nobody has given this part a picture" is not one. The still lattice stands in (A21, DESIGN.md §
+          // Lattice): the settled frame of the sign-in drawing over the lamp, one shared path tree, never moving.
+          // The format is the footer's chip to the eye; the word here is what a reader hears, once.
+          <>
+            <Lattice still className={LATTICE[layout]} />
+            <span className="sr-only">{strings.parts.noPicture(part.sourceFormat)}</span>
+          </>
         ) : (
           <img
             src={src}
@@ -317,7 +337,7 @@ export function Card({
           used to sit in the hover panel, where "always" quietly meant "never" — the row was
           clipped off the top of the tile at every desktop width. Always means here.
         */}
-        <Figures part={part} tight={layout === 'gallery'} />
+        <Figures part={part} tight={layout === 'gallery'} pictured={src !== null} />
       </div>
     </article>
   )
@@ -339,20 +359,23 @@ export function breakable(name: string): ReactNode[] {
 const PACKS = ['zip', '7z', 'rar']
 
 /**
- * The card's one line of figures: the part number, then the triangle count and its label.
+ * The card's one line of figures: the format chip, the part number, then the triangle count with its ≈ before it.
  *
  * A triangle count is tessellation-derived by construction, so a card showing one is
  * showing a mesh-derived figure whatever the wire's `approximate` says. CLAUDE.md
  * forbids such a figure appearing unlabelled, so the label is not a sibling conditional
- * that the count can drift away from: either the count and the label render together or
- * neither does, and the label also renders alone when the flag says some other figure on
- * the part is mesh-derived. No branch here can emit a count without a label.
+ * that the count can drift away from: either the count and its ≈ render together or
+ * neither does, and the label also renders alone — as the word, since a ≈ before nothing says nothing — when the flag
+ * says some other figure on the part is mesh-derived. No branch here can emit a count without a label.
  *
- * The label is a quiet lowercase word in the line rather than a boxed badge. It is still on
- * every card at rest, never behind a hover; forty boxed capitals down a grid were louder than
- * the parts' names.
+ * The ≈ is the mark the part page's figures carry (`strings.detail.approximate`), with its dotted Edge underline and a
+ * title that explains it; a screen reader hears the word. It is on every card at rest, never behind a hover.
+ *
+ * **The format chip** (A21) is a fact, not a control: a 4px Bench Grey label, mono Graphite, no edge. Uppercased in
+ * CSS rather than in the string, so the well's own spoken format word (`strings.parts.noPicture`) stays the one exact
+ * match a reader or a test finds for it.
  */
-function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
+function Figures({ part, tight = false, pictured }: { part: PartCard; tight?: boolean; pictured: boolean }) {
   // Narrowed with typeof rather than compared to null: the binding says `number | null`,
   // but the response is cast rather than validated, so a field that disappears upstream
   // arrives here as undefined and would reach .toLocaleString() as one.
@@ -360,7 +383,8 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   const labelled = part.approximate || count !== null
   // A pack (A13) has no figures; its size is what a person deciding to download it wants.
   const pack = part.sourceFormat !== null && PACKS.includes(part.sourceFormat) ? part.sourceBytes : null
-  if (part.partNumber === null && !labelled && pack === null) {
+  const format = part.sourceFormat
+  if (format === null && part.partNumber === null && !labelled && pack === null) {
     return null
   }
   return (
@@ -369,20 +393,41 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
       // card, and eight pixels of it spent on air is eight pixels more of the part hidden.
       className={
         tight
-          ? 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-[var(--color-muted)]'
-          : 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 pt-1 text-[11px] text-[var(--color-muted)]'
+          ? 'tabular mt-auto flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-[var(--color-muted)]'
+          : 'tabular mt-auto flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pt-1 text-[11px] text-[var(--color-muted)]'
       }
     >
-      {part.partNumber === null ? null : <span className="text-[var(--color-dim)]">{part.partNumber}</span>}
-      {part.partNumber === null || !labelled ? null : <span aria-hidden="true">·</span>}
-      {pack === null ? null : <span>{strings.parts.pack(pack)}</span>}
-      {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
-      {!labelled ? null : (
+      {format === null ? null : (
+        // Unheard on a card with no picture, whose well already says the format to a reader.
         <span
-          title={strings.parts.approximateDetail}
-          className="underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+          aria-hidden={pictured ? undefined : true}
+          className="rounded-[var(--radius-sm)] bg-[var(--color-raised)] px-1 py-px text-[10px] leading-tight uppercase"
         >
-          {strings.parts.approximate}
+          {format}
+        </span>
+      )}
+      {part.partNumber === null ? null : <span className="text-[var(--color-dim)]">{part.partNumber}</span>}
+      {pack === null ? null : <span>{strings.parts.pack(pack)}</span>}
+      {count === null ? (
+        !labelled ? null : (
+          <span
+            title={strings.parts.approximateDetail}
+            className="underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+          >
+            {strings.parts.approximate}
+          </span>
+        )
+      ) : (
+        <span>
+          <span
+            aria-hidden="true"
+            title={strings.parts.approximateDetail}
+            className="mr-0.5 underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+          >
+            {strings.detail.approximate}
+          </span>
+          <span className="sr-only">{strings.parts.approximate}</span>
+          {strings.parts.triangles(count)}
         </span>
       )}
     </p>

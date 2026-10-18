@@ -56,7 +56,7 @@ export function PartPage({ partId }: { partId: string }) {
     queryFn: () => fetchPartDetail(partId),
   })
   return (
-    <AppFrame>
+    <AppFrame current="part">
       <section>
         {/*
           The part's own name, once the fetch has it. Rendered rather than assigned: React 19

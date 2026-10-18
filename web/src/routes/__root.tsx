@@ -17,7 +17,7 @@ export const Route = createRootRoute({
     if (to !== null) throw redirect({ to })
   },
   component: () => (
-    <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+    <div className="min-h-dvh bg-[var(--color-bg)] text-[var(--color-text)]">
       <MotionRoot>
         <Outlet />
       </MotionRoot>

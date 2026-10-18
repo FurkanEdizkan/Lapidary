@@ -26,7 +26,8 @@ export function Menu({
         aria-label={icon === undefined ? undefined : label}
         className={
           icon === undefined
-            ? 'menu-anchor ease-mechanical flex min-h-6 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs duration-[var(--duration-fast)] hover:-translate-y-px'
+            ? // Quiet (DESIGN.md § Buttons): the Library and View menus are set once and left, so neither stands.
+              'menu-anchor ease-mechanical flex min-h-8 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 text-xs whitespace-nowrap text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
             : 'menu-anchor ease-mechanical flex min-h-8 flex-none items-center justify-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2.5 py-2 duration-[var(--duration-fast)] hover:-translate-y-px'
         }
       >

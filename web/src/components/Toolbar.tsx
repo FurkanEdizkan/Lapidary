@@ -135,7 +135,7 @@ export function Toolbar({
           type="button"
           aria-pressed={selecting}
           onClick={() => onSelecting(!selecting)}
-          className="ease-mechanical min-h-6 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
+          className="ease-mechanical min-h-8 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] aria-pressed:border-[var(--color-accent)] aria-pressed:text-[var(--color-bright)]"
         >
           {strings.selection.toggle}
         </button>

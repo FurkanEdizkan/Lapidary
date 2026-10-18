@@ -1,6 +1,7 @@
 import { useId } from 'react'
 import { strings } from '../lib/strings'
 import { Icon } from './Icon'
+import { QUIET, STANDING } from './Page'
 
 /**
  * An empty library, which is what every library somebody creates starts as: what it is for, and
@@ -11,7 +12,7 @@ import { Icon } from './Icon'
  * render — and nothing produces rungs any more. The heading, the sentence and Upload were always
  * the page; the scene said nothing a reader needed, which is why it was `aria-hidden`.
  */
-export function FirstRun({ onUpload }: { onUpload: () => void }) {
+export function FirstRun({ onImport, onUpload }: { onImport: () => void; onUpload: () => void }) {
   const titleId = useId()
 
   return (
@@ -21,14 +22,19 @@ export function FirstRun({ onUpload }: { onUpload: () => void }) {
           {strings.emptyLibrary.title}
         </h2>
         <p className="mt-3 text-[var(--color-dim)]">{strings.emptyLibrary.body}</p>
-        <button
-          type="button"
-          onClick={onUpload}
-          className="ease-mechanical mt-6 flex min-h-9 items-center gap-2 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          <Icon name="upload" />
-          {strings.toolbar.uploadFolder}
-        </button>
+        {/*
+          The lead's first verb stands (A17's audit): Import, which reads the models folder in place. Upload a folder
+          is the quiet second way, and the drop the third, said under both.
+        */}
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={onImport} className={`whitespace-nowrap ${STANDING}`}>
+            {strings.addModels.button}
+          </button>
+          <button type="button" onClick={onUpload} className={QUIET}>
+            <Icon name="upload" />
+            {strings.toolbar.uploadFolder}
+          </button>
+        </div>
         <p className="mt-3 text-xs text-[var(--color-muted)]">{strings.emptyLibrary.dropHint}</p>
       </div>
     </section>
