@@ -610,7 +610,15 @@ const FLOWS = [
       // button that only exists while another page remains — so the button is the deterministic half
       // and the sentinel is the half that needs the tab frontmost (cdp.mjs calls bringToFront).
       await page.go(grid(ctx.sweep.id), gridReady)
-      const first = await loadedSettled(page, (n) => n >= 50)
+      await loadedSettled(page, (n) => n >= 50)
+      // The grid asks for the next page two screens ahead (A30), and while one is on its way the button reads
+      // "Loading more…": wait for it to rest before counting what is loaded.
+      await page.settle(
+        () => page.evaluate(`[...document.querySelectorAll('#parts button')].some((e) => e.textContent.trim() === ${JSON.stringify(T.loadMore)} && !e.disabled)`),
+        (ready) => ready,
+        { timeout: 20_000 },
+      )
+      const first = await loaded(page)
       const firstNames = await names(page)
       const soFar = await text(page, S.countLine)
       expect(/so far/.test(soFar ?? ''), `with more pages to come the count should say "so far"; it says ${JSON.stringify(soFar)}`)
