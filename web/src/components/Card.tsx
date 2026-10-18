@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { fetchPartImages } from '../lib/api'
 import { Icon } from './Icon'
+import Lattice from './Lattice'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
@@ -43,6 +44,13 @@ const WELL: Record<Layout, string> = {
   detail: 'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)]',
   gallery: 'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)]',
   list: 'relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] bg-[var(--color-raised)] p-1',
+}
+
+/** A well with no picture: the lamp's pool under the still lattice, as on a stage (DESIGN.md § Lattice). */
+const BARE_WELL: Record<Layout, string> = {
+  detail: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
+  gallery: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
+  list: 'stage-lamp relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] p-1',
 }
 
 /**
@@ -225,19 +233,16 @@ export function Card({
           className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-accent)]"
         />
       ) : null}
-      <div ref={well} className={WELL[layout]}>
+      <div ref={well} className={src === null ? BARE_WELL[layout] : WELL[layout]}>
         {src === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure, and
-          // "nobody has given this part a picture" is not one. It names the format instead —
-          // a 46px list well cannot hold even that, and the row's name already says which
-          // part this is, so there it is read rather than drawn.
-          //
-          // LATTICE SPOT (A21, waiting on A19): REDESIGN § "Taken from A17's audit" puts the settled, still lattice
-          // here in place of the word, `<Lattice still />` from `components/Lattice.tsx`. The word stays until A19
-          // merges; the footer's format chip already carries the format, so the word can go with it then.
-          <span className={layout === 'list' ? 'sr-only' : 'text-xs text-[var(--color-muted)]'}>
-            {strings.parts.noPicture(part.sourceFormat)}
-          </span>
+          // "nobody has given this part a picture" is not one. The still lattice stands in (A21, DESIGN.md §
+          // Lattice): the settled frame of the sign-in drawing over the lamp, one shared path tree, never moving.
+          // The format is the footer's chip to the eye; the word here is what a reader hears, once.
+          <>
+            <Lattice still className={layout === 'list' ? 'size-full' : 'size-[76%]'} />
+            <span className="sr-only">{strings.parts.noPicture(part.sourceFormat)}</span>
+          </>
         ) : (
           <img
             src={src}
@@ -321,7 +326,7 @@ export function Card({
           used to sit in the hover panel, where "always" quietly meant "never" — the row was
           clipped off the top of the tile at every desktop width. Always means here.
         */}
-        <Figures part={part} tight={layout === 'gallery'} />
+        <Figures part={part} tight={layout === 'gallery'} pictured={src !== null} />
       </div>
     </article>
   )
@@ -356,10 +361,10 @@ const PACKS = ['zip', '7z', 'rar']
  * title that explains it; a screen reader hears the word. It is on every card at rest, never behind a hover.
  *
  * **The format chip** (A21) is a fact, not a control: a 4px Bench Grey label, mono Graphite, no edge. Uppercased in
- * CSS rather than in the string, so the well's own format word (`strings.parts.noPicture`) stays the one exact match
- * a reader or a test finds for it.
+ * CSS rather than in the string, so the well's own spoken format word (`strings.parts.noPicture`) stays the one exact
+ * match a reader or a test finds for it.
  */
-function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
+function Figures({ part, tight = false, pictured }: { part: PartCard; tight?: boolean; pictured: boolean }) {
   // Narrowed with typeof rather than compared to null: the binding says `number | null`,
   // but the response is cast rather than validated, so a field that disappears upstream
   // arrives here as undefined and would reach .toLocaleString() as one.
@@ -382,7 +387,11 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
       }
     >
       {format === null ? null : (
-        <span className="rounded-[var(--radius-sm)] bg-[var(--color-raised)] px-1 py-px text-[10px] leading-tight uppercase">
+        // Unheard on a card with no picture, whose well already says the format to a reader.
+        <span
+          aria-hidden={pictured ? undefined : true}
+          className="rounded-[var(--radius-sm)] bg-[var(--color-raised)] px-1 py-px text-[10px] leading-tight uppercase"
+        >
           {format}
         </span>
       )}
