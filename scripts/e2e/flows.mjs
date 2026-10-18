@@ -162,6 +162,11 @@ const W = {
 // Text the flows match on: the rendered strings, because that is what the person reads. Every one of
 // these is a `strings.ts` value, and a rename there should fail exactly the flow that depends on it.
 const T = {
+  // The doorway (A25): `strings.login.title` / `.submit`, the two field labels, and the account menu's last row.
+  signInTitle: 'Sign in',
+  usernameLabel: 'Username',
+  passwordLabel: 'Password',
+  signOut: 'Sign out',
   loadMore: 'Load more',
   select: 'Select',
   order: 'Order',
@@ -1203,6 +1208,73 @@ const FLOWS = [
         )
       }
       return `${JSON.stringify(summary)}; instance keys ${Object.keys(instance).join(', ')}; library ${JSON.stringify(library).slice(0, 100)}`
+    },
+  },
+  {
+    // **The doorway** (A25): sign out, find the sign-in form by role, sign back in. Last in the list, because it
+    // changes the browser's session.
+    //
+    // It never signs the rig's own session out. `stack.sh` hands one cookie to every browser of the run and to
+    // `open-timing.mjs`, so a real Sign out on it would fail every row after this one. The flow drops that cookie
+    // from this browser, signs in through the form (a session of its own), signs *that* out through the account
+    // menu, signs in once more, and puts the rig's cookie back whatever happened.
+    //
+    // Setup on a fresh stack is not here: the rig drives a seeded stack, which `seed` set up by curl, so `/setup`
+    // only ever shows "Lapidary is set up". The intro, Skip and step 1 are `setup.test.tsx`'s, and A25 checked them
+    // once in a browser on a fresh `up` (docs/goals/A25.md § Record).
+    name: 'doorway',
+    widths: [1440, 390],
+    async run(page) {
+      const user = process.env.LAPIDARY_E2E_USER
+      const password = process.env.LAPIDARY_E2E_PASSWORD
+      expect(user && password, 'stack.sh passes LAPIDARY_E2E_USER and LAPIDARY_E2E_PASSWORD; neither is set')
+      // The form, by what a screen reader is told: the one heading, and two fields named by their labels.
+      const form = () =>
+        page.evaluate(`(() => {
+          const named = (word) => [...document.querySelectorAll('label')].find((l) => l.firstChild?.textContent?.trim() === word)?.querySelector('input') ?? null
+          const heading = [...document.querySelectorAll('h1, h2, [role="heading"]')].some((h) => h.textContent.trim() === ${JSON.stringify(T.signInTitle)})
+          const name = named(${JSON.stringify(T.usernameLabel)})
+          const secret = named(${JSON.stringify(T.passwordLabel)})
+          return { heading, username: name?.type ?? null, password: secret?.type ?? null }
+        })()`)
+      const onForm = `location.pathname === '/login' && [...document.querySelectorAll('label')].length >= 2`
+      const signIn = async () => {
+        for (const [label, value] of [[T.usernameLabel, user], [T.passwordLabel, password]]) {
+          await page.evaluate(`(() => {
+            const input = [...document.querySelectorAll('label')].find((l) => l.firstChild?.textContent?.trim() === ${JSON.stringify(label)}).querySelector('input')
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)})
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+          })()`)
+        }
+        const button = await page.byText('form button[type="submit"]', T.signInTitle, { exact: true })
+        expect(button !== null, `no "${T.signInTitle}" button in the sign-in form`)
+        await page.click(button.x, button.y)
+        await page.waitFor(`location.pathname === '/' && document.querySelector('button[popovertarget="user-menu"]') !== null`, 20_000)
+      }
+      try {
+        await page.send('Network.deleteCookies', { name: 'lapidary_session', url: args.web })
+        await page.go('/', onForm)
+        const first = await form()
+        expect(first.heading, `signed out, "/" did not land on a "${T.signInTitle}" heading`)
+        expect(first.username === 'text' && first.password === 'password', `the sign-in fields by label: ${JSON.stringify(first)}`)
+        await signIn()
+        // Out again through the account menu, as a person does it.
+        expect(await page.openMenu('user-menu'), 'no account menu after signing in')
+        const out = await page.byText('#user-menu button', T.signOut, { exact: true })
+        expect(out !== null, `no "${T.signOut}" in the account menu`)
+        await page.click(out.x, out.y)
+        await page.waitFor(onForm, 20_000)
+        const after = await form()
+        expect(after.heading && after.password === 'password', `after signing out the form reads ${JSON.stringify(after)}`)
+        const status = await page.evaluate(`fetch('/api/session').then((r) => r.status)`)
+        expect(status === 401, `after signing out /api/session answers ${status}, not 401`)
+        await signIn()
+        return `form by role before and after Sign out; /api/session ${status} signed out; signed in again`
+      } finally {
+        if (process.env.LAPIDARY_E2E_COOKIE) {
+          await page.send('Network.setCookie', { name: 'lapidary_session', value: process.env.LAPIDARY_E2E_COOKIE, url: args.web })
+        }
+      }
     },
   },
 ]
