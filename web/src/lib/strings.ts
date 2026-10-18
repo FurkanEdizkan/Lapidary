@@ -212,6 +212,7 @@ export const strings = {
         : `Shared with you by ${owner}: you can look at it and download it. Only they can change it.`,
     place: 'Shared with me',
     title_page: 'Shared with me',
+    leadPage: 'Models other people shared with you, newest first. Open one to look at it and download it.',
     empty: 'Nobody has shared a model with you yet.',
     loadingPage: 'Loading what was shared with you…',
     failed: 'Could not load what was shared with you. Check that the server is running, then reload.',
@@ -1936,6 +1937,8 @@ export const strings = {
     otherInitial: 'Numbers and symbols',
     /** A library nobody has tagged yet. Not a failure, and it says what to do about it. */
     none: 'No model in this library is tagged yet. Open a model and add a tag to it — a project, a use, a shelf — and it will be here.',
+    /** The empty index's way on: the grid, where a model is opened and tagged. */
+    openModels: 'Open a model',
     failed: 'Could not load this library’s tags. Check that the api service is running, then reload.',
     /** The link out of the grid’s filter panel, into the whole library’s tags. */
     all: 'All tags…',

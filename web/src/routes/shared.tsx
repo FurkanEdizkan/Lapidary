@@ -17,6 +17,7 @@ const NOTHING = () => {}
 // bare-strings check.
 const LAYOUT: Layout = 'gallery'
 const PLACE: Place = 'sharedWithMe'
+const EMPTY = 'mt-6 max-w-[70ch] text-sm text-[var(--color-text)]'
 
 /**
  * Shared with me (A4): the models other people shared with this person, newest first. A card opens the
@@ -30,16 +31,18 @@ export function SharedPage() {
       <section>
         <title>{strings.titles.shared}</title>
         <h2 className={HEADLINE}>{strings.sharing.title_page}</h2>
+        <p className={LEAD}>{strings.sharing.leadPage}</p>
         {shared.isPending ? (
           <div className="mt-6">
             <GridSkeleton label={strings.sharing.loadingPage} />
           </div>
         ) : shared.isError ? (
-          <p role="alert" className={LEAD}>
+          <p role="alert" className={EMPTY}>
             {strings.sharing.failed}
           </p>
         ) : shared.data.parts.length === 0 ? (
-          <p className={LEAD}>{strings.sharing.empty}</p>
+          // The page's whole content when nothing is shared, so it reads in Chalk, at the lead's measure.
+          <p className={EMPTY}>{strings.sharing.empty}</p>
         ) : (
           <div className="mt-6">
             <Grid
