@@ -135,7 +135,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A16](A16.md) | The part page shows the whole picture | 13 | web | A15 | see [A16.md](A16.md) | — | merged `f96bcf8` | `fix/hero-whole-picture` |
 | [A17](A17.md) | Redesign direction: audit, DESIGN.md, motion doctrine | 13 | docs | — | see [A17.md](A17.md) | — | merged `9c373c3` | `docs/redesign-direction` |
 | [A18](A18.md) | Motion foundation: `motion` pinned beside anime.js | 13 | web | A17 | see [A18.md](A18.md) | — | merged `c544d6d` | `feat/motion-foundation` |
-| [A19](A19.md) | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [A19.md](A19.md) | — | claimed | `feat/sign-in-lattice` |
+| [A19](A19.md) | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [A19.md](A19.md) | — | merged `13bb83d` | `feat/sign-in-lattice` |
 | A20 | Setup: intro, stepper wizard, done moment | 13 | web | A19 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | [A21](A21.md) | App shell, grid cards, route enter | 13 | web | A18 | see [A21.md](A21.md) | — | claimed | `feat/shell-and-cards` |
 | [A22](A22.md) | Dialogs with presence | 13 | web | A18 | see [A22.md](A22.md) | — | claimed | `feat/dialog-presence` |
