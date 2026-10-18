@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { lattice, type LatticeEdge } from '../lib/lattice'
-import { drawIn, reduced, tokens } from '../lib/motion'
+import { drawIn, reduced } from '../lib/motion'
 
 /** Computed once: the geometry never changes, and two renders must draw the same part. */
 const GEAR = lattice()
@@ -37,8 +37,8 @@ export default function Lattice({ className, still = false }: { className?: stri
     if (still || lines.current === null) return
     const paths = (group: SVGGElement | null) =>
       group === null ? [] : Array.from(group.querySelectorAll<SVGGeometryElement>('path'))
-    // The whole run inside `--duration-intro`, first line to last settled (DESIGN.md § Lattice).
-    return drawIn(paths(lines.current), () => setDrawing(false), tokens().intro, paths(heads.current))
+    // 2.4 s, first line to last settled: long enough to read as drawing (DESIGN.md § Lattice).
+    return drawIn(paths(lines.current), () => setDrawing(false), 2400, paths(heads.current))
   }, [still])
 
   return (
