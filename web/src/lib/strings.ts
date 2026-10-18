@@ -248,7 +248,15 @@ export const strings = {
    */
   setup: {
     title: 'Set up Lapidary',
-    step: (n: number, of: number) => `Step ${n} of ${of}`,
+    /** Below `lg`, the stepper in one line (DESIGN.md § Stepper). */
+    step: (n: number, of: number, name: string) => `Step ${n} of ${of} · ${name}`,
+    /** The stepper's names for the three steps, in order (A20). */
+    steps: ['Account', 'Server', 'Options'],
+    stepsLabel: 'Setup steps',
+    stepDone: 'done',
+    skip: 'Skip',
+    alreadyTitle: 'Lapidary is set up',
+    alreadyLead: 'This install already has its admin. Sign in with your account, or ask the admin for one.',
     accountTitle: 'Your account',
     accountLead:
       'You will be this install’s admin: you add the other people who use it. Nobody else can see your models unless you share them.',

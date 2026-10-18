@@ -24,11 +24,21 @@ const LINES = GEAR.edges.map((edge) => (
  * line's tip, then stays grey and still. Decorative, so hidden from assistive technology.
  *
  * `still` renders the final frame at once and never animates: for standing in where there is no picture, many at a
- * time. Under reduced motion every Lattice is still, and the accent is never rendered.
+ * time. Set part-way through a drawing (setup's Skip), it ends the drawing at its final frame, with no accent left.
+ * Under reduced motion every Lattice is still, and the accent is never rendered.
  *
  * The default export is for `lazy()` on sign-in, so anime.js arrives with that chunk.
  */
-export default function Lattice({ className, still = false }: { className?: string; still?: boolean }) {
+export default function Lattice({
+  className,
+  still = false,
+  total = 2400,
+}: {
+  className?: string
+  still?: boolean
+  /** First line to last settled, in ms: 2.4 s on sign-in, `--duration-intro` in setup's intro (A20). */
+  total?: number
+}) {
   const lines = useRef<SVGGElement>(null)
   const heads = useRef<SVGGElement>(null)
   const [drawing, setDrawing] = useState(() => !still && !reduced())
@@ -37,9 +47,9 @@ export default function Lattice({ className, still = false }: { className?: stri
     if (still || lines.current === null) return
     const paths = (group: SVGGElement | null) =>
       group === null ? [] : Array.from(group.querySelectorAll<SVGGeometryElement>('path'))
-    // 2.4 s, first line to last settled: long enough to read as drawing (DESIGN.md § Lattice).
-    return drawIn(paths(lines.current), () => setDrawing(false), 2400, paths(heads.current))
-  }, [still])
+    // Long enough to read as drawing (DESIGN.md § Lattice). Turning `still` on part-way reverts to the drawn frame.
+    return drawIn(paths(lines.current), () => setDrawing(false), total, paths(heads.current))
+  }, [still, total])
 
   return (
     <svg
@@ -53,7 +63,7 @@ export default function Lattice({ className, still = false }: { className?: stri
       className={className === undefined ? 'transition-none' : `transition-none ${className}`}
     >
       <g ref={lines}>{LINES}</g>
-      {drawing ? (
+      {drawing && !still ? (
         <g ref={heads} stroke="var(--color-accent)" data-draw-head="">
           {GEAR.edges.map(({ d }) => (
             <path key={d} d={d} vectorEffect="non-scaling-stroke" className="transition-none" />
