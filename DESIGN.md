@@ -578,13 +578,16 @@ else to show.
 - **The draw head.** While an edge is drawing, its leading end — the last few percent of its
   length — is Layout Blue, the marking dye moving across the bench. The head exists only while the
   stroke is moving; each edge settles to its grey the moment it is complete.
-- **It settles in under 5 s**, and the authored part of it, on sign-in, inside `--duration-intro`.
-  Then it stays still. **It never loops**, never drifts, never redraws on hover or on focus.
+- **It settles in under 5 s**: on sign-in it draws over 2.4 s, so it reads as drawing rather than
+  a sweep (owner's call, 2026-10-18); setup's intro (A20) keeps inside `--duration-intro`. Then it
+  stays still. **It never loops**, never drifts, never redraws on hover or on focus.
 - **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
   grey, no blue — and never moves.
-- **It is a lazy import** from sign-in and setup only, so the grid's bundle never carries it.
-- **Nowhere else.** Not on a card, a stage or an empty state: inside the app a missing picture
-  is the lamp and the format, and the motif shows only as hairlines.
+- **Drawing only at the front door.** Sign-in and setup draw it, as a lazy import.
+- **Still, it stands in for a missing picture** (A17's audit, taken by the lead): on a card and on
+  the part page's stage, `<Lattice still />` is the settled final frame — one shared path tree, no
+  `drawIn`, no blue — over the lamp, with the format. Most parts have no picture, and forty
+  identical "STL" squares said nothing. It never moves there.
 
 ### Stepper
 

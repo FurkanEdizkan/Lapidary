@@ -285,6 +285,10 @@ export const strings = {
     loading: 'Loading…',
   },
   /** Signing in (A1). */
+  /** The frame before signing in (A19): the one line under the wordmark beside the drawing. */
+  doorway: {
+    pitch: 'A visual index for your 3D part library.',
+  },
   login: {
     title: 'Sign in',
     lead: 'Sign in to see your models and the ones shared with you.',

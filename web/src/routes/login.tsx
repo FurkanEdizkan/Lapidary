@@ -1,10 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import { Doorway, Field, INPUT } from '../components/Doorway'
 import { HEADLINE, LEAD, STANDING } from '../components/Page'
 import { Refused, signIn } from '../lib/session'
 import { strings } from '../lib/strings'
+
+/** Lazy, so anime.js and the drawing load with this page and never with the grid (A19). */
+const Lattice = lazy(() => import('../components/Lattice'))
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
@@ -20,12 +23,18 @@ export function LoginPage() {
     onSuccess: () => window.location.assign('/'),
   })
   return (
-    <Doorway>
+    <Doorway
+      aside={
+        <Suspense fallback={null}>
+          <Lattice className="w-full max-w-2xl" />
+        </Suspense>
+      }
+    >
       <title>{strings.titles.login}</title>
       <h2 className={HEADLINE}>{strings.login.title}</h2>
       <p className={LEAD}>{strings.login.lead}</p>
       <form
-        className="mt-8 flex flex-col gap-4"
+        className="mt-8 flex flex-col gap-5"
         onSubmit={(event) => {
           event.preventDefault()
           if (!submit.isPending) submit.mutate()
@@ -56,11 +65,15 @@ export function LoginPage() {
             {submit.error instanceof Refused ? submit.error.message : strings.login.failed}
           </p>
         ) : null}
-        <div className="flex items-center justify-between gap-3">
-          <button type="submit" disabled={submit.isPending} className={`${STANDING} disabled:opacity-50`}>
+        <div className="mt-1 flex flex-col items-start gap-4">
+          <button
+            type="submit"
+            disabled={submit.isPending}
+            className={`${STANDING} whitespace-nowrap disabled:opacity-50`}
+          >
             {submit.isPending ? strings.login.signingIn : strings.login.submit}
           </button>
-          <span className="text-xs text-[var(--color-dim)]">{strings.login.forgot}</span>
+          <p className="text-xs text-[var(--color-muted)]">{strings.login.forgot}</p>
         </div>
       </form>
     </Doorway>
