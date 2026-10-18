@@ -168,3 +168,15 @@ heavy lock, and only one e2e stack runs at a time. Everyone rebases onto main be
 - **Bundle:** the entry gzip from `vite build` is recorded in A18 and checked in every later goal, at most +8 KB.
 - **After each merge:** the gate runs on main, and `./install.sh` rebuilds the owner's install on :3000. Nothing is
   pushed until the owner asks.
+
+## Taken from A17's audit (lead, 2026-10-18)
+
+- The settled, still lattice stands in for a missing picture on cards and on the part page's stage: most parts have
+  none, and forty identical "STL" squares was the audit's first finding. `lattice()` then loads with the grid's
+  chunk, not the entry, and must stay inside the entry budget. A21 (cards) and A23 (stage) own it.
+- A23's main case is the part with no picture: the lamp, the lattice, the format, and View on the stage.
+- A21 owns a one-row header under `md`, and a current-place marker on every page (Settings, People, Profile, Tags,
+  the part page included). The places marker moves in 180 ms on the curve; springs stay for the stepper rail and the
+  lattice slide.
+- A22 re-checks the Import dialog's first focus with a real pointer click (`Input.dispatchMouseEvent`); a blue ring at
+  rest after a pointer open is a defect to fix in `Dialog.tsx`'s initial focus.
