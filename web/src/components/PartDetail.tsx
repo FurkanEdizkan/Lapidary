@@ -1333,7 +1333,7 @@ export function Detail({
         stage and its pictures slid down over File and Identity as the page scrolled (M1, the owner's
         first look). Now it stops where the studio does.
       */}
-      <div className="grid items-start gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="grid items-start gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:grid-rows-[auto_1fr]">
       {/*
         Source order is reading order on a phone: the part's name and Download, then the stage, then
         the rest. At lg the name moves to the right column beside the stage, which spans both rows.
