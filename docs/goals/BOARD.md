@@ -147,6 +147,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A28](A28.md) | The library wall: sign-in shows the library's own pictures | 14 | api + db + web + docs | A27 | see [A28.md](A28.md) | 0069 | merged `bc1f7ad` | `feat/the-wall` |
 | [A29](A29.md) | The empty frame: the diamond goes | 14 | web + docs | A28 | see [A29.md](A29.md) | — | merged `68af7c9` | `feat/the-empty-frame` |
 | [A30](A30.md) | A grid that holds twenty thousand parts | 15 | api + web | A29 | see [A30.md](A30.md) | — | merged `2e82a8f` | `perf/windowed-grid` |
+| [A31](A31.md) | A rescan reads only what changed | 15 | ingest + db | A30 | see [A31.md](A31.md) | — | open | `perf/rescan-unchanged` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
