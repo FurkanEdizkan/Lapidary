@@ -1370,10 +1370,11 @@ struct DetailColumns {
 ///
 /// The nine columns after the timestamps are the picture the card shows: the source
 /// file's format, for a part with no picture at all, and the part's first `part_image`
-/// (`R1`). The grid carries only **inline** bytes, so an image over the 64 KB line arrives
-/// as its hash and the card addresses it at `/api/blob/{hash}` — which `blob.rs` serves with
-/// immutable caching after checking reachability, because content addressing is not
-/// authorization.
+/// (`R1`). **No bytes since A30**: `image_webp` is always NULL here, so a page is tens of kB
+/// rather than megabytes. A blob arrives as its hash, addressed at `/api/blob/{hash}`; an inline
+/// image (no hash) is addressed by its id at `/api/parts/{id}/images/{imageId}`. Both are served
+/// with immutable caching after the viewer's access is checked, because content addressing is
+/// not authorization.
 ///
 /// **R3 took the rendered thumbnail and the L0 hash out of this list**, and with them the two
 /// derivative LATERALs that bound `$4` and `$5` — which renumbered every later bind in `page`,
@@ -1389,7 +1390,7 @@ macro_rules! grid_columns {
      (extract(epoch FROM p.created_at) * 1000000)::bigint AS created_us, \
      (extract(epoch FROM p.updated_at) * 1000000)::bigint AS updated_us, \
      s.format AS source_format, \
-     img.id AS image_id, img.image_webp AS image_webp, img.blake3 AS image_blake3, \
+     img.id AS image_id, NULL::bytea AS image_webp, img.blake3 AS image_blake3, \
      img.origin AS image_origin, img.source_url AS image_source_url, \
      img.position AS image_position, img.fit AS image_fit, \
      img.focus_x AS image_focus_x, img.focus_y AS image_focus_y, \
@@ -1415,7 +1416,7 @@ macro_rules! grid_laterals {
                         FROM file f \
                         WHERE f.revision_id = r.id AND f.role = 'source' \
                         ORDER BY f.created_at DESC, f.id DESC LIMIT 1) s ON true \
-     LEFT JOIN LATERAL (SELECT i.id, i.image_webp, i.blake3, i.origin, i.source_url, i.position, \
+     LEFT JOIN LATERAL (SELECT i.id, i.blake3, i.origin, i.source_url, i.position, \
                                i.fit, i.focus_x, i.focus_y \
                         FROM part_image i \
                         WHERE i.part_id = p.id \

@@ -423,7 +423,7 @@ fn guarded(db: PgPool) -> Router<AppState> {
         // handle to a row, and the repo checks the pair — see `set_image_framing`.
         .route(
             "/api/parts/{id}/images/{imageId}",
-            axum::routing::patch(images::set_framing),
+            get(images::bytes).patch(images::set_framing),
         )
         // Where a part came from. Deliberately not near `images::from_url`: this
         // route stores a link and never follows one, and the application has exactly

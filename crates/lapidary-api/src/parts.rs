@@ -893,7 +893,9 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         stored_bytes: summary.stored_bytes,
         compressed: summary.compressed,
         source_format: row.source_format,
-        image: row.image.map(crate::images::part_image),
+        image: row
+            .image
+            .map(|image| crate::images::card_image(summary.id, image)),
         image_count: row.image_count,
         directory: row.directory,
         storage_path: row.storage_path,
