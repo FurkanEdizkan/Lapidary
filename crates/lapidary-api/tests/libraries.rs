@@ -203,13 +203,13 @@ async fn the_count_belongs_to_the_library_that_holds_the_parts(pool: sqlx::PgPoo
                 stored_bytes: 9_684,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
+            measurements: Some(&lapidary_core::MeshMeasurements {
                 bbox_mm: [60.0, 50.0, 40.0],
                 triangle_count: 192,
                 surface_area_mm2: 16_918.0,
                 volume_mm3: Some(106_830.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

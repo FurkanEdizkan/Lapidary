@@ -204,12 +204,14 @@ pub async fn add_source(
     let full = state.ingest_dir.join(&path);
     let kind = if full.is_dir() {
         "folder"
-    } else if full.is_file() && lapidary_core::is_model_file(&path) {
+    } else if full.is_file()
+        && (lapidary_core::is_model_file(&path) || lapidary_core::is_pack_file(&path))
+    {
         "file"
     } else {
         return refused(
             StatusCode::BAD_REQUEST,
-            "That is not a folder or an STL, OBJ or 3MF file in your models folder. Choose one from the list.",
+            "That is not a folder, an STL, OBJ or 3MF file, or a zip, 7z or rar in your models folder. Choose one from the list.",
         );
     };
     let page_url = body
@@ -332,7 +334,10 @@ fn list(dir: &std::path::Path) -> std::io::Result<(Vec<Listed>, bool)> {
         };
         if meta.is_dir() {
             entries.push((name, true, None));
-        } else if meta.is_file() && lapidary_core::is_model_file(&name) {
+        // A pack (A13) is listed beside the models: it is added as one item, kept packed.
+        } else if meta.is_file()
+            && (lapidary_core::is_model_file(&name) || lapidary_core::is_pack_file(&name))
+        {
             entries.push((name, false, Some(meta.len())));
         }
     }

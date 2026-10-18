@@ -10,7 +10,7 @@
 //! Streamed, never read whole: an entry goes to disk through a reader that stops at the limit, and the
 //! size an archive claims for an entry is never trusted. A name that would leave the folder, a link, an
 //! archive inside the archive and an entry that can't be read (encrypted, an unsupported method) are
-//! skipped and named. RAR is refused by name: the only reader is non-free C++.
+//! skipped and named. An uploaded RAR is kept as a pack (A13): the only reader is non-free C++.
 
 use lapidary_core::{CAD_FORMATS, MESH_EXTENSIONS, source_format};
 use lapidary_storage::InboxWriter;
@@ -75,14 +75,6 @@ pub(crate) fn unpack(inbox: &Path, archive: &str, limits: Limits) -> Result<Unpa
         }
     }
     Ok(out)
-}
-
-/// The sentence for a RAR upload.
-pub(crate) fn rar_refusal(shown: &str) -> String {
-    format!(
-        "{shown} is a RAR archive, which Lapidary doesn't open: the only RAR reader is not free software. \
-         Extract it and upload the folder, or repack it as .zip or .7z."
-    )
 }
 
 /// `uploads/a/pack (2).zip` → `uploads/a/pack (2)`.
@@ -325,6 +317,78 @@ fn unpack_7z(
     walked.map_err(refused)
 }
 
+/// The most entries a pack's page lists (A13). `total` still counts them all.
+pub(crate) const MAX_LISTED: usize = 5_000;
+
+/// What a pack holds (A13), from the archive's own index and nothing unpacked:
+/// `{"entries": [{"path", "size"}], "total"}`, or `{"unread": "<a sentence>"}`. **Never an error**: a pack
+/// whose index can't be read is still a pack, and its page says why there is no list.
+pub(crate) fn contents(file: &Path, format: &str) -> serde_json::Value {
+    let listed = match format {
+        "zip" => zip_index(file),
+        "7z" => sevenz_index(file),
+        "rar" => Err(
+            "RAR archives aren't opened, so what is inside isn't listed: the only RAR reader is not free software."
+                .to_owned(),
+        ),
+        other => Err(format!("A .{other} file isn't an archive Lapidary lists.")),
+    };
+    match listed {
+        Ok(mut entries) => {
+            let total = entries.len();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.truncate(MAX_LISTED);
+            serde_json::json!({
+                "entries": entries.into_iter().map(|(path, size)| serde_json::json!({ "path": path, "size": size })).collect::<Vec<_>>(),
+                "total": total,
+            })
+        }
+        Err(unread) => serde_json::json!({ "unread": unread }),
+    }
+}
+
+fn zip_index(file: &Path) -> Result<Vec<(String, u64)>, String> {
+    let open =
+        std::fs::File::open(file).map_err(|e| format!("The archive couldn't be read: {e}."))?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(open)).map_err(|e| {
+        format!("Its index couldn't be read ({e}), so what is inside isn't listed.")
+    })?;
+    let mut out = Vec::with_capacity(zip.len().min(MAX_LISTED));
+    for index in 0..zip.len() {
+        // Raw: the index alone, so an encrypted entry is still listed by name.
+        let Ok(entry) = zip.by_index_raw(index) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.name().map(|name| name.into_owned()) else {
+            continue;
+        };
+        out.push((name, entry.size()));
+    }
+    Ok(out)
+}
+
+fn sevenz_index(file: &Path) -> Result<Vec<(String, u64)>, String> {
+    use sevenz_rust2::{Archive, Error, Password};
+    let mut open = std::io::BufReader::new(
+        std::fs::File::open(file).map_err(|e| format!("The archive couldn't be read: {e}."))?,
+    );
+    let archive = Archive::read(&mut open, &Password::empty()).map_err(|e| match e {
+        Error::PasswordRequired | Error::MaybeBadPassword(_) => {
+            "Its index is encrypted, so what is inside isn't listed.".to_owned()
+        }
+        other => format!("Its index couldn't be read ({other}), so what is inside isn't listed."),
+    })?;
+    Ok(archive
+        .files
+        .iter()
+        .filter(|entry| !entry.is_directory() && !entry.is_anti_item())
+        .map(|entry| (entry.name().to_owned(), entry.size()))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,12 +504,41 @@ mod tests {
                 .expect_err("7z")
                 .contains("not a 7z archive")
         );
-        assert!(rar_refusal("pack.rar").contains("Extract it and upload the folder"));
         assert_eq!(
             without_extension("uploads/a/pack (2).zip"),
             "uploads/a/pack (2)"
         );
         assert_eq!(without_extension("pack.tar.7z"), "pack.tar");
+    }
+
+    #[test]
+    fn a_packs_contents_come_from_its_index_and_never_fail() {
+        let root = tempfile::tempdir().expect("a folder");
+        let zip = root.path().join("castigator.zip");
+        zip_of(
+            &zip,
+            &[
+                ("Supported/castigator-body.stl", b"solid body"),
+                ("readme.txt", b"hi"),
+            ],
+        );
+        let listed = contents(&zip, "zip");
+        assert_eq!(listed["total"], 2);
+        assert_eq!(
+            listed["entries"][0]["path"],
+            "Supported/castigator-body.stl"
+        );
+        assert_eq!(listed["entries"][0]["size"], 10);
+        // A RAR, a broken archive and a missing file are packs with a sentence, not failures.
+        std::fs::write(root.path().join("nuns.rar"), b"Rar!").expect("rar");
+        assert!(
+            contents(&root.path().join("nuns.rar"), "rar")["unread"]
+                .as_str()
+                .is_some_and(|s| s.contains("RAR"))
+        );
+        std::fs::write(root.path().join("broken.zip"), b"nope").expect("broken");
+        assert!(contents(&root.path().join("broken.zip"), "zip")["unread"].is_string());
+        assert!(contents(&root.path().join("gone.7z"), "7z")["unread"].is_string());
     }
 
     #[test]
@@ -458,6 +551,8 @@ mod tests {
         std::fs::write(source.join("a-photo.jpg"), vec![7u8; 50_000]).expect("jpg");
         std::fs::write(source.join("notes.txt"), b"print at 0.2").expect("txt");
         sevenz_rust2::compress_to_path(&source, root.path().join("hinge.7z")).expect("7z");
+        let listed = contents(&root.path().join("hinge.7z"), "7z");
+        assert_eq!(listed["total"], 3, "{listed}");
         let unpacked = unpack(root.path(), "hinge.7z", SMALL).expect("unpacked");
         assert_eq!(
             unpacked.placed,

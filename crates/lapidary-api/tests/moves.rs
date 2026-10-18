@@ -94,7 +94,7 @@ async fn seed_model(
             root: FileRoot::Library,
             mtime_ns: Some(stat.mtime_ns),
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -270,7 +270,7 @@ async fn a_revised_part_moves_with_every_revision_where_it_was(pool: sqlx::PgPoo
                 stored_bytes: 31,
                 zstd_level: 0,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -363,7 +363,7 @@ async fn a_content_addressed_part_moves_too(pool: sqlx::PgPool) {
                 stored_bytes: 64_118,
                 zstd_level: 3,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

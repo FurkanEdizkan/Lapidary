@@ -601,6 +601,8 @@ export const strings = {
      * file is and what will open it.
      */
     noPicture: (format: string | null) => (format === null ? 'No picture' : format.toUpperCase()),
+    /** A pack's card line (A13): what it is and what it weighs. */
+    pack: (size: number | null) => (size === null ? 'Pack' : `Pack · ${bytes(size)}`),
     triangles: (count: number) =>
       count === 1 ? '1 triangle' : `${count.toLocaleString('en-US')} triangles`,
     /**
@@ -724,6 +726,17 @@ export const strings = {
     empty: 'That drop contained no files.',
   },
   detail: {
+    /** A pack (A13): an archive kept as one item, never unpacked. */
+    pack: {
+      title: 'Inside this pack',
+      count: (n: number) =>
+        n === 1
+          ? 'One file, read from the archive’s index.'
+          : `${n.toLocaleString('en-US')} files, read from the archive’s index.`,
+      more: (n: number) => `And ${n.toLocaleString('en-US')} more.`,
+      inside: (folder: string) => `All in ${folder}/`,
+      size: (value: number) => bytes(value),
+    },
     /** The ⋯ button on a part's page: Render, Move, the storage path and Remove. */
     more: 'More actions',
     /** The part page's index of the sections under the studio. */

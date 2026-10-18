@@ -67,7 +67,7 @@ async fn filed(
             root: lapidary_core::FileRoot::Store,
             mtime_ns: None,
             blob: &row(bytes),
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -106,7 +106,7 @@ async fn revise(pool: &sqlx::PgPool, root: &Path, part: PartId, bytes: &[u8]) {
             storage_path: &path,
             mtime_ns: None,
             blob: &row(bytes),
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -494,7 +494,7 @@ async fn a_deleted_part_or_one_of_another_library_is_not_bundled(pool: sqlx::PgP
             root: lapidary_core::FileRoot::Store,
             mtime_ns: None,
             blob: &row(b"solid toggle-clamp-lp-4120-01\n"),
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

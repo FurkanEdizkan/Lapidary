@@ -64,13 +64,13 @@ async fn seed_part(pool: &PgPool, blob_root: &Path, seed: u8, path: &str) -> Par
             root: lapidary_core::FileRoot::Store,
             mtime_ns: None,
             blob: &blob,
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -380,13 +380,13 @@ async fn a_deleted_parts_model_file_survives_every_sweep_and_only_its_export_lea
             root: lapidary_core::FileRoot::Store,
             mtime_ns: None,
             blob: &source,
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [7.0, 8.1, 20.0],
                 triangle_count: 1_204,
                 surface_area_mm2: 612.5,
                 volume_mm3: Some(1_060.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -461,13 +461,13 @@ async fn a_deleted_parts_file_in_the_owners_folders_is_beyond_every_sweep(pool: 
             root: lapidary_core::FileRoot::Library,
             mtime_ns: Some(1_760_000_000_000_000_000),
             blob: &source,
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [7.0, 8.1, 20.0],
                 triangle_count: 1_204,
                 surface_area_mm2: 612.5,
                 volume_mm3: Some(1_060.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

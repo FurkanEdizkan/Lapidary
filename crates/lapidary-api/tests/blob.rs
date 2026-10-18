@@ -83,7 +83,7 @@ async fn seed_reachable_export(pool: &sqlx::PgPool, root: &std::path::Path) -> B
                 stored_bytes: 91_204,
                 zstd_level: 3,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -186,7 +186,7 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
                 stored_bytes: 204_800,
                 zstd_level: 0,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -217,7 +217,7 @@ async fn an_earlier_revisions_export_is_still_served_once_a_newer_one_is_current
                 stored_bytes: 214_016,
                 zstd_level: 0,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

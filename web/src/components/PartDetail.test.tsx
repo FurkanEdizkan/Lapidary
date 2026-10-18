@@ -51,6 +51,7 @@ const BRACKET: PartDetail = {
   sourceBytes: 18204,
   storedBytes: 6120,
   compressed: true,
+  pack: null,
   directory: 'libraries/default/cad',
   storagePath: 'libraries/default/cad/angle-bracket-60x60x40-lp-9004-00.igs',
   fileRoot: 'store',
@@ -188,6 +189,62 @@ test('the view is offered for a mesh, mounted only when pressed, and closed when
   render(page(BRACKET))
   await waitFor(() => expect(screen.getByText(BRACKET.name)).toBeTruthy())
   expect(screen.queryByRole('button', { name: strings.viewer.view })).toBeNull()
+  vi.unstubAllGlobals()
+})
+
+/** A13: a pack lists what its archive holds in Geometry's place, and offers neither a view nor an export. */
+test('a pack lists what is inside it and offers no view and no export', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const castigator: PartDetail = {
+    ...BRACKET,
+    name: 'TCAA3002 Bleeding Procession - Castigator',
+    sourceFormat: 'zip',
+    triangleCount: null,
+    isWatertight: null,
+    bboxMm: null,
+    volumeMm3: null,
+    surfaceAreaMm2: null,
+    pack: {
+      entries: [
+        { path: 'Supported/castigator-body.stl', size: 48_211_334 },
+        { path: 'Unsupported/castigator-body.stl', size: 41_002_118 },
+      ],
+      total: 3,
+      unread: null,
+    },
+  }
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={castigator} />
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText(strings.detail.pack.title)).toBeTruthy()
+  expect(screen.getByText('Supported/castigator-body.stl')).toBeTruthy()
+  expect(screen.getByText(strings.detail.pack.count(3))).toBeTruthy()
+  expect(screen.getByText(strings.detail.pack.more(1))).toBeTruthy()
+  expect(screen.queryByText(strings.detail.geometry)).toBeNull()
+  expect(screen.queryByRole('button', { name: strings.viewer.view })).toBeNull()
+  expect(screen.queryByText(strings.download.forSlicer)).toBeNull()
+  cleanup()
+  // A release wrapped in one folder says the folder once.
+  const wrapped = castigator.pack!.entries.map((e) => ({ ...e, path: `TCAA3002 Castigator/${e.path}` }))
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...castigator, pack: { entries: wrapped, total: 2, unread: null } }} />
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText(strings.detail.pack.inside('TCAA3002 Castigator'))).toBeTruthy()
+  expect(screen.getByText('Supported/castigator-body.stl')).toBeTruthy()
+  cleanup()
+  // A RAR says why there is no list.
+  const unread = 'RAR archives aren’t opened, so what is inside isn’t listed.'
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...castigator, sourceFormat: 'rar', pack: { entries: [], total: 0, unread } }} />
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText(unread)).toBeTruthy()
   vi.unstubAllGlobals()
 })
 

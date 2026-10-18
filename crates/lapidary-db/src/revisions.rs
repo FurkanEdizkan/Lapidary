@@ -21,6 +21,10 @@ pub struct CurrentRevision {
     /// Where the current revision's file is, relative to its root. `None` for a pre-M4 store
     /// row whose bytes are content-addressed.
     pub storage_path: Option<String>,
+    /// That file's size and modified time when it was indexed: a pack unchanged since is not hashed
+    /// again (A13).
+    pub size_bytes: Option<i64>,
+    pub mtime_ns: Option<i64>,
 }
 
 /// The next revision of a part, as the kernel measured it.
@@ -35,7 +39,8 @@ pub struct RevisionRequest<'a> {
     pub storage_path: &'a str,
     pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
-    pub measurements: &'a MeshMeasurements,
+    /// `None` for a pack (A13).
+    pub measurements: Option<&'a MeshMeasurements>,
     pub provenance: MeasurementProvenance,
     pub format: &'a str,
 }
@@ -117,12 +122,19 @@ impl PgRevisions {
         source_path: &str,
     ) -> Result<Option<CurrentRevision>, DbError> {
         #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT p.id, r.id, f.blake3, f.storage_path \
+        let row: Option<(
+            Uuid,
+            Uuid,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns \
                  FROM part p \
                  JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                                ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-                 LEFT JOIN LATERAL (SELECT blake3, storage_path FROM file \
+                 LEFT JOIN LATERAL (SELECT blake3, storage_path, size_bytes, mtime_ns FROM file \
                                     WHERE revision_id = r.id AND role = 'source' \
                                     ORDER BY id LIMIT 1) f ON true \
                  WHERE p.library_id = $1 AND p.source_path = $2",
@@ -131,14 +143,18 @@ impl PgRevisions {
         .bind(source_path)
         .fetch_optional(&self.0)
         .await?;
-        row.map(|(part, revision, hash, storage_path)| {
-            Ok(CurrentRevision {
-                part: PartId::from_uuid(part),
-                revision: RevisionId::from_uuid(revision),
-                source_hash: detail_hash("file.blake3", hash)?,
-                storage_path,
-            })
-        })
+        row.map(
+            |(part, revision, hash, storage_path, size_bytes, mtime_ns)| {
+                Ok(CurrentRevision {
+                    part: PartId::from_uuid(part),
+                    revision: RevisionId::from_uuid(revision),
+                    source_hash: detail_hash("file.blake3", hash)?,
+                    storage_path,
+                    size_bytes,
+                    mtime_ns,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -252,6 +268,20 @@ impl PgRevisions {
         .bind(source.as_str())
         .execute(&self.0)
         .await?;
+        Ok(())
+    }
+
+    /// What a pack holds (A13, `0067`), written after its revision commits as the centre of mass is.
+    pub async fn set_contents(
+        &self,
+        revision: RevisionId,
+        contents: &serde_json::Value,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE revision SET contents = $2 WHERE id = $1")
+            .bind(revision.as_uuid())
+            .bind(contents)
+            .execute(&self.0)
+            .await?;
         Ok(())
     }
 

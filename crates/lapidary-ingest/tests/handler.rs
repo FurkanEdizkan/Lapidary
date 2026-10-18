@@ -375,7 +375,7 @@ async fn a_known_hash_is_skipped_before_the_kernel_ever_sees_the_bytes(pool: PgP
             // here would make this test assert a re-scan that never happened.
             source_path: "notes.stl",
             blob: &blob,
-            measurements: &measurements,
+            measurements: Some(&measurements),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -3468,9 +3468,11 @@ async fn a_part_gets_the_pictures_its_folder_was_added_with_once(pool: PgPool) {
 }
 
 /// (A10) An uploaded zip is kept, its models are unpacked beside it and queued into the upload's
-/// batch, and each is indexed as the part `<archive>/<path inside>`; a RAR says why not.
+/// batch, and each is indexed as the part `<archive>/<path inside>`; a RAR is kept as a pack (A13).
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn an_uploaded_zip_unpacks_its_models_into_the_batch_and_a_rar_is_refused(pool: PgPool) {
+async fn an_uploaded_zip_unpacks_its_models_into_the_batch_and_a_rar_is_kept_as_a_pack(
+    pool: PgPool,
+) {
     use std::io::Write;
     let blob_root = tempfile::tempdir().expect("temp dir");
     let inbox = blob_root.path().join("inbox");
@@ -3557,8 +3559,103 @@ async fn an_uploaded_zip_unpacks_its_models_into_the_batch_and_a_rar_is_refused(
         path: "uploads/ayse/spares.rar".to_owned(),
         source_path: "spares.rar".to_owned(),
     };
-    match handler.handle(&row(&rar)).await {
-        Err(HandlerError::Permanent { message }) => assert!(message.contains("RAR"), "{message}"),
-        other => panic!("a RAR upload should be refused by name, got {other:?}"),
+    // A13: a RAR can't be opened, so it is kept as a pack rather than refused.
+    assert_eq!(
+        handler.handle(&row(&rar)).await.expect("kept as a pack"),
+        Outcome::Ingested
+    );
+    assert_eq!(part_count(&pool).await, 3);
+}
+
+/// (A13) A scan takes a creator's archives as packs: one part each, filed under their folder, with no
+/// figures and the contents its index lists. A rescan of an unchanged pack reads nothing; an archive under
+/// `uploads/` is not a pack, because its upload already unpacked it.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_keeps_archives_packed_as_one_part_each(pool: PgPool) {
+    use std::io::Write;
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let folder = "Creators/Bite The Bullet/Bleeding Procession";
+    std::fs::create_dir_all(ingest_dir.path().join(folder)).expect("folder");
+    let mut zip = zip::ZipWriter::new(
+        std::fs::File::create(
+            ingest_dir
+                .path()
+                .join(format!("{folder}/TCAA3002 Castigator.zip")),
+        )
+        .expect("zip"),
+    );
+    for (name, bytes) in [
+        ("Supported/castigator-body.stl", BRACKET_FIXTURE),
+        ("Unsupported/castigator-head.stl", BRACKET_FIXTURE),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .expect("entry");
+        zip.write_all(bytes).expect("bytes");
     }
+    zip.finish().expect("zip written");
+    stage(
+        ingest_dir.path(),
+        &format!("{folder}/TCAA3002 Trench Pilgrims.rar"),
+        b"Rar!\x1a\x07\x00",
+    );
+    stage(ingest_dir.path(), "uploads/ayse/spares.zip", b"PK");
+    whole_folder(&pool).await;
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let scanned = scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await;
+    assert_eq!(
+        scanned,
+        [
+            format!("{folder}/TCAA3002 Castigator.zip"),
+            format!("{folder}/TCAA3002 Trench Pilgrims.rar")
+        ]
+    );
+    for path in &scanned {
+        assert_eq!(
+            handler.handle(&job_for(path)).await.expect("indexed"),
+            Outcome::Ingested
+        );
+    }
+    let (format, bbox, triangles, contents): (
+        String,
+        Option<f64>,
+        Option<i32>,
+        Option<serde_json::Value>,
+    ) = sqlx::query_as(
+        "SELECT f.format, r.bbox_x, r.triangle_count, r.contents FROM part p \
+             JOIN revision r ON r.part_id = p.id JOIN file f ON f.revision_id = r.id \
+             WHERE p.source_path LIKE '%Castigator.zip'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the pack's rows");
+    assert_eq!(format, "zip");
+    assert_eq!((bbox, triangles), (None, None), "a pack has no figures");
+    let contents = contents.expect("its contents");
+    assert_eq!(contents["total"], 2);
+    assert_eq!(
+        contents["entries"][0]["path"],
+        "Supported/castigator-body.stl"
+    );
+    let rar: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT r.contents FROM part p JOIN revision r ON r.part_id = p.id WHERE p.source_path LIKE '%.rar'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the rar's row");
+    assert!(
+        rar.expect("a sentence")["unread"]
+            .as_str()
+            .is_some_and(|s| s.contains("RAR"))
+    );
+    // Filed under its folder, as a model is.
+    assert!(
+        file_rows(&pool, &format!("{folder}/TCAA3002 Castigator.zip")).await[0].3,
+        "on disk"
+    );
+    // Unchanged, a rescan reads nothing and settles as already here.
+    assert_eq!(
+        handler.handle(&job_for(&scanned[0])).await.expect("again"),
+        Outcome::Skipped
+    );
 }

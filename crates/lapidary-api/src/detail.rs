@@ -102,6 +102,8 @@ pub struct PartDetail {
     #[ts(type = "number | null")]
     pub stored_bytes: Option<u64>,
     pub compressed: Option<bool>,
+    /// What a pack holds (A13): a zip, 7z or rar kept as one item. `None` for a model.
+    pub pack: Option<PackContents>,
     /// The directory holding the part's file, relative to its root (`file_root`).
     ///
     /// Relative and never an absolute host path: the api runs in a container and its view
@@ -121,6 +123,47 @@ pub struct PartDetail {
     /// `false` for a model somebody shared with this person (A4): they may look and download, and
     /// the page offers nothing that changes it.
     pub yours: bool,
+}
+
+/// A pack's contents (A13), read once at ingest from the archive's index: up to 5,000 entries and how many
+/// there are, or `unread` saying why there is no list (a RAR, an encrypted or unreadable index).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PackContents {
+    #[serde(default)]
+    pub entries: Vec<PackEntry>,
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub unread: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PackEntry {
+    pub path: String,
+    #[ts(type = "number")]
+    pub size: u64,
+}
+
+/// A pack's contents from its revision's column. A pack whose list was never written still says it is a pack.
+fn pack(format: Option<&str>, contents: Option<serde_json::Value>) -> Option<PackContents> {
+    if !format.is_some_and(|format| lapidary_core::PACK_EXTENSIONS.contains(&format)) {
+        return None;
+    }
+    Some(
+        contents
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or(PackContents {
+                unread: Some(
+                    "What is inside this pack hasn't been read yet. Scan its folder again."
+                        .to_owned(),
+                ),
+                ..PackContents::default()
+            }),
+    )
 }
 
 /// `GET /api/parts/{id}` — one part, in full.
@@ -208,6 +251,7 @@ fn to_detail(row: PartDetailRow) -> PartDetail {
         // Filled in once the part's density is read, as `revisions.rs` fills a revision's.
         mass_g: None,
         source_hash: row.source_hash,
+        pack: pack(row.source_format.as_deref(), row.contents),
         source_format: row.source_format,
         source_bytes: row.source_bytes,
         stored_bytes: row.stored_bytes,

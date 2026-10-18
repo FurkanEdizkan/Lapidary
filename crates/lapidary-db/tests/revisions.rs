@@ -47,7 +47,7 @@ async fn seed(pool: &sqlx::PgPool) -> PartId {
             root: FileRoot::Library,
             mtime_ns: Some(1_760_000_000_000_000_000),
             blob: &blob_row(0x31),
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -69,7 +69,7 @@ fn request<'a>(
         storage_path: STORED,
         mtime_ns: Some(1_760_000_100_000_000_000),
         blob,
-        measurements,
+        measurements: Some(measurements),
         provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
         format: "stl",
     }
@@ -123,10 +123,10 @@ async fn a_revision_moves_its_part_in_the_grids_order(pool: sqlx::PgPool) {
                 root: lapidary_core::FileRoot::Store,
                 mtime_ns: None,
                 blob: &blob_row(blob),
-                measurements: &MeshMeasurements {
+                measurements: Some(&MeshMeasurements {
                     volume_mm3: Some(volume_mm3),
                     ..measurements()
-                },
+                }),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
                 format: "stl",
             })

@@ -59,7 +59,7 @@ async fn seed_part(pool: &sqlx::PgPool, library: LibraryId, seed: u8, name: &str
             name,
             source_path: name,
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -447,7 +447,7 @@ async fn seed_sized_part(
             name,
             source_path: name,
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -571,7 +571,7 @@ async fn seed_filed_part(
             name,
             source_path: storage_path,
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1042,7 +1042,7 @@ async fn seed_format(pool: &sqlx::PgPool, seed: u8, name: &str, format: &str) {
                 stored_bytes: 2_048,
                 zstd_level: 0,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -1142,10 +1142,10 @@ async fn seed_volume(pool: &sqlx::PgPool, seed: u8, name: &str, volume_mm3: Opti
                 stored_bytes: 2_048,
                 zstd_level: 0,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 volume_mm3,
                 ..measurements()
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1510,13 +1510,13 @@ async fn freeing_cache_space_quarantines_old_exports_and_the_part_asks_for_them_
                 stored_bytes: 184_342,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
+            measurements: Some(&lapidary_core::MeshMeasurements {
                 bbox_mm: [42.0, 42.0, 12.0],
                 triangle_count: 9_216,
                 surface_area_mm2: 4_211.0,
                 volume_mm3: Some(11_904.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

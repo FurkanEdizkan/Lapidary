@@ -398,7 +398,8 @@ pub struct IngestRequest<'a> {
     /// it against with the size. `None` for a store row.
     pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
-    pub measurements: &'a MeshMeasurements,
+    /// The mesh's figures; `None` for a pack (A13), which has none.
+    pub measurements: Option<&'a MeshMeasurements>,
     /// Where each of `measurements`' figures came from; written to the `*_source` columns.
     pub provenance: MeasurementProvenance,
     /// The source format, lowercase and without a dot. Was the SQL literal `'stl'`.
@@ -1101,7 +1102,7 @@ pub(crate) struct RevisionWrite<'a> {
     pub root: lapidary_core::FileRoot,
     pub mtime_ns: Option<i64>,
     pub blob: &'a StoredBlobRow,
-    pub measurements: &'a MeshMeasurements,
+    pub measurements: Option<&'a MeshMeasurements>,
     pub provenance: MeasurementProvenance,
     pub format: &'a str,
 }
@@ -1121,11 +1122,16 @@ pub(crate) async fn insert_revision_chain(
     // silently wrap to a negative count that a later read (see PgParts::page) would
     // then have to reject anyway. `as i32` here previously wrapped 3_000_000_000 to
     // -1_294_967_296 and stored it without complaint.
-    let triangle_count =
-        i32::try_from(m.triangle_count).map_err(|_| DbError::TriangleCountTooLarge {
-            column: "revision.triangle_count",
-            value: m.triangle_count,
-        })?;
+    let triangle_count = m
+        .map(|m| {
+            i32::try_from(m.triangle_count).map_err(|_| DbError::TriangleCountTooLarge {
+                column: "revision.triangle_count",
+                value: m.triangle_count,
+            })
+        })
+        .transpose()?;
+    // A pack (A13) has no figures, and so no provenance for any: NULL beside NULL.
+    let bbox = m.map(|m| m.bbox_mm);
 
     sqlx::query(
         "INSERT INTO revision (id, part_id, rev_label, parent_revision_id, origin, volume, \
@@ -1138,18 +1144,18 @@ pub(crate) async fn insert_revision_chain(
     .bind(req.rev_label)
     .bind(req.parent)
     .bind(req.origin.as_str())
-    .bind(m.volume_mm3)
+    .bind(m.and_then(|m| m.volume_mm3))
     // No volume means no provenance for one — writing 'tessellated' beside a NULL would
     // claim we measured something we refused to measure.
-    .bind(m.volume_mm3.map(|_| p.volume.as_str()))
-    .bind(m.surface_area_mm2)
-    .bind(p.surface_area.as_str())
-    .bind(m.bbox_mm[0])
-    .bind(m.bbox_mm[1])
-    .bind(m.bbox_mm[2])
-    .bind(p.bbox.as_str())
+    .bind(m.and_then(|m| m.volume_mm3).map(|_| p.volume.as_str()))
+    .bind(m.map(|m| m.surface_area_mm2))
+    .bind(m.map(|_| p.surface_area.as_str()))
+    .bind(bbox.map(|b| b[0]))
+    .bind(bbox.map(|b| b[1]))
+    .bind(bbox.map(|b| b[2]))
+    .bind(m.map(|_| p.bbox.as_str()))
     .bind(triangle_count)
-    .bind(m.is_watertight)
+    .bind(m.map(|m| m.is_watertight))
     .execute(&mut **tx)
     .await?;
 
@@ -1161,11 +1167,11 @@ pub(crate) async fn insert_revision_chain(
          latest_triangle_count = $7 WHERE id = $1",
     )
     .bind(part.as_uuid())
-    .bind(m.volume_mm3)
-    .bind(m.surface_area_mm2)
-    .bind(m.bbox_mm[0])
-    .bind(m.bbox_mm[1])
-    .bind(m.bbox_mm[2])
+    .bind(m.and_then(|m| m.volume_mm3))
+    .bind(m.map(|m| m.surface_area_mm2))
+    .bind(bbox.map(|b| b[0]))
+    .bind(bbox.map(|b| b[1]))
+    .bind(bbox.map(|b| b[2]))
     .bind(triangle_count)
     .execute(&mut **tx)
     .await?;
@@ -1291,6 +1297,8 @@ pub struct PartDetailRow {
     pub source_bytes: Option<u64>,
     pub stored_bytes: Option<u64>,
     pub compressed: Option<bool>,
+    /// What a pack holds, as ingest read it from the archive's index (A13, `0067`); `None` for a model.
+    pub contents: Option<serde_json::Value>,
     /// The model's own directory in the store, relative to the storage root — the same
     /// value and the same nullability as [`PartRow::directory`], derived the same way.
     ///
@@ -1341,6 +1349,7 @@ struct DetailColumns {
     source_size_bytes: Option<i64>,
     source_stored_bytes: Option<i64>,
     source_zstd_level: Option<i16>,
+    contents: Option<serde_json::Value>,
     storage_path: Option<String>,
     file_root: Option<String>,
     created_us: i64,
@@ -1795,7 +1804,7 @@ impl PgParts {
                     (p.metadata_json->'custom')::text AS custom_json, \
                     p.source_path, r.rev_label, \
                     r.triangle_count, r.is_watertight, r.bbox_x, r.bbox_y, r.bbox_z, \
-                    r.volume, r.volume_source, r.surface_area, r.surface_area_source, \
+                    r.volume, r.volume_source, r.surface_area, r.surface_area_source, r.contents, \
                     s.blake3 AS source_blake3, s.format AS source_format, \
                     s.size_bytes AS source_size_bytes, \
                     s.stored_bytes AS source_stored_bytes, \
@@ -1862,6 +1871,7 @@ impl PgParts {
             // Keyed off the source row's presence, never off `zstd_level`'s — see
             // `PartSummary::compressed` for the whole argument.
             compressed: source_hash.map(|_| c.source_zstd_level.is_some_and(|l| l != 0)),
+            contents: c.contents,
             directory: c.storage_path.as_deref().and_then(model_directory),
             storage_path: c.storage_path,
             root: c.file_root.as_deref().map(file_root).transpose()?,
@@ -3689,8 +3699,9 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                 part_number,
                 source_path,
                 triangle_count,
-                // Every figure on a mesh part is tessellated, so any is all.
-                approximate: true,
+                // Every figure on a mesh part is tessellated, so any is all. A pack (A13) has none, and
+                // calling nothing approximate would be a claim about figures that do not exist.
+                approximate: triangle_count.is_some(),
                 source_hash,
                 source_bytes: bytes("file.size_bytes", source_bytes)?,
                 stored_bytes: bytes("file.stored_bytes", stored_bytes)?,

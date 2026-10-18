@@ -206,6 +206,23 @@ pub const MESH_EXTENSIONS: [&str; 3] = ["stl", "obj", "3mf"];
 /// The archives an upload opens and unpacks the meshes of (A10), lowercase.
 pub const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "7z"];
 
+/// A **pack** (A13): an archive kept in the library as one item, read where it is, never unpacked or drawn.
+/// A scan and the Import browser take these beside the model files; an upload still opens a zip or 7z
+/// (`ARCHIVE_EXTENSIONS`).
+pub const PACK_EXTENSIONS: [&str; 3] = ["zip", "7z", "rar"];
+
+/// Whether a file's name makes it a pack, by its extension in any case.
+pub fn is_pack_file(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            PACK_EXTENSIONS
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 /// The B-rep extensions this library refuses by name, lowercase.
 ///
 /// Still chained into [`is_model_file`] below, deliberately. Lapidary does not read these, but a

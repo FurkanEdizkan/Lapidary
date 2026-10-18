@@ -34,6 +34,7 @@ import type {
   BatchId,
   BlobHash,
   CustomField,
+  PackContents,
   PartDetail as PartDetailData,
   PartId,
   PartImage,
@@ -1001,7 +1002,11 @@ export function Detail({
         {part.sourceHash === null ? null : (
           <CopyLink key={part.id} part={part.id} name={part.name} className={page ? standing : control} />
         )}
-        {part.sourceHash !== null && part.sourceFormat !== null && !slicerReads.includes(part.sourceFormat) ? (
+        {/* Never for a pack (A13): there is no mesh in it to write a 3MF from. */}
+        {part.sourceHash !== null &&
+        part.sourceFormat !== null &&
+        !part.pack &&
+        !slicerReads.includes(part.sourceFormat) ? (
           <SlicerExport key={part.revision} part={part} />
         ) : null}
         {/*
@@ -1057,7 +1062,12 @@ export function Detail({
       <Sources part={part.id} recordable={recordable} />
     </>
   )
-  const geometry = (
+  // A pack (A13) has no figures: what is inside it takes Geometry's place.
+  const geometry =
+    // Present, not merely non-null: a server from before A13 sends no `pack` at all.
+    part.pack ? (
+      <PackSection pack={part.pack} />
+    ) : (
       <Section
         title={strings.detail.geometry}
         note={
@@ -1430,6 +1440,54 @@ function CopyLink({ part, name, className }: { part: PartId; name: string; class
   )
 }
 
+
+/**
+ * What a pack holds (A13), as ingest read it from the archive's index: nothing here opens the file. A RAR,
+ * or an index that couldn't be read, says why there is no list.
+ */
+function PackSection({ pack }: { pack: PackContents }) {
+  // A release usually wraps everything in one folder named after itself: said once, above the list.
+  const firsts = new Set(pack.entries.map((entry) => entry.path.split('/')[0]))
+  const [top] = firsts
+  const shared =
+    firsts.size === 1 && top !== undefined && pack.entries.every((entry) => entry.path.includes('/')) ? top : null
+  const shown = (path: string) => (shared === null ? path : path.slice(shared.length + 1))
+  return (
+    <Section
+      title={strings.detail.pack.title}
+      note={pack.unread === null ? strings.detail.pack.count(pack.total) : undefined}
+    >
+      {pack.unread !== null ? (
+        <p className="max-w-prose text-sm text-[var(--color-muted)]">{pack.unread}</p>
+      ) : (
+        // One child: the section lays its children out side by side.
+        <div className="min-w-0">
+          {shared === null ? null : (
+            <p className="mb-1 text-xs break-all text-[var(--color-muted)]">{strings.detail.pack.inside(shared)}</p>
+          )}
+          <ul role="list" className="max-h-80 overflow-y-auto rounded-[var(--radius-ctl)] border border-[var(--color-border)] text-sm">
+            {pack.entries.map((entry) => (
+              <li
+                key={entry.path}
+                className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] px-3 py-1.5 last:border-b-0"
+              >
+                <span className="min-w-0 break-all">{shown(entry.path)}</span>
+                <span className="tabular shrink-0 text-xs text-[var(--color-muted)]">
+                  {strings.detail.pack.size(entry.size)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {pack.total > pack.entries.length ? (
+            <p className="mt-2 text-xs text-[var(--color-muted)]">
+              {strings.detail.pack.more(pack.total - pack.entries.length)}
+            </p>
+          ) : null}
+        </div>
+      )}
+    </Section>
+  )
+}
 function Section({
   id,
   title,
