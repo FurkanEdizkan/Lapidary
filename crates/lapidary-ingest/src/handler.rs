@@ -131,6 +131,15 @@ impl JobHandler for WorkerHandler {
     }
 }
 
+/// What `index_body` indexes: a mesh's bytes, or a pack's size and what it holds (A13).
+enum Body {
+    Mesh(Vec<u8>),
+    Pack {
+        size: u64,
+        contents: serde_json::Value,
+    },
+}
+
 /// The formats this library refuses, as `source_format` spells them. The scan walk accepts these
 /// beside the mesh extensions, so a `.step` file is refused by name rather than skipped in
 /// silence — see [`lapidary_core::CAD_FORMATS`].
@@ -187,6 +196,17 @@ impl WorkerHandler {
         source_path: &str,
     ) -> Result<Outcome, HandlerError> {
         refuse_escaping(source_path)?;
+        if lapidary_core::is_pack_file(source_path) {
+            return self
+                .ingest_pack(
+                    library,
+                    source_path,
+                    FileRoot::Library,
+                    source_path,
+                    RevisionOrigin::Ingest,
+                )
+                .await;
+        }
         let at = source_path.to_owned();
         // 1. Read bytes. A missing file may mean the mount is not ready yet, so this is
         // Transient — unlike every step below it, this one has nothing to do with the bytes.
@@ -289,10 +309,17 @@ impl WorkerHandler {
         if crate::archive::ARCHIVES.contains(&format.as_str()) {
             return self.unpack_upload(batch, library, path, source_path).await;
         }
+        // A RAR can't be opened, so it is kept as a pack (A13) rather than refused.
         if crate::archive::REFUSED_ARCHIVES.contains(&format.as_str()) {
-            return Err(HandlerError::Permanent {
-                message: crate::archive::rar_refusal(source_path),
-            });
+            return self
+                .ingest_pack(
+                    library,
+                    source_path,
+                    FileRoot::Inbox,
+                    path,
+                    RevisionOrigin::Upload,
+                )
+                .await;
         }
         self.ingest_inbox(library, path, source_path).await
     }
@@ -390,6 +417,89 @@ impl WorkerHandler {
         origin: RevisionOrigin,
         at: FileAt<'_>,
     ) -> Result<Outcome, HandlerError> {
+        self.index_body(library, source_path, Body::Mesh(bytes), hash, origin, at)
+            .await
+    }
+
+    /// A pack in the models folder (A13): hashed as it streams past, never read whole — a creator's
+    /// release runs to gigabytes — and its contents read from the archive's index. Unchanged since it was
+    /// indexed (the same size and modified time), it is not hashed again: a rescan of a folder of packs
+    /// would otherwise read hundreds of gigabytes to learn nothing.
+    ///
+    /// `path` is where the file is under `root`: the part's own path in the models folder for a scan, the
+    /// inbox path for an uploaded RAR.
+    async fn ingest_pack(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        root: FileRoot,
+        path: &str,
+        origin: RevisionOrigin,
+    ) -> Result<Outcome, HandlerError> {
+        let dir = if root == FileRoot::Inbox {
+            &self.inbox_dir
+        } else {
+            &self.ingest_dir
+        };
+        let stat = LibraryReader::open(dir)
+            .stat_at(path)
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Could not read {source_path} ({path}): {e}"),
+            })?;
+        let at = FileAt {
+            root,
+            path,
+            mtime_ns: stat.mtime_ns,
+        };
+        if let Some(current) = PgRevisions(self.db.clone())
+            .current(library, source_path)
+            .await
+            .map_err(classify_db)?
+            && current.storage_path.as_deref() == Some(path)
+            && current.size_bytes == i64::try_from(stat.size).ok()
+            && current.mtime_ns == Some(stat.mtime_ns)
+        {
+            return Ok(Outcome::Skipped);
+        }
+        let file = dir.join(path);
+        let format = source_format(source_path);
+        let (hash, size, contents) = tokio::task::spawn_blocking(move || {
+            let mut hasher = blake3::Hasher::new();
+            let size = hasher.update_reader(std::fs::File::open(&file)?)?.count();
+            let contents = crate::archive::contents(&file, &format);
+            Ok::<_, std::io::Error>((
+                BlobHash::from_bytes(*hasher.finalize().as_bytes()),
+                size,
+                contents,
+            ))
+        })
+        .await
+        .map_err(|e| HandlerError::Transient {
+            message: format!("Reading {source_path} stopped: {e}"),
+        })?
+        .map_err(|e| HandlerError::Transient {
+            message: format!("Could not read {source_path} in your folders: {e}"),
+        })?;
+        self.index_body(
+            library,
+            source_path,
+            Body::Pack { size, contents },
+            hash,
+            origin,
+            at,
+        )
+        .await
+    }
+
+    async fn index_body(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        body: Body,
+        hash: BlobHash,
+        origin: RevisionOrigin,
+        at: FileAt<'_>,
+    ) -> Result<Outcome, HandlerError> {
         refuse_escaping(source_path)?;
         refuse_escaping(at.path)?;
         let blobs = PgBlobs(self.db.clone());
@@ -443,24 +553,37 @@ impl WorkerHandler {
             pause.release.notified().await;
         }
 
-        // 4. Parse + measure. Nothing has been written, so a failure needs no cleanup.
-        let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
-        let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
-        // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
-        // reason to fail: a part with no picture is a part.
-        let embedded = if format == "3mf" {
-            lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
-                tracing::warn!(source_path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
-                None
-            })
-        } else {
-            None
+        // 4. Parse + measure. Nothing has been written, so a failure needs no cleanup. A pack (A13) has
+        // nothing to parse: no figures, no picture, and its contents instead.
+        let (measurements, centre_of_mass_mm, embedded, size, contents) = match body {
+            Body::Mesh(bytes) => {
+                let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
+                let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
+                // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
+                // reason to fail: a part with no picture is a part.
+                let embedded = if format == "3mf" {
+                    lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
+                        tracing::warn!(source_path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                        None
+                    })
+                } else {
+                    None
+                };
+                (
+                    Some(measurements),
+                    centre_of_mass_mm,
+                    embedded,
+                    bytes.len() as u64,
+                    None,
+                )
+            }
+            Body::Pack { size, contents } => (None, None, None, size, Some(contents)),
         };
         let blob = StoredBlobRow {
             hash,
-            size_bytes: bytes.len() as u64,
+            size_bytes: size,
             // No content-addressed copy is written, so the blob row claims none (`0026`).
-            stored_bytes: bytes.len() as u64,
+            stored_bytes: size,
             zstd_level: 0,
         };
 
@@ -475,7 +598,7 @@ impl WorkerHandler {
                     storage_path: at.path,
                     mtime_ns: Some(at.mtime_ns),
                     blob: &blob,
-                    measurements: &measurements,
+                    measurements: measurements.as_ref(),
                     // Every figure a mesh gives is tessellated, and a mesh is all this library
                     // takes (R2).
                     provenance: MeasurementProvenance::TESSELLATED,
@@ -494,6 +617,8 @@ impl WorkerHandler {
                 source_path,
             )
             .await;
+            self.record_contents(revision, contents.as_ref(), source_path)
+                .await;
             if let Some(raw) = embedded {
                 self.adopt_picture(existing.part, &raw, "embedded", None, source_path)
                     .await;
@@ -517,7 +642,7 @@ impl WorkerHandler {
             root: at.root,
             mtime_ns: Some(at.mtime_ns),
             blob: &blob,
-            measurements: &measurements,
+            measurements: measurements.as_ref(),
             provenance: MeasurementProvenance::TESSELLATED,
             format: &format,
         };
@@ -560,6 +685,8 @@ impl WorkerHandler {
                     source_path,
                 )
                 .await;
+                self.record_contents(revision, contents.as_ref(), source_path)
+                    .await;
             }
             Ok(None) => {}
             Err(error) => tracing::warn!(
@@ -573,6 +700,23 @@ impl WorkerHandler {
                 .await;
         }
         Ok(Outcome::Ingested)
+    }
+
+    /// A pack's contents onto the revision just committed (A13). Warn-only, as the centre of mass is: the
+    /// pack is indexed, and a list it lacks leaves its page saying so.
+    async fn record_contents(
+        &self,
+        revision: RevisionId,
+        contents: Option<&serde_json::Value>,
+        source_path: &str,
+    ) {
+        let Some(contents) = contents else { return };
+        if let Err(error) = PgRevisions(self.db.clone())
+            .set_contents(revision, contents)
+            .await
+        {
+            tracing::warn!(source_path, %error, "could not record what this pack holds; its page lists nothing");
+        }
     }
 
     /// Step 3's other half. Warn-only: the file is already indexed, and a stale time costs a

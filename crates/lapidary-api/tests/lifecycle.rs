@@ -89,13 +89,13 @@ async fn seed(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> PartId {
                 stored_bytes: 91_204,
                 zstd_level: 3,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -258,13 +258,13 @@ async fn deleting_a_part_never_touches_its_model_file(pool: sqlx::PgPool) {
                 stored_bytes: bytes.len() as u64,
                 zstd_level: 0,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -307,13 +307,13 @@ async fn seed_sharing(pool: &sqlx::PgPool, seed: u8, name: &str, path: &str) -> 
                 stored_bytes: 91_204,
                 zstd_level: 3,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -388,13 +388,13 @@ async fn deleting_a_part_moves_its_model_file_into_removed(pool: sqlx::PgPool) {
                 stored_bytes: bytes.len() as u64,
                 zstd_level: 0,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

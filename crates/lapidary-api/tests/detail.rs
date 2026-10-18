@@ -266,13 +266,13 @@ async fn a_part_page_names_the_file_on_disk_and_the_directory_holding_it(pool: s
                 stored_bytes: 82_144,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
+            measurements: Some(&lapidary_core::MeshMeasurements {
                 bbox_mm: [60.0, 60.0, 40.0],
                 triangle_count: 1_648,
                 surface_area_mm2: 18_400.0,
                 volume_mm3: Some(64_800.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

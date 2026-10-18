@@ -173,7 +173,7 @@ async fn seed(pool: &sqlx::PgPool, root: &Path, name: &str, format: &str, bytes:
                 stored_bytes: stored.stored_bytes,
                 zstd_level: stored.zstd_level,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -226,7 +226,7 @@ async fn seed_at_path(
                 stored_bytes: stored.stored_bytes,
                 zstd_level: stored.zstd_level,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -545,7 +545,7 @@ async fn a_nonzero_recorded_level_at_a_folder_path_still_decodes(pool: sqlx::PgP
             name: TURKISH_NAME,
             source_path: TURKISH_NAME,
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1508,7 +1508,7 @@ async fn seed_in_folders(pool: &sqlx::PgPool, folders: &Path, rel: &str, bytes: 
                 stored_bytes: bytes.len() as u64,
                 zstd_level: 0,
             },
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1697,7 +1697,7 @@ async fn a_parts_file_link_follows_its_newest_revision(pool: sqlx::PgPool) {
                 stored_bytes: second.len() as u64,
                 zstd_level: 0,
             },
-            measurements: &measured,
+            measurements: Some(&measured),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

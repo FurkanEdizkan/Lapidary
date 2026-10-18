@@ -81,7 +81,7 @@ async fn seed_part(pool: &sqlx::PgPool, library: LibraryId, seed: u8, name: &str
             name,
             source_path: name,
             blob: &blob,
-            measurements: &measurements(),
+            measurements: Some(&measurements()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

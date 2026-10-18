@@ -34,13 +34,13 @@ async fn part(pool: &sqlx::PgPool, name: &str, source: u8) -> PartId {
                 stored_bytes: 204_800,
                 zstd_level: 0,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

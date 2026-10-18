@@ -70,13 +70,13 @@ async fn seed_part(pool: &sqlx::PgPool) -> PartId {
                 stored_bytes: 39_321,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
+            measurements: Some(&lapidary_core::MeshMeasurements {
                 bbox_mm: [40.0, 40.0, 12.0],
                 triangle_count: 784,
                 surface_area_mm2: 6_400.0,
                 volume_mm3: Some(9_600.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

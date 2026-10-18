@@ -724,6 +724,16 @@ export const strings = {
     empty: 'That drop contained no files.',
   },
   detail: {
+    /** A pack (A13): an archive kept as one item, never unpacked. */
+    pack: {
+      title: 'Inside this pack',
+      count: (n: number) =>
+        n === 1
+          ? 'One file, read from the archive’s index.'
+          : `${n.toLocaleString('en-US')} files, read from the archive’s index.`,
+      more: (n: number) => `And ${n.toLocaleString('en-US')} more.`,
+      size: (value: number) => bytes(value),
+    },
     /** The ⋯ button on a part's page: Render, Move, the storage path and Remove. */
     more: 'More actions',
     /** The part page's index of the sections under the studio. */

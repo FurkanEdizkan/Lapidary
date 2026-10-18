@@ -164,6 +164,9 @@ impl WorkerHandler {
                 });
             }
         }
+        // An archive under `uploads/` was unpacked into parts when it was uploaded (A10); as a pack it would
+        // be a second copy of the same models.
+        paths.retain(|path| !(path.starts_with("uploads/") && lapidary_core::is_pack_file(path)));
         // Two sources can cover one file; it is filed once.
         paths.sort();
         paths.dedup();
@@ -198,12 +201,16 @@ impl WorkerHandler {
 /// Not a byte sniff: OBJ is plain text with no magic number, so sniffing reduces to
 /// guessing from the first non-comment line. The extension is also what an operator sees
 /// in the directory, so a file that is skipped is skipped for a reason they can see.
+///
+/// A pack (A13) — a zip, 7z or rar — is a candidate too: it becomes one part, kept packed.
 fn is_model_candidate(path: &FsPath) -> bool {
     path.is_file()
         && path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(lapidary_core::is_model_file)
+            .is_some_and(|name| {
+                lapidary_core::is_model_file(name) || lapidary_core::is_pack_file(name)
+            })
 }
 
 pub(crate) use lapidary_core::MESH_EXTENSIONS;

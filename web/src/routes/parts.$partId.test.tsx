@@ -47,6 +47,7 @@ const PART: PartDetail = {
   sourceBytes: 204800,
   storedBytes: 91204,
   compressed: true,
+  pack: null,
   directory: 'libraries/default/Brackets/nema-17-motor-mount',
   storagePath: 'libraries/default/Brackets/nema-17-motor-mount/nema-17-motor-mount.stl',
   fileRoot: 'store',

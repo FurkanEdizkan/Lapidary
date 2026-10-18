@@ -3,6 +3,7 @@ import type { Approximate } from "./Approximate";
 import type { BlobHash } from "./BlobHash";
 import type { FileRoot } from "./FileRoot";
 import type { LibraryId } from "./LibraryId";
+import type { PackContents } from "./PackContents";
 import type { PartId } from "./PartId";
 import type { RevisionId } from "./RevisionId";
 
@@ -82,6 +83,10 @@ massG: Approximate<number> | null, sourceHash: BlobHash | null,
  * `stl`, `3mf`, `obj` — what the ingested file actually is, not what its name says.
  */
 sourceFormat: string | null, sourceBytes: number | null, storedBytes: number | null, compressed: boolean | null, 
+/**
+ * What a pack holds (A13): a zip, 7z or rar kept as one item. `None` for a model.
+ */
+pack: PackContents | null, 
 /**
  * The directory holding the part's file, relative to its root (`file_root`).
  *

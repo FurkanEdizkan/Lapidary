@@ -28,7 +28,9 @@ area — these encode decisions that are expensive to reverse.
   different wording and must never read as data loss.
 - **Meshes in, meshes out.** The library takes `stl`, `obj` and `3mf`. A STEP or IGES file is
   **refused at ingest, by name**, in a sentence that says what to export instead — never skipped in
-  silence. Slicers still get 3MF or STL through the `Target` negotiation. *(Until 2026-10-03 this read
+  silence. Slicers still get 3MF or STL through the `Target` negotiation. A `.zip`, `.7z` or `.rar` in the models
+  folder is a **pack** (A13): one item, read where it is and never unpacked, no figures and no view, its download
+  the archive itself. *(Until 2026-10-03 this read
   "CAD gets STEP"; the kernel that made that true is gone.)*
 - **Figures must not lie.** Every figure now comes from reading a mesh — bounding box, volume,
   surface area, triangle count — so every one of them is **approximate and labelled so in the UI,

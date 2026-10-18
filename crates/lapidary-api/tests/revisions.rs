@@ -89,7 +89,7 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
             root: lapidary_core::FileRoot::Library,
             mtime_ns: Some(1_760_000_000_000_000_000),
             blob: &blob_row(0x41),
-            measurements: &flange(214_780.0, 150.0),
+            measurements: Some(&flange(214_780.0, 150.0)),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -111,7 +111,7 @@ async fn two_revisions(pool: &sqlx::PgPool) -> PartId {
             storage_path: STORED,
             mtime_ns: Some(1_760_000_100_000_000_000),
             blob: &blob_row(0x42),
-            measurements: &flange(236_258.0, 165.0),
+            measurements: Some(&flange(236_258.0, 165.0)),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -255,7 +255,7 @@ async fn mass_is_volume_times_the_density_of_the_parts_one_material(pool: sqlx::
             root: lapidary_core::FileRoot::Store,
             mtime_ns: None,
             blob: &blob_row(0x43),
-            measurements: &flange(21_478.5, 60.0),
+            measurements: Some(&flange(21_478.5, 60.0)),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

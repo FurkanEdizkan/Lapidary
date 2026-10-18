@@ -190,13 +190,13 @@ async fn a_probe_holds_a_path_only_with_the_bytes_its_part_has(pool: sqlx::PgPoo
                 stored_bytes: BRACKET.len() as u64,
                 zstd_level: 0,
             },
-            measurements: &lapidary_core::MeshMeasurements {
+            measurements: Some(&lapidary_core::MeshMeasurements {
                 bbox_mm: [80.0, 40.0, 3.0],
                 triangle_count: 12_480,
                 surface_area_mm2: 7_136.0,
                 volume_mm3: Some(9_120.0),
                 is_watertight: true,
-            },
+            }),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })

@@ -53,7 +53,7 @@ async fn recording_an_ingest_creates_a_part_a_revision_a_file_and_a_thumbnail(po
             name: "Bearing block, 608ZZ",
             source_path: "bearing-block-608zz.stl",
             blob: &blob,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -91,7 +91,7 @@ async fn every_measurement_is_written_as_tessellated(pool: sqlx::PgPool) {
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -122,7 +122,7 @@ async fn an_open_mesh_stores_a_null_volume_but_still_stores_its_bbox(pool: sqlx:
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob,
-            measurements: &open_mesh(),
+            measurements: Some(&open_mesh()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -163,7 +163,7 @@ async fn a_known_hash_is_reported_as_existing(pool: sqlx::PgPool) {
             name: "Spacer, LP-2001-00",
             source_path: "spacer-lp-2001-00.stl",
             blob: &blob,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -206,7 +206,7 @@ async fn a_hash_another_library_holds_is_not_held_by_this_one(pool: sqlx::PgPool
             name: "Vee block, LP-3072-02",
             source_path: "vee-block-lp-3072-02.stl",
             blob: &blob,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -299,7 +299,7 @@ async fn linking_an_existing_blob_adds_a_part_without_touching_ref_count_twice(p
         name,
         source_path: name,
         blob: &blob,
-        measurements: &measurements,
+        measurements: Some(&measurements),
         provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
         format: "stl",
     };
@@ -342,7 +342,7 @@ async fn the_grid_page_returns_newest_first_with_a_thumbnail_hash(pool: sqlx::Pg
                 name,
                 source_path: name,
                 blob: &blob_row(0x30 + i as u8),
-                measurements: &watertight(),
+                measurements: Some(&watertight()),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
                 format: "stl",
             })
@@ -396,7 +396,7 @@ async fn a_deleted_part_never_appears_in_the_grid(pool: sqlx::PgPool) {
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x40),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -439,7 +439,7 @@ async fn the_grid_shows_the_newer_revisions_numbers_not_the_older_ones(pool: sql
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x51),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -493,7 +493,7 @@ async fn a_second_thumbnail_on_one_revision_is_refused_by_the_schema(pool: sqlx:
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x60),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -539,7 +539,7 @@ async fn a_derivative_of_a_different_kind_does_not_duplicate_the_grid_row(pool: 
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x61),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -585,7 +585,7 @@ async fn a_negative_triangle_count_in_the_column_is_reported_not_reinterpreted(p
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0x70),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -635,7 +635,7 @@ async fn a_triangle_count_too_large_for_the_column_is_rejected_on_write(pool: sq
             name: "Implausible mesh",
             source_path: "implausible-mesh.stl",
             blob: &blob_row(0x71),
-            measurements: &oversized,
+            measurements: Some(&oversized),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -674,7 +674,7 @@ async fn seeded_part(pool: &sqlx::PgPool, seed: u8) -> lapidary_core::PartId {
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(seed),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -816,7 +816,7 @@ async fn seed_part(ingest: &PgIngest, library: LibraryId, name: &str, blob: u8) 
             name,
             source_path: name,
             blob: &blob_row(blob),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -840,7 +840,7 @@ async fn a_part_ingested_without_a_thumbnail_still_appears_in_the_grid(pool: sql
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0xb0),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -907,7 +907,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &stl,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -924,7 +924,7 @@ async fn the_grid_reports_what_a_part_costs_on_disk(pool: sqlx::PgPool) {
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",
             blob: &three_mf,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "3mf",
         })
@@ -1067,7 +1067,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &blob_row(0xe5),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1103,7 +1103,7 @@ async fn linking_onto_a_rungs_blob_records_the_level_of_the_file_it_wrote(pool: 
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
             blob: &duplicate,
-            measurements: &open_mesh(),
+            measurements: Some(&open_mesh()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1186,7 +1186,7 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
             name: "Cliff face, LP-7712-04",
             source_path: "terrain/cliff-face-lp-7712-04.stl",
             blob: &shared,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1212,7 +1212,7 @@ async fn a_duplicate_ingested_mid_migration_describes_its_own_file_not_the_legac
             name: "Cliff face, LP-7712-04 (rocks pack)",
             source_path: "rocks/cliff-face-lp-7712-04.stl",
             blob: &raw,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1342,7 +1342,7 @@ async fn a_revision_with_no_source_file_still_appears_in_the_grid(pool: sqlx::Pg
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob_row(0xc3),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1390,7 +1390,7 @@ async fn upserting_an_export_twice_leaves_one_row_and_moves_the_reference(pool: 
             name: "Cable clip, LP-3300-01",
             source_path: "cable-clip-lp-3300-01.stl",
             blob: &blob_row(0xc0),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1547,7 +1547,7 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
             name: "cliff",
             source_path: "Terrain/cliff.stl",
             blob: &shared,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1564,7 +1564,7 @@ async fn two_parts_holding_the_same_bytes_are_two_files_in_the_total(pool: sqlx:
             name: "cliff",
             source_path: "Bases/cliff.stl",
             blob: &shared,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1613,7 +1613,7 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             name: "Bracket, LP-1042-03",
             source_path: "bracket-lp-1042-03.stl",
             blob: &shared,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1643,7 +1643,7 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             name: "Bracket, LP-1042-03 (spare)",
             source_path: "bracket-lp-1042-03-spare.stl",
             blob: &shared,
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -1662,7 +1662,7 @@ async fn the_library_total_charges_a_shared_derivative_once(pool: sqlx::PgPool) 
             name: "Impeller, LP-5501-02",
             source_path: "impeller-lp-5501-02.3mf",
             blob: &blob_row(0xd9),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "3mf",
         })
@@ -1968,7 +1968,7 @@ async fn the_instance_total_counts_a_shared_derivative_once_where_two_libraries_
                 name,
                 source_path: source,
                 blob: &blob_row(seed),
-                measurements: &watertight(),
+                measurements: Some(&watertight()),
                 provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
                 format: "stl",
             })
@@ -2346,7 +2346,7 @@ async fn seed_pathed(pool: &sqlx::PgPool, blob: u8, name: &str, source_path: &st
             name,
             source_path,
             blob: &blob_row(blob),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -2455,7 +2455,7 @@ async fn seed_with_format(ingest: &PgIngest, name: &str, blob: u8, format: &str)
             name,
             source_path: name,
             blob: &blob_row(blob),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -2557,7 +2557,7 @@ async fn seed_measured(
             name,
             source_path: name,
             blob: &blob_row(blob),
-            measurements: &measurements,
+            measurements: Some(&measurements),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format,
         })
@@ -2996,7 +2996,7 @@ async fn a_filed_source_is_read_at_its_own_level_not_the_staged_copys(pool: sqlx
                 stored_bytes: 39_284,
                 zstd_level: 0,
             },
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "stl",
         })
@@ -3101,7 +3101,7 @@ async fn a_cards_picture_is_the_parts_first_image_with_its_framing(pool: sqlx::P
             name: "Planetary carrier, LP-3480-02",
             source_path: "planetary-carrier-lp-3480-02.3mf",
             blob: &blob_row(0x5e),
-            measurements: &watertight(),
+            measurements: Some(&watertight()),
             provenance: lapidary_core::MeasurementProvenance::TESSELLATED,
             format: "3mf",
         })

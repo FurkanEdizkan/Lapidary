@@ -182,13 +182,13 @@ async fn seed(pool: &sqlx::PgPool, name: &str, path: &str, format: &str, blob: u
                 stored_bytes: 91_204,
                 zstd_level: 3,
             },
-            measurements: &MeshMeasurements {
+            measurements: Some(&MeshMeasurements {
                 bbox_mm: [61.0, 42.0, 18.5],
                 triangle_count: 48_112,
                 surface_area_mm2: 9_804.25,
                 volume_mm3: Some(21_478.5),
                 is_watertight: true,
-            },
+            }),
             provenance: MeasurementProvenance::TESSELLATED,
             format,
         })
