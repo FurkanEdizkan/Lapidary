@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { freeRenderCache } from '../lib/api'
 import { Dialog } from './Dialog'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { InstanceStorageView, LibraryStorage } from '../lib/types'
 
@@ -109,34 +110,36 @@ export function InstanceStorage({
           </button>
         </p>
       ) : null}
-      {!asking ? null : (
-        <Dialog title={strings.storage.freeCacheTitle} onClose={() => setAsking(false)}>
-          <p className="mt-3 text-sm">{strings.storage.freeCacheBody(renderCacheBytes)}</p>
-          {free.isError ? (
-            <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
-              {strings.storage.freeCacheFailed}
-            </p>
-          ) : null}
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              autoFocus
-              onClick={() => setAsking(false)}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-            >
-              {strings.folders.cancel}
-            </button>
-            <button
-              type="button"
-              disabled={free.isPending}
-              onClick={() => free.mutate()}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-            >
-              {strings.storage.freeCacheConfirm}
-            </button>
-          </div>
-        </Dialog>
-      )}
+      <Presence>
+        {!asking ? null : (
+          <Dialog title={strings.storage.freeCacheTitle} onClose={() => setAsking(false)} key="free">
+            <p className="mt-3 text-sm">{strings.storage.freeCacheBody(renderCacheBytes)}</p>
+            {free.isError ? (
+              <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+                {strings.storage.freeCacheFailed}
+              </p>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setAsking(false)}
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+              >
+                {strings.folders.cancel}
+              </button>
+              <button
+                type="button"
+                disabled={free.isPending}
+                onClick={() => free.mutate()}
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+              >
+                {strings.storage.freeCacheConfirm}
+              </button>
+            </div>
+          </Dialog>
+        )}
+      </Presence>
       {onDisk !== null ? (
         <p className="mt-1">{strings.storage.onDisk(onDisk, tracked)}</p>
       ) : measuring ? (

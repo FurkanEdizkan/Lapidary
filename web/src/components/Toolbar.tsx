@@ -14,6 +14,7 @@ import {
   type PageSize,
   type Sort,
 } from '../lib/preferences'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { LibraryId, NewLibrary } from '../lib/types'
 import { Menu } from './Menu'
@@ -288,17 +289,20 @@ function LibrarySwitcher({
         {strings.libraries.create}
       </button>
       {libraries.isError ? <span role="alert">{strings.libraries.failed}</span> : null}
-      {!creating ? null : (
-        <NewLibraryDialog
-          busy={add.isPending}
-          note={refusal ?? (add.isError ? strings.libraries.createFailed : null)}
-          onConfirm={(body) => add.mutate(body)}
-          onCancel={() => {
-            setCreating(false)
-            setRefusal(null)
-          }}
-        />
-      )}
+      <Presence>
+        {!creating ? null : (
+          <NewLibraryDialog
+            key="create"
+            busy={add.isPending}
+            note={refusal ?? (add.isError ? strings.libraries.createFailed : null)}
+            onConfirm={(body) => add.mutate(body)}
+            onCancel={() => {
+              setCreating(false)
+              setRefusal(null)
+            }}
+          />
+        )}
+      </Presence>
     </div>
   )
 }
