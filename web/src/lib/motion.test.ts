@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { STAGGERED, arrive, durationMs, staggerStep, tween } from './motion'
+import { STAGGERED, arrive, drawIn, durationMs, staggerStep, tween } from './motion'
 
 function reducedMotion(matches: boolean) {
   vi.stubGlobal(
@@ -37,7 +37,7 @@ test('a token reads the same written in milliseconds or seconds', () => {
  * the formula was worked out on.
  */
 test('an arrival of any size finishes inside the slow duration', () => {
-  const t = { fast: 120, base: 180, slow: 280, ease: '' }
+  const t = { fast: 120, base: 180, slow: 280, scene: 480, intro: 900, ease: '' }
   expect(staggerStep(1, t)).toBe(0)
   expect(staggerStep(5, t)).toBe(24)
   for (let count = 1; count <= 200; count++) {
@@ -79,18 +79,30 @@ test('a tween under reduced motion lands on its end values at once', () => {
 })
 
 /**
- * CLAUDE.md: only `lib/motion.ts` imports anime.js. A second importer would bring its own
- * durations and its own idea of reduced motion, which is what this module exists to prevent.
+ * CLAUDE.md: each engine has one door (A18). anime.js through `lib/motion.ts`; Motion through `lib/motion-react.tsx`
+ * and `lib/motion-features.ts`; `framer-motion`, Motion's own dependency, never directly. A second importer would bring
+ * its own durations, its own idea of reduced motion, and (for Motion) the smearing base transition back.
  */
-test('motion.ts is the only importer of anime.js', () => {
+test('each animation engine is imported in one place only', () => {
   const sources = import.meta.glob('../**/*.{ts,tsx}', { query: '?raw', import: 'default', eager: true }) as Record<
     string,
     string
   >
-  const importers = Object.entries(sources)
-    .filter(([path, text]) => !path.endsWith('.test.ts') && /from\s+['"]animejs/.test(text))
-    .map(([path]) => path)
+  const importing = (pattern: RegExp) =>
+    Object.entries(sources)
+      .filter(([path, text]) => !/\.test\.tsx?$/.test(path) && !path.endsWith('test-setup.ts') && pattern.test(text))
+      .map(([path]) => path)
+      .sort()
   // The glob has to reach the components and routes, or an empty scan would pass.
   expect(Object.keys(sources)).toContain('../routes/index.tsx')
-  expect(importers).toEqual(['./motion.ts'])
+  expect(importing(/from\s+['"]animejs(\/[\w-]+)?['"]/)).toEqual(['./motion.ts'])
+  expect(importing(/from\s+['"]motion(\/[\w-]+)?['"]/)).toEqual(['./motion-features.ts', './motion-react.tsx'])
+  expect(importing(/from\s+['"]framer-motion/)).toEqual([])
+})
+
+test('lines under reduced motion are simply drawn, and the run still says it is done', () => {
+  reducedMotion(true)
+  const done = vi.fn()
+  drawIn([document.createElementNS('http://www.w3.org/2000/svg', 'path')], done)
+  expect(done).toHaveBeenCalledTimes(1)
 })
