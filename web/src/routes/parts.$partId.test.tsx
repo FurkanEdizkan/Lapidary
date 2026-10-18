@@ -862,3 +862,24 @@ test('moving a picture later sends the whole gallery in its new order', async ()
   await waitFor(() => expect(sent).toEqual([{ ids: [photograph.id, snapshot.id] }]))
   expect(screen.getByRole('button', { name: strings.images.moveEarlier(label) })).toHaveProperty('disabled', true)
 })
+
+/** A16: the stage shows the whole picture whatever its stored framing; the gallery keeps the framing. */
+test('the part page shows its first picture whole, even one framed to fill a card', async () => {
+  stub(PART, [
+    {
+      id: '01a07c10-0000-7000-8000-000000000001',
+      src: 'data:image/webp;base64,UklGRg==',
+      origin: 'url_supplied',
+      sourceUrl: null,
+      fit: 'cover',
+      focusX: 0.2,
+      focusY: 0.8,
+    },
+  ])
+  renderPage()
+
+  const hero = await screen.findByAltText(strings.parts.pictureAlt(PART.name))
+  expect(hero.style.objectFit).toBe('contain')
+  const thumb = await screen.findByAltText(strings.images.alt(PART.name, 0))
+  expect(thumb.style.objectFit).toBe('cover')
+})
