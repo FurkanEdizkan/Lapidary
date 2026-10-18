@@ -238,6 +238,22 @@
   }
 }
 
+/*
+  A place in the header keeps the width of its own semibold label at every weight, so marking the current one does not
+  shift the search field beside the places by a pixel or two between pages (A25). The copy is hidden, so nothing reads it.
+*/
+.place-label {
+  flex-direction: column;
+  justify-content: center;
+}
+.place-label::after {
+  content: attr(data-label);
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 600;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

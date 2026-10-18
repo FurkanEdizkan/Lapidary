@@ -175,7 +175,7 @@ function FieldRow({
             checked={field.indexed}
             disabled={busy}
             onChange={(event) => offer.mutate(event.target.checked)}
-            className="accent-[var(--color-accent)]"
+            className="accent-[var(--color-dim)]"
           />
           {strings.fields.offered}
         </label>
@@ -287,7 +287,7 @@ function NewField({
           type="checkbox"
           checked={indexed}
           onChange={(event) => setIndexed(event.target.checked)}
-          className="accent-[var(--color-accent)]"
+          className="accent-[var(--color-dim)]"
         />
         {strings.fields.offered}
       </label>

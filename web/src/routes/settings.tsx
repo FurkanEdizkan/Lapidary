@@ -189,7 +189,7 @@ function ImportSettingsSection() {
           checked={current.data?.fetchDetails ?? false}
           disabled={current.isPending || save.isPending}
           onChange={(event) => save.mutate(event.target.checked)}
-          className="mt-0.5 size-4 accent-[var(--color-accent)]"
+          className="mt-0.5 size-4 accent-[var(--color-dim)]"
         />
         <span className="flex flex-col gap-1">
           {strings.settings.fetchDetails}

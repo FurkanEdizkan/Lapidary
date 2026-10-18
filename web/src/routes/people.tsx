@@ -219,7 +219,7 @@ function AddPerson({ onNote }: { onNote: (note: string) => void }) {
           <input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className={INPUT} />
         </Field>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} className="size-4 accent-[var(--color-accent)]" />
+          <input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} className="size-4 accent-[var(--color-dim)]" />
           {strings.people.makeAdmin}
         </label>
         {add.isError ? (

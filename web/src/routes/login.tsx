@@ -44,6 +44,8 @@ export function LoginPage() {
           <input
             type="text"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             required
             value={username}
             onChange={(event) => setUsername(event.target.value)}

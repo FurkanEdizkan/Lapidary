@@ -100,9 +100,9 @@ const FOOTER: Record<Layout, string> = {
  * Whole strings, for the reason `CARD_SHAPE`'s are.
  */
 const FLIP_LEFT =
-  'ease-mechanical absolute top-1/2 left-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
+  'ease-mechanical absolute top-1/2 left-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
 const FLIP_RIGHT =
-  'ease-mechanical absolute top-1/2 right-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
+  'ease-mechanical absolute top-1/2 right-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(18,18,20,0.8)] text-[var(--color-bright)] opacity-0 duration-[var(--duration-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--color-raised)] [@media(hover:none)]:opacity-100'
 
 /**
  * A stored framing as the two CSS properties that apply it (`0019_image_framing.sql`).
@@ -145,6 +145,8 @@ export function Card({
   // in the attribute, because a literal inside a user-visible attribute reads to the
   // bare-strings gate as copy.
   const clampedName = layout === 'list' ? undefined : part.name
+  // Chrome breaks at a word-break opportunity even under `nowrap`, so the gallery's one line gets the bare name.
+  const shownName = layout === 'gallery' ? part.name : breakable(part.name)
   /*
     **The part's own picture, or the honest placeholder — nothing in between.** R1 turned the card
     from a render into a picture and kept the render behind it; R3 stopped rendering, so the
@@ -241,7 +243,7 @@ export function Card({
           aria-label={strings.selection.selectPart(part.name)}
           onChange={() => undefined}
           onClick={(event) => onToggle(part.id, event.shiftKey)}
-          className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-accent)]"
+          className="absolute top-2 left-2 z-10 size-6 accent-[var(--color-dim)]"
         />
       ) : null}
       <div ref={well} className={src === null ? BARE_WELL[layout] : WELL[layout]}>
@@ -328,7 +330,7 @@ export function Card({
               }}
               className="ease-mechanical duration-[var(--duration-fast)] hover:underline"
             >
-              {breakable(part.name)}
+              {shownName}
             </Link>
           </h2>
         </div>

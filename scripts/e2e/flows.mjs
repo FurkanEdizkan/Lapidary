@@ -59,7 +59,7 @@ const S = {
   cardCheckbox: 'article[aria-labelledby^="part-name-"] input[type="checkbox"]',
   search: 'input[type="search"][aria-label="Search this library"]',
   // The count line beside the scope heading. No role and no id, so it is scoped to #parts.
-  countLine: '#parts p.tabular',
+  countLine: '#parts p[data-count]',
   formatFacet: 'section[aria-labelledby="format-facet"]',
   folderTree: 'nav[aria-label="Categories"]',
   folderCurrent: 'nav[aria-label="Categories"] button[aria-current="true"]',
