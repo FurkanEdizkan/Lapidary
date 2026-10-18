@@ -4,7 +4,7 @@ import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react'
 import { BrandMark } from '../components/AppFrame'
 import { Doorway, Field, INPUT } from '../components/Doorway'
 import { Icon } from '../components/Icon'
-import { HEADLINE, LEAD, SECTION_TITLE, STANDING } from '../components/Page'
+import { FACT, HEADLINE, HINT, LEAD, SECTION_TITLE, STANDING } from '../components/Page'
 import { LOGIN_PATH, Refused, fetchSetupStatus, runSetup } from '../lib/session'
 import { chooseModelsFolder, fetchModelsFolder, followPort, followRestart, movePort } from '../lib/api'
 import { FolderPicker } from '../components/FolderPicker'
@@ -26,8 +26,14 @@ const MIN_PASSWORD = 8
 /** The refusal that is about the setup code itself, shown under that field. */
 const WRONG_CODE = 'wrong_code'
 
+/** Back and Skip: quiet, and bounded by Edge like every control a person can press (The Operable Edge Rule). */
 const QUIET =
-  'ease-mechanical rounded-[var(--radius-ctl)] px-3 py-2 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
+  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-2 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
+
+/** A folder nobody changes on this step, as Settings sets it: a fact on the well, or a sentence when it is unknown. */
+function Fact({ path, unknown }: { path: string | null | undefined; unknown: string }) {
+  return path == null ? <p className="text-sm text-[var(--color-text)]">{unknown}</p> : <p className={FACT}>{path}</p>
+}
 
 /**
  * Lazy, so anime.js and the drawing load with the doorway and never with the grid (A19). A function as well, so the
@@ -158,7 +164,7 @@ export function SetupPage() {
                 setSkipped(true)
                 setPhase('end')
               }}
-              className={`${QUIET} absolute right-4 bottom-4 border border-[var(--color-edge)] lg:right-8 lg:bottom-8`}
+              className={`${QUIET} absolute right-4 bottom-4 lg:right-8 lg:bottom-8`}
             >
               {strings.setup.skip}
             </button>
@@ -235,7 +241,7 @@ function Stepper({ step }: { step: number }) {
             className={`relative flex items-center gap-2 py-1.5 pl-5 text-[13px] font-semibold ${tone}`}
           >
             {n === step ? (
-              <Indicator id="setup-rail" className="absolute inset-y-0 left-[-0.5px] w-[2px] bg-[var(--color-edge)]" />
+              <Indicator id="setup-rail" className="absolute inset-y-0 left-[-0.5px] w-[2px] bg-[var(--color-bright)]" />
             ) : null}
             {name}
             {n < step ? (
@@ -369,7 +375,7 @@ function Wizard({
           {strings.setup.step(step, STEPS, strings.setup.steps[step - 1] ?? '')}
         </p>
         <div className="mt-2 h-px bg-[var(--color-border)]">
-          <div className="h-px bg-[var(--color-edge)]" style={{ width: `${(step / STEPS) * 100}%` }} />
+          <div className="h-px bg-[var(--color-bright)]" style={{ width: `${(step / STEPS) * 100}%` }} />
         </div>
       </div>
 
@@ -400,6 +406,8 @@ function Wizard({
                 <input
                   type="text"
                   autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   maxLength={40}
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
@@ -451,10 +459,8 @@ function Wizard({
               </Field>
               <div className="flex flex-col gap-1.5">
                 <p className="text-xs text-[var(--color-muted)]">{strings.setup.modelsFolder}</p>
-                <p className="font-mono text-[13px] break-all">
-                  {chosen ?? folder.data?.path ?? status.hostIngestRoot ?? strings.settings.modelsFolderUnknown}
-                </p>
-                <p className="text-xs text-[var(--color-dim)]">
+                <Fact path={chosen ?? folder.data?.path ?? status.hostIngestRoot} unknown={strings.settings.modelsFolderUnknown} />
+                <p className={HINT}>
                   {folder.data?.lockedBy
                     ? strings.settings.modelsFolderLocked(folder.data.lockedBy)
                     : folder.data && !folder.data.canChoose
@@ -484,10 +490,8 @@ function Wizard({
               </div>
               <div className="flex flex-col gap-1.5">
                 <p className="text-xs text-[var(--color-muted)]">{strings.settings.store}</p>
-                <p className="font-mono text-[13px] break-all">
-                  {store ?? folder.data?.store ?? status.hostStorageRoot ?? strings.settings.storeUnknown}
-                </p>
-                <p className="text-xs text-[var(--color-dim)]">
+                <Fact path={store ?? folder.data?.store ?? status.hostStorageRoot} unknown={strings.settings.storeUnknown} />
+                <p className={HINT}>
                   {folder.data?.storeLockedBy
                     ? strings.settings.modelsFolderLocked(folder.data.storeLockedBy)
                     : strings.setup.storeHint}
@@ -517,16 +521,16 @@ function Wizard({
                   checked={importLinks}
                   disabled={status.importLinksForcedOff}
                   onChange={(event) => setImportLinks(event.target.checked)}
-                  className="mt-0.5 size-4 accent-[var(--color-accent)]"
+                  className="mt-0.5 size-4 accent-[var(--color-dim)]"
                 />
                 <span className="flex flex-col gap-1">
                   {strings.setup.importLinks}
-                  <span className="text-xs text-[var(--color-dim)]">
+                  <span className={HINT}>
                     {status.importLinksForcedOff ? strings.setup.importLinksForcedOff : strings.setup.importLinksHint}
                   </span>
                 </span>
               </label>
-              <p className="text-xs text-[var(--color-dim)]">{strings.setup.keysLater}</p>
+              <p className={HINT}>{strings.setup.keysLater}</p>
             </section>
           )}
 

@@ -135,7 +135,7 @@ export function ImportDialog({
                   checked={picked.includes(entry.path)}
                   onChange={() => toggle(entry.path)}
                   aria-label={strings.addModels.select(entry.name)}
-                  className="size-4 accent-[var(--color-accent)]"
+                  className="size-4 accent-[var(--color-dim)]"
                 />
                 {entry.isFolder ? (
                   <button
@@ -208,7 +208,7 @@ export function ImportDialog({
           checked={fetching}
           disabled={pageUrl.trim() === ''}
           onChange={(event) => setFetchDetails(event.target.checked)}
-          className="size-4 accent-[var(--color-accent)]"
+          className="size-4 accent-[var(--color-dim)]"
         />
         {strings.addModels.fetchDetails}
       </label>

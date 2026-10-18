@@ -53,7 +53,7 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
           type="checkbox"
           checked={isEveryone}
           onChange={(event) => setEveryone(event.target.checked)}
-          className="size-4 accent-[var(--color-accent)]"
+          className="size-4 accent-[var(--color-dim)]"
         />
         {strings.sharing.everyone}
       </label>
@@ -75,7 +75,7 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
                       checked={isEveryone || picked.includes(person.id)}
                       disabled={isEveryone}
                       onChange={() => toggle(person.id)}
-                      className="size-4 accent-[var(--color-accent)]"
+                      className="size-4 accent-[var(--color-dim)]"
                     />
                     {person.displayName ?? person.username}
                     <span className="tabular text-[11px] text-[var(--color-muted)]">{person.username}</span>

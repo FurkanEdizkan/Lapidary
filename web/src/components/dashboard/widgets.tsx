@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { strings } from '../../lib/strings'
 import { breakable, pictureStyle } from '../Card'
+import Lattice from '../Lattice'
 import { StorageTotals } from '../Storage'
 import type {
   FacetKind,
@@ -70,9 +71,15 @@ export function PartsBody({ parts }: { parts: readonly PartCard[] }) {
     <ul role="list" className="flex flex-col">
       {parts.map((part) => (
         <li key={part.id} className="flex items-center gap-3 border-b border-[var(--color-border)] py-2 last:border-b-0">
-          <span className="grid size-14 flex-none place-items-center overflow-hidden rounded-[3px] bg-[var(--color-raised)] p-[2px]">
-            {/* The part's own picture, or nothing: there is no render behind it since R3. */}
-            {part.image === null ? null : (
+          <span
+            className={`grid size-14 flex-none place-items-center overflow-hidden rounded-[var(--radius-sm)] ${
+              part.image === null ? 'stage-lamp' : 'bg-[var(--color-raised)] p-[2px]'
+            }`}
+          >
+            {/* The part's own picture, or the still lattice a card shows: never a blank that reads as a failed load. */}
+            {part.image === null ? (
+              <Lattice still className="size-[88%]" />
+            ) : (
               <img
                 src={part.image.src}
                 alt=""

@@ -1236,7 +1236,9 @@ cmd_drive() {
   # `seed` is why that is written down).
   {
     echo "== $(date -Is) drive $PROJECT at $(git -C "$ROOT" rev-parse --short HEAD)"
-    LAPIDARY_E2E_COOKIE=$(rig_cookie) node "$ROOT/scripts/e2e/flows.mjs" \
+    # The account itself as well, for the doorway flow, which signs in through the form (A25).
+    LAPIDARY_E2E_COOKIE=$(rig_cookie) LAPIDARY_E2E_USER=$RIG_USER LAPIDARY_E2E_PASSWORD=$RIG_PASSWORD \
+      node "$ROOT/scripts/e2e/flows.mjs" \
       --out "$run" --web "$WEB" --api "$API" --seed "$WORK/seed.json" ${only:+--only "$only"}
     echo "flows exit $?"
     # **Skipped under `--only`, for the reason `flows.mjs` skips its own extra sessions**: `--only` means

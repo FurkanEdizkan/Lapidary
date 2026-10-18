@@ -81,8 +81,8 @@ const HOME =
 // Text weight and the marker carry the current place; the Bench Grey tray they replace is gone (A17).
 const PLACE =
   'ease-mechanical flex h-full items-center px-3 text-xs duration-[var(--duration-fast)]'
-const HERE = `${PLACE} font-semibold text-[var(--color-bright)]`
-const THERE = `${PLACE} text-[var(--color-muted)] hover:text-[var(--color-text)]`
+const HERE = `${PLACE} place-label font-semibold text-[var(--color-bright)]`
+const THERE = `${PLACE} place-label text-[var(--color-muted)] hover:text-[var(--color-text)]`
 // Stacked in the drawer, which has no marker of its own: a second element holding the marker's id would fight the
 // header's for it. A 2px Quicklime rule at the row's start says the same thing, still.
 const ROW = 'ease-mechanical flex min-h-9 items-center border-l-2 px-3 text-sm duration-[var(--duration-fast)]'
@@ -129,7 +129,7 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
   ) => (
     <div className={stacked ? 'flex' : 'relative flex h-full'}>
       {current === name ? (
-        <span aria-current="page" className={here}>
+        <span aria-current="page" data-label={label} className={here}>
           {label}
         </span>
       ) : (
@@ -145,7 +145,7 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
     >
       {place(PARTS, strings.frame.parts, (className) => (
         // Exact: the router marks a matching link `aria-current` itself, and `/` prefixes every path.
-        <Link to="/" search={search} activeOptions={{ exact: true }} className={className}>
+        <Link to="/" search={search} activeOptions={{ exact: true }} data-label={strings.frame.parts} className={className}>
           {strings.frame.parts}
         </Link>
       ))}
@@ -156,13 +156,13 @@ function Places({ current, library, stacked = false }: { current?: Place; librar
         is the library the Add form offers first.
       */}
       {place(DASHBOARD, strings.dashboard.title, (className) => (
-        <Link to="/dashboard" search={search} className={className}>
+        <Link to="/dashboard" search={search} data-label={strings.dashboard.title} className={className}>
           {strings.dashboard.title}
         </Link>
       ))}
       {/* What other people shared with you (A4): theirs to change, yours to look at and download. */}
       {place(SHARED, strings.sharing.place, (className) => (
-        <Link to={SHARED_PATH} className={className}>
+        <Link to={SHARED_PATH} data-label={strings.sharing.place} className={className}>
           {strings.sharing.place}
         </Link>
       ))}

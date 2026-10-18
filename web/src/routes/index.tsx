@@ -70,7 +70,7 @@ import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
-import { QUIET, SCOPE } from '../components/Page'
+import { HINT, LEAD, QUIET, SCOPE, STANDING } from '../components/Page'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import { ImportLinkDialog } from '../components/ImportLink'
 import { ImportDialog } from '../components/ImportDialog'
@@ -953,7 +953,8 @@ export function Index({
                 {heading ?? selectedFolderName ?? strings.folders.root}
               </h2>
               {parts.isSuccess && loaded.length > 0 ? (
-                <p className="tabular text-[10.5px] text-[var(--color-muted)]">
+                // A sentence, so Archivo (The Copyable Mono Rule); tabular digits so a growing count does not shift it.
+                <p data-count="" className="text-xs text-[var(--color-muted)] tabular-nums">
                   {parts.hasNextPage
                     ? strings.parts.showingSoFar(loaded.length)
                     : strings.parts.showingAll(loaded.length)}
@@ -1239,7 +1240,7 @@ function EmptyLibrary({
         <h2 className={SCOPE}>
           {filtered ? strings.emptyLibrary.categoryTitle : strings.search.noMatchesTitle}
         </h2>
-        <p className="mt-2 text-[var(--color-muted)]">
+        <p className={LEAD}>
           {filtered
             ? strings.search.noMatchesInCategory(
                 query,
@@ -1247,7 +1248,7 @@ function EmptyLibrary({
               )
             : strings.search.noMatches(query)}
         </p>
-        <p className="mt-2 text-xs text-[var(--color-muted)]">{strings.search.scope}</p>
+        <p className={`mt-2 ${HINT}`}>{strings.search.scope}</p>
         {/*
           Both cases get a way out. The narrowed one widens; the unnarrowed one clears —
           which used to be nothing at all, a dead end on the one screen this product's
@@ -1256,7 +1257,7 @@ function EmptyLibrary({
         <button
           type="button"
           onClick={filtered ? onWiden : onClearSearch}
-          className="ease-mechanical mt-3 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
+          className={`${STANDING} mt-4 w-fit`}
         >
           {filtered ? strings.search.widen : strings.search.clear}
         </button>
@@ -1267,7 +1268,7 @@ function EmptyLibrary({
   return (
     <div className="max-w-prose">
       <h2 className={SCOPE}>{strings.emptyLibrary.categoryTitle}</h2>
-      <p className="mt-2 text-[var(--color-muted)]">{strings.emptyLibrary.categoryBody(categoryName)}</p>
+      <p className={LEAD}>{strings.emptyLibrary.categoryBody(categoryName)}</p>
     </div>
   )
 }

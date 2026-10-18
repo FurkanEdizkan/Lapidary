@@ -1657,7 +1657,7 @@ export const strings = {
     reframeFailed: 'Could not change the framing. Try again.',
     /** What clicking the picture does, for a screen reader that cannot see the crop. */
     /** Beside the framing control under the filmstrip (A23): it frames the picture's crop on a card, not the stage. */
-    framing: 'On a card',
+    framing: 'Card framing',
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,
   },

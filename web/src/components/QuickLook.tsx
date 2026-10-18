@@ -177,7 +177,7 @@ export function QuickLook({
                 type="button"
                 onClick={onMove}
                 aria-label={strings.folders.moveToFor(part.name)}
-                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
+                className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
               >
                 {strings.folders.moveTo}
               </button>

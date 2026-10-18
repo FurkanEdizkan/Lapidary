@@ -1074,12 +1074,12 @@ export function Detail({
           <a
             href={downloadUrl(part.revision)}
             download
-            className={page ? standing : control}
+            className={standing}
           >
             {strings.download.original}
           </a>
         )}
-        {/* Quiet beside Download, the page's one standing control (DESIGN.md § Buttons). */}
+        {/* Quiet beside Download, the one standing control here and in the quick look (DESIGN.md § Buttons). */}
         {part.sourceHash === null ? null : (
           <CopyLink key={part.id} part={part.id} name={part.name} className={control} />
         )}
@@ -1150,6 +1150,11 @@ export function Detail({
     </>
   )
   // A pack (A13) has no figures: what is inside it takes Geometry's place.
+  // Whether any figure here was read off the mesh. The triangle count is marked exactly when they are, so its ≈ always
+  // has the key beside it, and a part from before the pivot whose figures are all analytic shows neither.
+  const meshFigures = [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2, part.massG].some(
+    (figure) => figure?.approximate === true,
+  )
   const geometry =
     // Present, not merely non-null: a server from before A13 sends no `pack` at all.
     part.pack ? (
@@ -1162,9 +1167,7 @@ export function Detail({
           // `massG` among them: a STEP part's volume is analytic and carries no mark, so a page
           // showing an analytic volume and an approximate mass would print the ≈ with nothing to
           // explain it. A mass is always approximate — see `strings.detail.massSource`.
-          [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2, part.massG].some(
-            (figure) => figure?.approximate === true,
-          ) ? (
+          meshFigures ? (
             <>
               <span aria-hidden="true" className="mr-1">
                 {strings.detail.approximate}
@@ -1175,9 +1178,17 @@ export function Detail({
         }
       >
         <Row label={strings.detail.triangles} figure>
-          {part.triangleCount === null
-            ? strings.detail.unknown
-            : strings.detail.trianglesValue(part.triangleCount)}
+          {/*
+            Read from the mesh, so it carries the mark its neighbours do, as on a card (`meshFigures`).
+          */}
+          {part.triangleCount === null ? (
+            strings.detail.unknown
+          ) : (
+            <Figure
+              figure={{ value: part.triangleCount, approximate: meshFigures }}
+              render={strings.detail.trianglesValue}
+            />
+          )}
         </Row>
         <Row label={strings.detail.boundingBox} figure>
           {part.bboxMm === null ? (
@@ -1189,7 +1200,8 @@ export function Detail({
             />
           )}
         </Row>
-        <Row label={strings.detail.volume} figure>
+        {/* A sentence in place of a figure stays in Archivo (The Copyable Mono Rule). */}
+        <Row label={strings.detail.volume} figure={part.volumeMm3 !== null}>
           {/*
             An open mesh has no volume, and the reason is worth a sentence rather than a
             blank a reader would take for zero. `isWatertight === false` is the reason;
@@ -1213,7 +1225,7 @@ export function Detail({
             <Figure figure={part.surfaceAreaMm2} render={strings.detail.surfaceAreaValue} />
           )}
         </Row>
-        <Row label={strings.detail.mass} figure>
+        <Row label={strings.detail.mass} figure={Boolean(part.massG)}>
           {/*
             Volume times the density set for the part's one material. Where there is none, which of
             the four reasons it is gets said: a blank here reads as "weighs nothing", and the reader
@@ -1747,7 +1759,7 @@ function Filmstrip({
           {strings.images.galleryFailed}
         </p>
       ) : null}
-      <ul role="list" title={ordering ? strings.images.orderHint : undefined} className="flex list-none flex-wrap items-start gap-2">
+      <ul role="list" title={ordering ? strings.images.orderHint : undefined} className="-m-1 flex list-none items-start gap-2 overflow-x-auto overscroll-x-contain p-1">
         {shown.map((image, index) => {
           const label = strings.images.alt(name, index)
           const chosen = index === at
@@ -1774,7 +1786,7 @@ function Filmstrip({
                 // Let go outside the strip: the order goes back to the stored one.
                 if (event.dataTransfer.dropEffect === 'none') setDraft(null)
               }}
-              className={`flex w-16 flex-col ${dragged === image.id ? 'opacity-50' : ''}`}
+              className={`flex w-16 flex-none flex-col ${dragged === image.id ? 'opacity-50' : ''}`}
             >
               {/*
                 The tile's name is the picture's, so the image inside is decoration to a reader: the one
@@ -1808,7 +1820,7 @@ function Filmstrip({
                     aria-label={strings.images.moveEarlier(label)}
                     disabled={index === 0 || reorder.isPending}
                     onClick={() => reorder.mutate(moved(shown, image.id, index - 1))}
-                    className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-30"
+                    className="rounded-[var(--radius-sm)] p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
                   >
                     <Icon name="caretLeft" size={12} />
                   </button>
@@ -1817,7 +1829,7 @@ function Filmstrip({
                     aria-label={strings.images.moveLater(label)}
                     disabled={index === shown.length - 1 || reorder.isPending}
                     onClick={() => reorder.mutate(moved(shown, image.id, index + 1))}
-                    className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-30"
+                    className="rounded-[var(--radius-sm)] p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
                   >
                     <Icon name="caretRight" size={12} />
                   </button>
@@ -1830,7 +1842,7 @@ function Filmstrip({
           )
         })}
         {!editable ? null : (
-          <li className="flex h-16 flex-col justify-center gap-1.5">
+          <li className="flex h-16 flex-none flex-col justify-center gap-1.5">
             {/*
               Hidden, and driven by the button beside it: a bare file input is unstyleable across
               browsers and announces itself as "Choose file", which is not what this does.

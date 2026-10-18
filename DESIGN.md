@@ -34,7 +34,13 @@
      `web/src/styles.css` is still the live copy of every token. Two motion tokens named
      here, `--duration-scene` and `--duration-intro`, are added by A18; until A18 merges
      they exist only in this file. Where this file describes a component a later goal
-     (A19–A24) builds, it says so. -->
+     (A19–A24) builds, it says so.
+
+     2026-10-18, A25: the redesign's finish pass. Every route was shot at 1440 and 390 with
+     reduced motion on and off, and this file now says what A18–A24 shipped where it had
+     drifted: the route enter inside AppFrame, the still Lattice for a missing picture, the
+     format chip, Card framing, FACT and HINT, the Quicklime stepper marker, the grey checkbox,
+     and the words-that-act tier of quiet controls. -->
 ---
 name: Lapidary
 description: A visual index for 3D part libraries, where the part is lit and the bench is not.
@@ -269,7 +275,9 @@ good, **Verdigris** (`#8fd7d0`) an informational note, **Oxide** (`#e88a8a`) a f
 **The Marking Dye Rule.** Layout Blue appears only where something is happening — dragging,
 focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout
 Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable
-without a legend.
+without a legend. A native checkbox takes Ash as its `accent-color` (A25): a box that is checked
+by default is at rest, and setup's ticked "Import models from … links" was a solid blue square
+in a screenshot nobody had touched.
 
 **The Marked Part Rule** is retired with measuring (2026-10-03). Nothing draws on a part any
 more, so the image well has no exemption.
@@ -302,7 +310,8 @@ copy and paste somewhere that will accept it. `.tabular` applies both the face a
   of an empty or no-result grid state.
 - **Title** (600, 13–14px, 1.375): card names, clamped to two lines and broken at `-`, `_`
   and `.` rather than mid-word, in the detail layout; the gallery overlay truncates to one
-  line, because a two-line name there covers the part.
+  line, because a two-line name there covers the part. The gallery's name carries no `<wbr>`:
+  Chrome breaks at one even under `nowrap`, which is how it wrapped there until A25.
 - **Body** (400, 0.875rem, 1.5): prose, leads, helper text, refusals. Capped at 70ch.
 - **Label** (500, 0.75rem, 0.05em, uppercase, Graphite): a page section's label over its
   scribe line, rail headings, metadata keys.
@@ -324,7 +333,8 @@ against another value — a path, a hash, a part number, a dimension — is set 
 and is selectable. Mono is a promise that the string is exact and complete, never elided in
 the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo,
 and so does a value cell that holds a sentence ("Not available — give the part its material…"),
-even in a column of mono values.
+even in a column of mono values. The grid's count line ("50 parts so far.") is a sentence too, so it
+is Archivo with tabular digits, which keeps a growing count from shifting the words after it.
 
 **The Self-Hosted Font Rule.** Lapidary ships into air-gapped deployments. Archivo (400–700)
 and JetBrains Mono (400–600) are self-hosted from `web/public/fonts/` as variable fonts, two
@@ -357,7 +367,9 @@ header. At `lg` they are a 55/45 grid; below it, one column. See Doorway.
 **Page anatomy** (`web/src/components/Page.ts`), shared by every page past the grid: one
 Headline, a lead no wider than 70ch in Ash, then sections that open on a Label over a
 Scribe Line (40px above, 16px below) rather than living in bordered boxes, and one standing
-control. Boxes are for things that float or that you pick up.
+control. Boxes are for things that float or that you pick up. `Page.ts` also holds `FACT` (a value
+nobody can change here) and `HINT` (12px Graphite at 60ch, under a field or a fact), and the grid's
+empty and no-result states use the same `LEAD`, `HINT` and `QUIET` rather than sizes of their own.
 
 Spacing runs 4 / 8 / 12 / 16 / 24 / 32. Inside a card footer, 12px; inside a dialog or menu,
 12–16px; between the part page's zones, 24–32px. Prose is capped at 70ch everywhere, dialogs included.
@@ -427,8 +439,9 @@ only made them a third smaller. A **stage** is the opposite: it shows the whole 
 `contain`, on the lamp (A16), because the stage is where you look at the part, and a crop there
 hides the thing you came to see. The tile crops; the stage never does.
 
-A part with no picture has a Bench Grey well and its format, quietly. It never shows a blank
-that looks like a picture failed to load.
+A part with no picture has the still Lattice on the lamp's pool, and its format in the footer's
+chip (see Lattice). It never shows a blank that looks like a picture failed to load — the
+dashboard's recently-added widget showed one until A25, and now shows the still Lattice too.
 
 **The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
 Edge, not Scribe Line. A divider gets the hairline.
@@ -523,8 +536,13 @@ generalised by A18) fails the build if either is imported anywhere else, and ban
 
 **The motion in the app**, after the redesign (A18–A24):
 
-- **Routes.** `__root.tsx` wraps `<Outlet>` in `<Rise key={pathname}>`: enter only, 180 ms, 8px.
-  No exit, so two pages never share the DOM and a route change never waits.
+- **Routes.** `AppFrame` wraps the page's content, under its header, in `<Rise key={pathname}>`
+  keyed on the router's resolved pathname: enter only, 180 ms, 8px. No exit, so two pages never
+  share the DOM and a route change never waits. Not around `<Outlet>` in `__root.tsx`, where REDESIGN
+  first put it (A21): every page renders its own header, so a rise there faded the whole header in on
+  each navigation, hid the places marker's move, and for 180 ms made the drawer, its scrim and the
+  skip link fixed to a transformed wrapper. Settled, the wrapper has no transform. The doorway pages
+  and the crash page have no enter.
 - **The places marker.** The current place in Parts, Dashboard and Shared with me is underlined by
   one shared `layoutId` marker that moves between them, 180 ms, no bounce.
 - **Menus** scale from 0.98 and fade in over 120 ms, from their anchor (`transform-origin` at the
@@ -584,11 +602,15 @@ else to show.
   stays still. **It never loops**, never drifts, never redraws on hover or on focus.
 - **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
   grey, no blue — and never moves.
-- **Drawing only at the front door.** Sign-in and setup draw it, as a lazy import.
+- **Drawing only at the front door.** Sign-in and setup draw it, as a lazy import. Under `lg` the band
+  is shorter than the drawing, which is cropped by it on purpose (A19), so setup's intro lands into a
+  crop as well.
 - **Still, it stands in for a missing picture** (A17's audit, taken by the lead): on a card and on
   the part page's stage, `<Lattice still />` is the settled final frame — one shared path tree, no
   `drawIn`, no blue — over the lamp, with the format. Most parts have no picture, and forty
-  identical "STL" squares said nothing. It never moves there.
+  identical "STL" squares said nothing. It never moves there. The list row, the quick look and the
+  dashboard's recently-added widget use the same still frame. It loads with the grid's chunk (which
+  already carries anime for `arrive()`), never with the entry.
 
 ### Stepper
 
@@ -597,15 +619,18 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
 - **On the left**, under the Lattice: a vertical list of the steps — Account, Server, Options —
   each a 13px Title with the current one in Quicklime and `aria-current="step"`, the done ones in
   Ash with a 12px check glyph, the ones ahead in Graphite. Beside it a 1px Scribe Line rail, with
-  a 2px Edge marker over the current step's length that moves by `layoutId` (the layout spring).
-  The marker is grey: progress is not live interaction, so it is not blue.
+  a 2px Quicklime marker over the current step's length that moves by `layoutId` (the layout spring).
+  Quicklime, as every current-place marker in the product is (the places, the filmstrip): progress
+  is not live interaction, so it is not blue, and the Edge it first had was 2.81:1 on the lamp (A25).
 - **On the right**, the step's content, in `AnimatePresence mode="wait"`: the old step leaves to
   the left over 120 ms, the new one arrives from the right over 180 ms, 8px each way; **Back**
   reverses both. Under reduced motion it swaps.
 - **One `<form>`**, and nothing is saved until **Finish**. Back keeps what was typed. A refused
   setup code goes back to the step that holds that field, with the message under the field.
 - **Below `lg`**, the stepper is a single line above the step: "Step 2 of 3 · Server", the rail
-  as a horizontal hairline under it.
+  as a horizontal hairline under it, its done part in Quicklime.
+- **Server's folders are facts** (`FACT`), as in Settings, and every hint is `HINT`. Back and Skip
+  are quiet and bounded by Edge.
 - **The intro into setup** (once per page load, inside `--duration-intro`): the diamond and the
   Lattice draw in at the centre over `--duration-scene`; then the Lattice slides into the left
   column (`layoutId`) while the wizard rises 8px and fades in. A key, a click or **Skip** ends it.
@@ -619,7 +644,7 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
   in the page anatomy (`Page.ts`), 6px/12px beside the part page's ⋯ menu (where Copy link is
   quiet: Download is the part page's one standing control). The one action a
   region is about — Download on the part page, Upload in the header (12px, icon plus label, the
-  label hidden under `sm`), Sign in, Finish. One per region: when two controls in a row both
+  label hidden under `sm`), Sign in, Finish; Download stands in the quick look as well. One per region: when two controls in a row both
   stand, neither does. Never blue at rest; it is brighter and heavier than the quiet controls
   beside it, and that is enough. A label never wraps: shorten it or give it the row.
 - **Quiet:** transparent, 1px Edge, 7px radius, Graphite label at 12px, 24px tall (32px beside a
@@ -627,6 +652,10 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
   takes a Layout Blue edge and a Quicklime label.
 - **Hover / Focus:** label lifts Graphite → Chalk, and a standing control rises 1px, over 120 ms.
   Focus is one ring for the whole app: 2px Layout Blue, offset 2px, on `:focus-visible`.
+- **Words that act:** in a row of several actions about one thing — a person's New password and
+  Remove, Import's Remove beside each folder, the folder picker's path — the action is a Graphite
+  word, underlined under the pointer, with no Edge. The row is the boundary; a box round each word
+  would draw a table of buttons. This is the only control without an Edge, and only in such a row.
 - **Disabled:** 50% opacity, no lift, and visibly different from a resting quiet button.
 - **Overlay control** (the stage's View, A23): Machined Slate plate, 1px Edge, 7px radius, Chalk
   label, set on the stage's foot, never directly on the lamp (Edge does not clear 3:1 there).
@@ -644,8 +673,14 @@ above everything at z 50.
   account button; the part page keeps Parts marked.
 - **Once the page scrolls**, the header gains its Scribe Line (opaque, never blurred). At the top
   it sits flush on the ground.
-- **One standing control on the right**: Upload. Library and Import are quiet. Two controls with
-  one intent side by side read as a choice nobody can make.
+- **One standing control on the right**: Upload, on the grid. Library and Import are quiet. Two
+  controls with one intent side by side read as a choice nobody can make. Pages past the grid carry
+  their own: the dashboard's Add a widget, once the board has a widget (an empty board holds its
+  own, so the name is never on screen twice). Settings, People, Profile, Tags, Shared with me and the
+  part page have none in the header.
+- **The places keep their width.** The current place is semibold and the others regular, so each
+  label reserves its semibold width (`.place-label`); without it the search field beside them moved
+  by a pixel or two from page to page.
 - **Under `md`** it is one row: menu, mark, search (an icon that expands to the row), Upload as
   its icon alone, account. The places, the library switch and Import move into the drawer. Three header rows — 140px of a
   844px phone, measured in the audit — is the page before the parts.
@@ -672,8 +707,9 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   control that opened it.
 - **Focus is unchanged by the redesign.** The audit saw the close button's Layout Blue ring in the
   Import dialog's first frame, but that dialog was opened by a scripted click, which Chrome's
-  `:focus-visible` treats as no pointer at all. A22 checks with a real pointer click; if the ring
-  still shows, moving first focus is the owner's call (REDESIGN says focus handling stays).
+  `:focus-visible` treats as no pointer at all. Opened by a real pointer (A22, and A25 again for
+  Import, Share, the folder picker and Add a widget at 1440 and 390), focus lands on the close button
+  with no ring; opened from the keyboard, the ring shows, as it should.
 - **The title is Scope** (15px/600, Quicklime), the lead Ash and no wider than 70ch.
 - **One standing control**, at the foot, right-aligned: the dialog's verb, standing only once it
   can act ("Add 3 selected", not "Add 0 selected").
@@ -696,9 +732,11 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   line at 11px in Graphite: the format chip, part number in Ash, the triangle count, and the
   approximate mark with its dotted Edge underline whose title explains it. Present at rest,
   always; nothing about a part hides behind hover.
-- **No picture:** the tile is Bench Grey with the format in it, quietly. Forty identical dark
-  squares with a centred word, as the audit found, are the honest state; A21 makes them quieter
-  (the format moves to the footer's chip) rather than decorating them.
+- **No picture:** the tile is the still Lattice on the lamp's pool (A21), and the format is the
+  footer's chip to the eye and an `sr-only` word in the well to a reader, said once. Forty
+  identical "STL" squares, as the audit found, said nothing.
+- **Several pictures:** a "1 of 3" count and two round arrows on the tile, shown under the pointer,
+  on keyboard focus, and always on a device that cannot hover.
 - **Hovering a card loads no mesh** and draws no canvas. `Grid.test.tsx` asserts it.
 - **Skeletons** are the card's own shape in Bench Grey, static, or shimmer once. `arrive()`
   replaces them.
@@ -706,19 +744,22 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
 ### Chips
 
 - **Style:** the active filter is a pill, Machined Slate ground, Chalk label at 12px, 1px Layout
-  Blue edge (it is a live narrowing), 4px/12px padding, a 12px close glyph. A format chip on a
-  card is a 4px-radius Bench Grey label in mono Graphite, with no edge: it is a fact, not a
-  control.
+  Blue edge (it is a live narrowing), 4px/12px padding, a 12px close glyph. A format chip is a
+  4px-radius Bench Grey label in mono Graphite, uppercased in CSS, with no edge: it is a fact, not
+  a control. It leads a card's figures line, and it sits at the stage's foot opposite View, over a
+  picture as well as over the Lattice (A23), so the format is in the same place whatever the stage
+  holds.
 - **State:** a chip that narrows a result set says what it narrowed to and dismisses on click,
   widening the search. It lifts 1px on hover.
 
 ### Inputs / Fields
 
 - **Style:** Bench Grey ground, 1px Edge, 7px radius, Chalk text at 13–14px, Graphite placeholder
-- **Label above, hint below**, the hint at 12px in Graphite, never 11px
+- **Label above, hint below**, the hint at 12px in Graphite, never 11px (`HINT`, 60ch)
 - **Read-only values are not inputs.** A value nobody can change here (the port, the models
-  folder) is mono text on the ground, with no Edge: an Edge border promises you can type. The
-  audit found the Port drawn as an input.
+  folder) is a fact (`FACT`): mono on the Bench Grey well, 7px radius, no Edge, because an Edge
+  border promises you can type. The audit found the Port drawn as an input. A path nobody knows is
+  a sentence in Archivo instead, not a fact.
 - **Focus:** the border goes Layout Blue under the global ring; the caret is Layout Blue
 - **Error:** the message sits below the field in Body, says what is wrong and what to do, and
   is announced — never colour alone
@@ -759,8 +800,12 @@ radius, holding the part.
 - **The filmstrip** sits directly under the stage, not at the foot of the column: a row of
   64px tiles (filled, 7px radius, Scribe Line, Edge under the pointer, the current one with a
   2px Quicklime underline). Choosing one crossfades it onto the stage over 180 ms. A15's move
-  controls and drag stay on the tiles. The add-picture controls are the strip's last tile. When a
-  part has no pictures, the strip is that one tile.
+  controls and drag stay on the tiles, and the first tile says "On the card". The add-picture
+  controls are the strip's last tile. When a part has no pictures, the strip is that one tile. With
+  more tiles than fit, the strip scrolls sideways (`overscroll-x-contain`) rather than wrapping.
+- **Card framing** (A23, owner only): because a click on a tile now chooses it, the focal point and
+  fit a card crops the chosen picture to are set in one row under the strip, labelled "Card
+  framing" (it read "On a card" beside the tile's "On the card" until A25).
 - **The quick look** at 1280 and wider is a non-modal pane beside the grid; narrower it is a
   modal dialog (a bottom sheet under `sm`). It always has a stage, so View sits on it rather than
   alone on a row. A section with nothing in it (PICTURES with no pictures) is not rendered.
@@ -798,7 +843,7 @@ nothing more.
 - **Do** give a page one Headline (600, 1.5rem), a 70ch lead, label-over-rule sections and one
   standing control, from `Page.ts`.
 - **Do** label every mesh-derived figure as approximate wherever it appears, including the stage,
-  dialogs and tooltips.
+  dialogs and tooltips. The triangle count is one: it carries the ≈ on the part page as on a card.
 - **Do** show the whole picture on a stage, and fill the tile on a card.
 - **Do** import anime.js only in `web/src/lib/motion.ts`, and `motion` only in
   `web/src/lib/motion-react.tsx` and `web/src/lib/motion-features.ts`; feature code uses their
