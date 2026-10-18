@@ -209,7 +209,7 @@ marker under the current place.
 - Flat by tonal layering; a shadow only under something that floats over the page
 - A picture fills its card's tile; the card's hairline lifts to Edge under the pointer
 - Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware; authored moments only at the front door
-- One decorative motif, the drawn Lattice, animated only on the pages before you are signed in
+- One decorative motif, the drawn Lattice, and only on the pages before you are signed in
 
 ## Colors
 
@@ -269,9 +269,7 @@ good, **Verdigris** (`#8fd7d0`) an informational note, **Oxide** (`#e88a8a`) a f
 **The Marking Dye Rule.** Layout Blue appears only where something is happening — dragging,
 focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout
 Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable
-without a legend. "At rest" includes the first frame of a dialog: focus that the page moved
-there by itself, before anybody touched a key, must not draw the ring on a control (see
-Dialogs).
+without a legend.
 
 **The Marked Part Rule** is retired with measuring (2026-10-03). Nothing draws on a part any
 more, so the image well has no exemption.
@@ -428,9 +426,8 @@ only made them a third smaller. A **stage** is the opposite: it shows the whole 
 `contain`, on the lamp (A16), because the stage is where you look at the part, and a crop there
 hides the thing you came to see. The tile crops; the stage never does.
 
-A part with no picture has a Bench Grey well and its format, quietly; the redesign may add the
-static Lattice there (see Lattice). It never shows a blank that looks like a picture failed to
-load.
+A part with no picture has a Bench Grey well and its format, quietly. It never shows a blank
+that looks like a picture failed to load.
 
 **The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
 Edge, not Scribe Line. A divider gets the hairline.
@@ -450,8 +447,8 @@ how a rule gets carried out.
   route; 280 for the longest a person waits on anything they asked for — the quick look's flight,
   a whole `arrive()` run. Nothing a person does every day takes longer.
 - **Springs are for layout only**, and critically damped: `{ type: 'spring', visualDuration: 0.28,
-  bounce: 0 }`. A spring moves something that changed *place* — the marker under the current
-  place, the stepper's rail marker, the Lattice sliding into setup's left column — because a
+  bounce: 0 }`. A spring moves something that changed *place* — the stepper's rail marker, the
+  Lattice sliding into setup's left column — because a
   layout change can be interrupted halfway and a spring picks up from where it is. It never
   overshoots: bounce is a toy's motion, and this is a tool. Hover, opacity and presence are never
   springs.
@@ -481,7 +478,9 @@ how a rule gets carried out.
   transition on `transform`, `translate` and `opacity` (so that every hover lift actually runs).
   An engine that writes those properties every frame would have each write eased again by CSS,
   and the motion smears. The primitives in `motion-react.tsx` put `transition-none` on their
-  `m.div` themselves, so feature code cannot forget it; an anime.js target gets it too.
+  `m.div` themselves, so feature code cannot forget it. `motion.ts` sends DOM targets through
+  anime's Web Animations adapter, which no CSS transition sees; anything anime drives by inline
+  style instead (A18 checks `drawIn()`'s SVG strokes) carries `transition-none` as well.
 - **Motion must say something.** Each animation answers one of: something arrived, something
   left, something changed place, or this is where you are. "It looks nice" is not on the list.
 
@@ -584,9 +583,8 @@ else to show.
 - **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
   grey, no blue — and never moves.
 - **It is a lazy import** from sign-in and setup only, so the grid's bundle never carries it.
-- **The static form**, the same drawing at rest with no draw-in, may stand in for a missing
-  picture on a card or a stage, at Scribe Line only. That is a decision for A21/A23; if they use
-  it, it never animates there.
+- **Nowhere else.** Not on a card, a stage or an empty state: inside the app a missing picture
+  is the lamp and the format, and the motif shows only as hairlines.
 
 ### Stepper
 
@@ -614,7 +612,8 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
 ### Buttons
 
 - **Standing:** Anodised Black fill, 1px Edge, 7px radius, Quicklime label at 14px/600, 8px/16px
-  in the page anatomy (`Page.ts`), 6px/12px beside the part page's ⋯ menu. The one action a
+  in the page anatomy (`Page.ts`), 6px/12px beside the part page's ⋯ menu (where Copy link is
+  quiet: Download is the part page's one standing control). The one action a
   region is about — Download on the part page, Upload in the header (12px, icon plus label, the
   label hidden under `sm`), Sign in, Finish. One per region: when two controls in a row both
   stand, neither does. Never blue at rest; it is brighter and heavier than the quiet controls
@@ -643,8 +642,8 @@ above everything at z 50.
   it sits flush on the ground.
 - **One standing control on the right**: Upload. Library and Import are quiet. Two controls with
   one intent side by side read as a choice nobody can make.
-- **Under `md`** it is one row: menu, mark, search (an icon that expands to the row), account.
-  The places, the library switch and Import move into the drawer. Three header rows — 140px of a
+- **Under `md`** it is one row: menu, mark, search (an icon that expands to the row), Upload as
+  its icon alone, account. The places, the library switch and Import move into the drawer. Three header rows — 140px of a
   844px phone, measured in the audit — is the page before the parts.
 - `<meta name="theme-color">` matches Anodised Black, so a phone's browser chrome is part of the
   room.
@@ -667,9 +666,10 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   the scrim fades over 120 ms and the panel rises 4px and fades over 180 ms; leaving is the same,
   reversed, at 120 ms. Focus handling is unchanged: focus moves in, is trapped, and returns to the
   control that opened it.
-- **First focus goes to the first field**, or to the dialog's heading (`tabIndex={-1}`) when it
-  has none — never to the close button, whose focus ring would put Layout Blue in the dialog's
-  first frame.
+- **Focus is unchanged by the redesign.** The audit saw the close button's Layout Blue ring in the
+  Import dialog's first frame, but that dialog was opened by a scripted click, which Chrome's
+  `:focus-visible` treats as no pointer at all. A22 checks with a real pointer click; if the ring
+  still shows, moving first focus is the owner's call (REDESIGN says focus handling stays).
 - **The title is Scope** (15px/600, Quicklime), the lead Ash and no wider than 70ch.
 - **One standing control**, at the foot, right-aligned: the dialog's verb, standing only once it
   can act ("Add 3 selected", not "Add 0 selected").
@@ -692,9 +692,9 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   line at 11px in Graphite: the format chip, part number in Ash, the triangle count, and the
   approximate mark with its dotted Edge underline whose title explains it. Present at rest,
   always; nothing about a part hides behind hover.
-- **No picture:** the tile is Bench Grey with the format in it, quietly, or the static Lattice
-  (A21 decides). Forty identical dark squares with a centred word, as the audit found, tell a
-  person nothing they cannot read in the footer.
+- **No picture:** the tile is Bench Grey with the format in it, quietly. Forty identical dark
+  squares with a centred word, as the audit found, are the honest state; A21 makes them quieter
+  (the format moves to the footer's chip) rather than decorating them.
 - **Hovering a card loads no mesh** and draws no canvas. `Grid.test.tsx` asserts it.
 - **Skeletons** are the card's own shape in Bench Grey, static, or shimmer once. `arrive()`
   replaces them.
@@ -746,8 +746,9 @@ radius, holding the part.
 
 - **The whole picture, always.** `contain`, never `cover` (A16; The Filled Tile Rule). A square
   store picture on a wide stage has lamp on both sides, and that is correct.
-- **No picture is still a stage.** The lamp, the format and, if A23 takes it, the static Lattice.
-  The audit found a 600px black void under a full-width View bar.
+- **No picture is still a stage.** The lamp and the format, with View on it. The audit found a
+  600px black void under a full-width View bar, and that is the common case: most parts have no
+  picture.
 - **View** is an overlay control on the stage's foot, keeping its accessible name. Pressing it
   hands the browser the original mesh and three.js draws it on the same pool, with the contact
   shadow — the one place three.js draws.

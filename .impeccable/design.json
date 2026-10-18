@@ -436,12 +436,12 @@
       "Flat by tonal layering; a shadow only under something that floats over the page",
       "A picture fills its card's tile; the card's hairline lifts to Edge under the pointer",
       "Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware; authored moments only at the front door",
-      "One decorative motif, the drawn Lattice, animated only on the pages before you are signed in"
+      "One decorative motif, the drawn Lattice, and only on the pages before you are signed in"
     ],
     "rules": [
       {
         "name": "The Marking Dye Rule",
-        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without a legend. \"At rest\" includes the first frame of a dialog: focus that the page moved there by itself, before anybody touched a key, must not draw the ring on a control (see Dialogs).",
+        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without a legend.",
         "section": "colors"
       },
       {
