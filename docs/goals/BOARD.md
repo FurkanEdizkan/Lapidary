@@ -132,7 +132,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A13](A13.md) | Packs: archives in the library, kept packed | 12 | Rust + web | A12 | see [A13.md](A13.md) | 0067 | merged `b5e01c7` | `feat/packs` |
 | [A14](A14.md) | MyMiniFactory answers to its API key | 12 | Rust + web | A13 | see [A14.md](A14.md) | — | merged `ea073a3` | `fix/mmf-api-key` |
 | [A15](A15.md) | A page's description and categories, pictures first, gallery order | 12 | Rust + web | A14 | see [A15.md](A15.md) | 0068 | merged `0c684d1` | `feat/picture-order` |
-| [A16](A16.md) | The part page shows the whole picture | 13 | web | A15 | see [A16.md](A16.md) | — | claimed | `fix/hero-whole-picture` |
+| [A16](A16.md) | The part page shows the whole picture | 13 | web | A15 | see [A16.md](A16.md) | — | merged `f96bcf8` | `fix/hero-whole-picture` |
 | [A17](A17.md) | Redesign direction: audit, DESIGN.md, motion doctrine | 13 | docs | — | see [A17.md](A17.md) | — | claimed | `docs/redesign-direction` |
 | A18 | Motion foundation: `motion` pinned beside anime.js | 13 | web | A17 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A19 | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
