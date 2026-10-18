@@ -3167,11 +3167,13 @@ async fn a_cards_picture_is_the_parts_first_image_with_its_framing(pool: sqlx::P
         "the gallery's first picture is the card's, not whichever one the heap returned"
     );
     assert_eq!(
-        image.inline_webp.as_deref(),
-        Some(&b"the photograph on the card"[..]),
-        "under the inline line, so the bytes ride on the row and the card costs no request"
+        image.inline_webp, None,
+        "A30: the grid never reads the bytes; the card addresses an inline picture by its id"
     );
-    assert_eq!(image.hash, None, "inline bytes and a hash are never both");
+    assert_eq!(
+        image.hash, None,
+        "an inline picture has no hash, which is how the card knows to use its id"
+    );
     assert_eq!(image.fit, "contain");
     assert_eq!(image.focus, (0.25, 0.75), "0019's framing reaches the card");
     assert_eq!(
