@@ -141,6 +141,12 @@ export const strings = {
     saveFailed: 'The key was not saved. Check that the server is running, then try again.',
     checkFailed: 'The check could not run. Check that the server is running, then try again.',
     serverHeading: 'Server',
+    /** A28: the admin's switch for the whole sign-in wall. */
+    wallHeading: 'Sign-in page',
+    wallSwitch: 'Show pictures on the sign-in page',
+    wallLead:
+      'The sign-in page shows the pictures of models shared with everybody, and nothing else about them. Anybody who can open the address sees them. A model’s owner can leave theirs out when they share it.',
+    wallLocked: 'Only an admin can change this.',
     port: 'Port',
     portHint: 'Lapidary moves to the new port with no restart. This page follows it; other open tabs keep working for a minute.',
     portLocked: (by: string) => `Set by ${by} in deploy/.env. Change it there and run docker compose up -d.`,
@@ -201,6 +207,9 @@ export const strings = {
     title: (n: number) => (n === 1 ? 'Share this model' : `Share ${n.toLocaleString('en-US')} models`),
     lead: 'The people you share with can find it under Shared with me, look at it and download it. Only you can change it.',
     everyone: 'Everybody on this install',
+    /** A28: the sign-in wall shows the picture of a model shared with everybody, unless its owner says not to. */
+    wall: 'Show its picture on the sign-in page',
+    wallHint: 'Only a model shared with everybody can be shown there, and only its picture.',
     people: 'People',
     nobodyElse: 'Nobody else has an account yet. An admin adds people under People.',
     loading: 'Loading…',
@@ -305,6 +314,9 @@ export const strings = {
     /** The sign-in drawing keeps turning (A26), so it can be stopped: WCAG 2.2.2. */
     pause: 'Pause the drawing',
     play: 'Play the drawing',
+    /** The sign-in wall drifts for ever (A28), so it can be stopped too. */
+    pauseWall: 'Pause the wall',
+    playWall: 'Play the wall',
   },
   login: {
     title: 'Sign in',

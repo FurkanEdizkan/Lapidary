@@ -36,6 +36,7 @@ mod site_settings;
 mod sources;
 mod tags;
 mod upload;
+mod wall;
 
 pub use added::{BrowseEntry, BrowseListing, LibrarySource, NewSourceRequest};
 pub use detail::PartDetail;
@@ -146,14 +147,17 @@ impl Role {
 /// `lapidary-ingest`'s router, which `bin/lapidary-server` merges in separately.
 pub fn router(state: AppState, role: Role) -> Router {
     let shared = Router::new().route("/api/healthz", get(health::healthz));
-    // The only routes a browser may call without a session (A1): the wizard's two, and signing in and
-    // out. Everything in `guarded` is behind `auth::require_user`.
+    // The only routes a browser may call without a session (A1): the wizard's two, signing in and out,
+    // and the sign-in wall's pictures (A28), which carry nothing but pictures. Everything in `guarded` is
+    // behind `auth::require_user`.
     let public = Router::new()
         .route("/api/setup", get(auth::setup_status).post(auth::setup))
         .route(
             "/api/session",
             get(auth::me).post(auth::sign_in).delete(auth::sign_out),
-        );
+        )
+        .route("/api/wall", get(wall::pictures))
+        .route("/api/wall/{blake3}", get(wall::picture));
     let by_role = match role {
         Role::Api => public.merge(guarded(state.db.clone())),
         Role::Worker => Router::new(),
@@ -247,6 +251,11 @@ fn guarded(db: PgPool) -> Router<AppState> {
         )
         // This install's display name (M2). See `profile.rs`.
         .route("/api/profile", get(profile::get).put(profile::set))
+        .route(
+            "/api/settings/wall",
+            get(wall::setting).put(wall::set_setting),
+        )
+        .route("/api/parts/{id}/wall", get(wall::part).put(wall::set_part))
         .route("/api/settings/sites", get(site_settings::list))
         // The people on the install, the admin's account management, and sharing (A4). See
         // `people.rs`.

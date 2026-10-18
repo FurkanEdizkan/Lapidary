@@ -6,8 +6,8 @@ import { HEADLINE, LEAD, STANDING } from '../components/Page'
 import { Refused, signIn } from '../lib/session'
 import { strings } from '../lib/strings'
 
-/** Lazy, so anime.js and the drawing load with this page and never with the grid (A19). */
-const Lattice = lazy(() => import('../components/Lattice'))
+/** Lazy, so the wall loads with this page and never with the grid. */
+const Wall = lazy(() => import('../components/Wall'))
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
@@ -24,9 +24,9 @@ export function LoginPage() {
   })
   return (
     <Doorway
-      aside={
+      backdrop={
         <Suspense fallback={null}>
-          <Lattice live className="w-full max-w-2xl" />
+          <Wall />
         </Suspense>
       }
     >

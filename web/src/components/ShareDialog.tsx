@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { fetchPeople, fetchShares, saveShares } from '../lib/api'
+import { fetchPartWall, fetchPeople, fetchShares, savePartWall, saveShares } from '../lib/api'
 import { currentUser } from '../lib/session'
 import { strings } from '../lib/strings'
 import type { PartId, UserId } from '../lib/types'
@@ -26,7 +26,14 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
     queryFn: () => fetchShares(one as PartId),
     enabled: one !== undefined,
   })
+  const wall = useQuery({
+    queryKey: ['part-wall', one],
+    queryFn: () => fetchPartWall(one as PartId),
+    enabled: one !== undefined,
+  })
   const [everyone, setEveryone] = useState<boolean | null>(null)
+  // Untouched, a selection's own switches are left as they are: saving several must not reset them all.
+  const [onWall, setOnWall] = useState<boolean | null>(null)
   const [chosen, setChosen] = useState<UserId[] | null>(null)
   const isEveryone = everyone ?? current.data?.everyone ?? false
   const picked = chosen ?? current.data?.people ?? []
@@ -35,10 +42,16 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
 
   const save = useMutation({
     mutationFn: async () => {
-      for (const part of parts) await saveShares(part, { everyone: isEveryone, people: picked })
+      for (const part of parts) {
+        await saveShares(part, { everyone: isEveryone, people: picked })
+        if (onWall !== null) await savePartWall(part, onWall)
+      }
     },
     onSuccess: () => {
-      for (const part of parts) void queryClient.invalidateQueries({ queryKey: ['shares', part] })
+      for (const part of parts) {
+        void queryClient.invalidateQueries({ queryKey: ['shares', part] })
+        void queryClient.invalidateQueries({ queryKey: ['part-wall', part] })
+      }
       onClose()
     },
   })
@@ -57,6 +70,17 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
         />
         {strings.sharing.everyone}
       </label>
+      <label className={`mt-2 ml-6 ${CHECK} ${isEveryone ? '' : 'text-[var(--color-muted)]'}`}>
+        <input
+          type="checkbox"
+          checked={isEveryone && (onWall ?? wall.data?.on ?? true)}
+          disabled={!isEveryone}
+          onChange={(event) => setOnWall(event.target.checked)}
+          className="size-4 accent-[var(--color-dim)]"
+        />
+        {strings.sharing.wall}
+      </label>
+      <p className="mt-1 ml-12 text-xs text-[var(--color-muted)]">{strings.sharing.wallHint}</p>
       {/* A legend will not sit inside a fieldset's border-top, so the rule is a wrapper's. */}
       <div className={DIALOG_SECTION}>
         <fieldset>

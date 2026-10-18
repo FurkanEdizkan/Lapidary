@@ -475,9 +475,10 @@ how a rule gets carried out.
   animation that was charming once is a wait the fortieth time.
 - **Nothing loops, with one exception.** No shimmer that repeats, no idle drift, no breathing
   glow. Anything that moves on its own stops within 5 s and stays still (WCAG 2.2.2). A skeleton is
-  static or shimmers once. The exception is the sign-in drawing (A26, owner 2026-10-18): it keeps
-  turning, so it carries a visible Pause, stops while the page is hidden, and is still under
-  reduced motion. It is the front door's one loop and nothing inside the app may borrow it.
+  static or shimmers once. The exception is the sign-in page's left half (A26, owner 2026-10-18;
+  since A28 the library wall, see Wall): it keeps moving, so it carries a visible Pause, stops
+  while the page is hidden, and is still under reduced motion. It is the front door's one loop and
+  nothing inside the app may borrow it.
 - **Only `transform`, `opacity` and SVG `stroke-dashoffset` are animated** — `translate`, `scale`
   and `rotate` are transform. The one exception is the sign-in drawing (A26, A27): it turns in three
   dimensions, which no 2D transform can say, so `cycle` rewrites its lines' `d` and its facets'
@@ -574,9 +575,11 @@ motion.
   50/50 reads as two equal things competing; this is one thing and its frame.
 - **Below `lg`**, one column: the Lattice becomes a band about 9rem tall above the form, the pool
   still under it, and the form follows at full width with a 16px gutter.
-- **The left half shows no data**, ever. A signed-out page cannot show anybody's parts, pictures,
-  names or counts. The Lattice is drawn from a pure, deterministic function, not from a part. And
-  no invented testimonial or user count either: PRODUCT.md calls the product pre-alpha.
+- **The left half shows pictures and no other data** (A28, owner 2026-10-18). On sign-in it is the
+  Wall: the first pictures of parts **shared with everybody**, never a private part or one shared
+  with chosen people, and never a name, id, count or figure. Setup's Lattice is drawn from a pure,
+  deterministic function, not from a part. And no invented testimonial or user count either:
+  PRODUCT.md calls the product pre-alpha.
 - **The form keeps its labels, names and order.** Labels above fields, the standing **Sign in**
   never wrapping, and the forgot-password note under it, never beside it (at 390 beside it wrapped
   the button onto two lines).
@@ -616,6 +619,7 @@ else to show.
   holds. A quiet **Pause the drawing** control sits at the drawing's foot
   (WCAG 2.2.2), the turn stops while the tab is hidden, and the lines are written straight to the
   SVG each frame by anime.js's `cycle` (`lib/motion.ts`), never through React.
+- **Since A28 sign-in shows the Wall instead**, so this live mode is unused; setup still draws it once.
 - **Everywhere else it never loops**, never drifts, never redraws on hover or on focus.
 - **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
   grey, no blue — and never moves.
@@ -629,6 +633,30 @@ else to show.
   identical "STL" squares said nothing. It never moves there. The list row, the quick look and the
   dashboard's recently-added widget use the same still frame. It loads with the grid's chunk (which
   already carries anime for `arrive()`), never with the entry.
+
+### Wall
+
+The sign-in page's left half since A28 (owner, 2026-10-18, choosing it from ten studies over A27's
+brilliant): the library's own pictures as cards drifting past in columns, behind the mark.
+
+- **What it shows.** `GET /api/wall`, signed out: up to 48 first pictures of parts shared with
+  everybody whose owner has not left them out (**Show its picture on the sign-in page** in the
+  Share dialog, on by default), in a new random order each load, while the admin has **Show
+  pictures on the sign-in page** on in Settings. Pictures only — no name, id, count or figure. A
+  picture over the inline line is served by `GET /api/wall/{hash}`, which checks the same
+  condition again.
+- **Empty first.** With nothing to show — a fresh install, nothing shared, the wall off — it is its
+  empty frames (hairline Border, no fill), still drifting. A few pictures each show once, spread
+  among the frames; as many as the tiles repeat to fill it.
+- **Layout.** Five columns of square tiles, `--radius-md`, a 12px (16px at `lg`) gutter, the top
+  fading in and the foot fading into the page under the mark. Pictures at 70%, so the form stays
+  the page's subject. Below `lg` the same columns fill the band.
+- **Motion.** Each column drifts its two identical halves half a column per cycle (70 s plus 13 s
+  per column, alternate columns the other way): CSS, transform only, linear because it never starts
+  or stops on its own. Now and then one tile's edge catches Layout Blue for a moment, as if a
+  search found it — on a moving tile only, so blue is never at rest. **Pause the wall** holds both
+  (WCAG 2.2.2); a hidden tab runs no CSS animation. Reduced motion: still, no blue, no Pause.
+- **Decorative.** `aria-hidden`, every picture `alt=""`; the page's content is the form.
 
 ### Stepper
 
@@ -892,7 +920,8 @@ nothing more.
 - **Don't** animate anything but `transform`, `translate`, `opacity` and SVG `stroke-dashoffset`,
   or past 180 ms for a state change; 280 ms is for the flight and a whole arrival run, and the
   scene and intro tokens are for the front door alone.
-- **Don't** loop anything but the sign-in drawing (which has its Pause), bounce anything, or put a
+- **Don't** loop anything but the sign-in wall (which has its Pause), bounce anything, or put a
   spring on anything but a layout change.
 - **Don't** import `framer-motion`, or Motion+.
-- **Don't** show anybody's data, a testimonial or a user count on a signed-out page.
+- **Don't** show anybody's data on a signed-out page beyond the Wall's pictures of parts shared with
+  everybody, and never a testimonial or a user count.

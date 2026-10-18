@@ -11,6 +11,8 @@ import type {
   PasswordChange,
   Person,
   Shares,
+  WallPicture,
+  WallSwitch,
   UserId,
   BrowseListing,
   ImportSettings,
@@ -1602,6 +1604,47 @@ export async function saveShares(part: PartId, shares: Shares): Promise<void> {
     body: JSON.stringify(shares),
   })
   if (!response.ok) throw await sentence(response, `sharing returned ${response.status}`)
+}
+
+/** `GET /api/wall` — signed out: the sign-in wall's pictures, and nothing else (A28). */
+export async function fetchWall(): Promise<WallPicture[]> {
+  const response = await fetch('/api/wall')
+  if (!response.ok) throw new Error(`wall returned ${response.status}`)
+  return (await response.json()) as WallPicture[]
+}
+
+/** `GET /api/parts/{id}/wall` — whether this model's picture may show on the sign-in wall. */
+export async function fetchPartWall(part: PartId): Promise<WallSwitch> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/wall`)
+  if (!response.ok) throw new Error(`wall switch returned ${response.status}`)
+  return (await response.json()) as WallSwitch
+}
+
+/** `PUT /api/parts/{id}/wall` — its owner shows it on the sign-in wall or hides it. */
+export async function savePartWall(part: PartId, on: boolean): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/wall`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ on }),
+  })
+  if (!response.ok) throw await sentence(response, `wall switch returned ${response.status}`)
+}
+
+/** `GET /api/settings/wall` — whether the sign-in page shows the wall's pictures at all. */
+export async function fetchWallSetting(): Promise<WallSwitch> {
+  const response = await fetch('/api/settings/wall')
+  if (!response.ok) throw new Error(`wall setting returned ${response.status}`)
+  return (await response.json()) as WallSwitch
+}
+
+/** `PUT /api/settings/wall` — admin only: the wall on or off for everybody. */
+export async function saveWallSetting(on: boolean): Promise<void> {
+  const response = await fetch('/api/settings/wall', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ on }),
+  })
+  if (!response.ok) throw await sentence(response, `wall setting returned ${response.status}`)
 }
 
 /** `GET /api/shared` — what other people shared with you. */
