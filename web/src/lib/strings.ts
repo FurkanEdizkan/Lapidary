@@ -1779,6 +1779,12 @@ export const strings = {
     close: 'Close',
   },
 
+  /** The Import dialog's picture chooser (A22): a quiet button over a hidden file input, and what it holds. */
+  importPictures: {
+    choose: 'Choose pictures…',
+    none: 'None chosen',
+  },
+
   /** The 3D view in the quick look and on the part's page. */
   /**
    * The 3D view — **asked for, never arriving on its own** (R1). Lapidary is a visual library:

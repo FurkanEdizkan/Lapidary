@@ -16,6 +16,19 @@ export function closeMenu(control: Element) {
   control.closest<HTMLElement>('[data-menu]')?.hidePopover?.()
 }
 
+/** A dialog's foot: right-aligned, the quiet actions first and the one standing verb (`Page.ts`'s `STANDING`) last. */
+export const DIALOG_FOOT = 'mt-6 flex flex-wrap items-center justify-end gap-2'
+
+/**
+ * Every action in a dialog that is not its verb, and the verb itself until it can act: bounded by Edge (The Operable
+ * Edge Rule), Graphite lifting to Chalk, the same height as `STANDING` so a foot lines up.
+ */
+export const DIALOG_QUIET =
+  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-2 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-50'
+
+/** A section inside a dialog: a Label over a scribe line, tighter than a page's (12–16px inside a dialog). */
+export const DIALOG_SECTION = 'mt-5 border-t border-[var(--color-border)] pt-3'
+
 /**
  * The shell every dialog here shares: `role="dialog"` + `aria-modal`, Escape, a focus trap
  * and a portal. The caller autofocuses whichever control the safe answer is — cancel where
@@ -160,7 +173,10 @@ export function Dialog({
 
   return createPortal(
     <Fade
-      className={`fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center bg-black/60 p-4 sm:p-6 ${present ? '' : 'pointer-events-none'}`}
+      // Under `sm` a dialog is a sheet from the bottom edge (DESIGN.md § Dialogs); the quick look's stage stays centred.
+      className={`fixed inset-0 z-[var(--z-overlay)] flex justify-center bg-black/60 ${
+        size === 'stage' ? 'items-center p-4 sm:p-6' : 'items-end sm:items-center sm:p-6'
+      } ${present ? '' : 'pointer-events-none'}`}
       /*
         The scrim dismisses. `event.target === event.currentTarget` so only the scrim itself
         counts — a click that started inside the box and released out here is a drag, not a
@@ -195,11 +211,12 @@ export function Dialog({
         className={
           size === 'stage'
             ? 'flex h-[min(88vh,56rem)] max-h-full w-[min(92vw,80rem)] flex-col overflow-y-auto overscroll-contain rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay'
-            : `max-h-full w-full ${size === 'wide' ? 'max-w-2xl' : 'max-w-md'} overflow-y-auto overscroll-contain rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-overlay`
+            : `max-h-[92vh] w-full sm:max-h-full ${size === 'wide' ? 'sm:max-w-2xl' : 'sm:max-w-md'} overflow-y-auto overscroll-contain rounded-t-md border border-b-0 border-[var(--color-border)] bg-[var(--color-surface)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-overlay sm:rounded-md sm:border-b sm:pb-4`
         }
       >
         <div className="flex items-start justify-between gap-4">
-          <h2 id={titleId} className="text-sm leading-snug font-semibold text-[var(--color-bright)]">
+          {/* Scope: 15px/600 in Quicklime, the one heading a dialog has. */}
+          <h2 id={titleId} className="text-[15px] leading-snug font-semibold text-[var(--color-bright)]">
             {title}
           </h2>
           {/*
