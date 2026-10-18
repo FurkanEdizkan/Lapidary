@@ -91,6 +91,12 @@ pub(crate) async fn model(sites: &Sites, id: &str, key: Option<&str>) -> Result<
             .flatten()
             .filter_map(text)
             .collect(),
+        categories: object["categories"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|category| text(&category["name"]))
+            .collect(),
         images: images.into_iter().map(|(_, url)| url).collect(),
         files,
     })

@@ -828,3 +828,37 @@ test('cancelling the delete sends nothing', async () => {
   const calls = vi.mocked(fetch).mock.calls as unknown as [string, RequestInit | undefined][]
   expect(calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
 })
+
+/** A15: the owner orders the pictures; a keyboard moves one with the buttons drag and drop also has. */
+test('moving a picture later sends the whole gallery in its new order', async () => {
+  const picture = (n: number, origin: string) => ({
+    id: `01a07c10-0000-7000-8000-00000000000${n}`,
+    src: 'data:image/webp;base64,UklGRg==',
+    origin,
+    sourceUrl: null,
+    fit: 'cover',
+    focusX: 0.5,
+    focusY: 0.5,
+  })
+  const snapshot = picture(1, 'snapshot')
+  const photograph = picture(2, 'url_supplied')
+  stub(PART, [snapshot, photograph])
+  const sent: unknown[] = []
+  const answer = (globalThis.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>).bind(globalThis)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/images/order')) {
+        sent.push(JSON.parse(String(init?.body)))
+        return { ok: true, status: 204, json: async () => ({}) }
+      }
+      return answer(url, init)
+    }),
+  )
+  renderPage()
+
+  const label = strings.images.alt(PART.name, 0)
+  fireEvent.click(await screen.findByRole('button', { name: strings.images.moveLater(label) }))
+  await waitFor(() => expect(sent).toEqual([{ ids: [photograph.id, snapshot.id] }]))
+  expect(screen.getByRole('button', { name: strings.images.moveEarlier(label) })).toHaveProperty('disabled', true)
+})

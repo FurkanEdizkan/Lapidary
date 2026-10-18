@@ -80,6 +80,7 @@ pub(crate) async fn model(sites: &Sites, id: &str) -> Result<Model, SiteError> {
             .flatten()
             .filter_map(|tag| text(&tag["name"]))
             .collect(),
+        categories: Vec::new(),
         images: print["images"]
             .as_array()
             .into_iter()

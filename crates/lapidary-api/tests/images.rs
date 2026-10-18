@@ -527,3 +527,69 @@ async fn a_view_kept_from_the_viewer_is_recorded_as_a_snapshot(pool: sqlx::PgPoo
         "nothing stored for the refusal"
     );
 }
+
+fn order(part: PartId, ids: &[&str]) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(format!("/api/parts/{part}/images/order"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({ "ids": ids }).to_string()))
+        .expect("request builds")
+}
+
+/// A photograph goes ahead of the 3D view's snapshot, so the card shows it (A15); then the owner's order wins,
+/// and an order that leaves a picture out is refused rather than half applied.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_photograph_goes_before_the_snapshot_and_the_owner_can_reorder_them(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+    lapidary_db::PgParts(pool.clone())
+        .add_part_image(
+            part,
+            lapidary_db::NewPartImage {
+                bytes: lapidary_db::ImageBytes::Inline(b"the 3D view, snapped"),
+                origin: "snapshot",
+                source_url: None,
+            },
+        )
+        .await
+        .expect("a snapshot");
+    let (status, _) = send(state(pool.clone(), store.path()), upload(part, png(128))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(part)).await;
+    let listed = json(&body);
+    let origins: Vec<&str> = listed
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|i| i["origin"].as_str())
+        .collect();
+    assert_eq!(origins, ["uploaded", "snapshot"]);
+    let photo = listed[0]["id"].as_str().expect("an id").to_owned();
+    let snapshot = listed[1]["id"].as_str().expect("an id").to_owned();
+
+    let (status, _) = send(
+        state(pool.clone(), store.path()),
+        order(part, &[&snapshot, &photo]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = send(state(pool.clone(), store.path()), gallery(part)).await;
+    assert_eq!(json(&body)[0]["id"], snapshot.as_str(), "the owner's order");
+
+    let (status, _) = send(state(pool.clone(), store.path()), order(part, &[&photo])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "a picture left out");
+    let (status, _) = send(
+        state(pool.clone(), store.path()),
+        order(part, &[&photo, &photo]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "a picture twice");
+    let (_, body) = send(state(pool, store.path()), gallery(part)).await;
+    assert_eq!(
+        json(&body)[0]["id"],
+        snapshot.as_str(),
+        "a refused order changed nothing"
+    );
+}

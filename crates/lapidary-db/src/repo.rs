@@ -3240,6 +3240,41 @@ impl PgParts {
         Ok(updated.rows_affected() == 1)
     }
 
+    /// Put a part's pictures in `order`, first to last (A15). `Ok(false)` unless `order` names every one of the
+    /// part's pictures exactly once, so a stale page cannot drop or duplicate a position.
+    pub async fn reorder_part_images(
+        &self,
+        part: PartId,
+        order: &[PartImageId],
+    ) -> Result<bool, DbError> {
+        let ids: Vec<Uuid> = order.iter().map(|id| id.as_uuid()).collect();
+        let mut tx = self.0.begin().await?;
+        let held: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM part_image WHERE part_id = $1 FOR UPDATE")
+                .bind(part.as_uuid())
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut wanted = ids.clone();
+        wanted.sort();
+        wanted.dedup();
+        let mut held = held;
+        held.sort();
+        if wanted.len() != ids.len() || wanted != held {
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE part_image i SET position = o.n - 1 \
+               FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id, n) \
+              WHERE i.part_id = $1 AND i.id = o.id",
+        )
+        .bind(part.as_uuid())
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Add one image to the end of a part's gallery.
     ///
     /// **The blob half takes a reference**, which is the whole reason this is a transaction:
@@ -3294,22 +3329,39 @@ impl PgParts {
         guard: Guard,
     ) -> Result<Option<PartImageId>, DbError> {
         let mut tx = self.0.begin().await?;
-        if guard != Guard::Always {
-            sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR UPDATE")
-                .bind(part.as_uuid())
-                .execute(&mut *tx)
-                .await?;
-        }
+        // Locked for every insert since A15: one may move others back, and two doing so at once would collide.
+        sqlx::query("SELECT 1 FROM part WHERE id = $1 FOR UPDATE")
+            .bind(part.as_uuid())
+            .execute(&mut *tx)
+            .await?;
 
-        let next: i32 = sqlx::query_scalar(
-            "SELECT coalesce(max(position), -1) + 1 FROM part_image WHERE part_id = $1",
-        )
-        .bind(part.as_uuid())
-        .fetch_one(&mut *tx)
-        .await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM part_image WHERE part_id = $1")
+            .bind(part.as_uuid())
+            .fetch_one(&mut *tx)
+            .await?;
+        // A picture of the thing goes after the others of it and ahead of any picture of the model (A15), so a
+        // card shows the photograph; a picture of the model goes at the end.
+        let next: i32 = if MODEL_PICTURES.contains(&image.origin) {
+            sqlx::query_scalar(
+                "SELECT coalesce(max(position), -1) + 1 FROM part_image WHERE part_id = $1",
+            )
+            .bind(part.as_uuid())
+            .fetch_one(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT coalesce(min(position), \
+                     (SELECT coalesce(max(position), -1) + 1 FROM part_image WHERE part_id = $1)) \
+                   FROM part_image WHERE part_id = $1 AND origin = ANY($2)",
+            )
+            .bind(part.as_uuid())
+            .bind(MODEL_PICTURES)
+            .fetch_one(&mut *tx)
+            .await?
+        };
         let held = match guard {
             Guard::Always => false,
-            Guard::IfNone => next > 0,
+            Guard::IfNone => count > 0,
             Guard::NewSourceUrl => sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM part_image WHERE part_id = $1 AND source_url = $2)",
             )
@@ -3323,6 +3375,13 @@ impl PgParts {
             return Ok(None);
         }
 
+        sqlx::query(
+            "UPDATE part_image SET position = position + 1 WHERE part_id = $1 AND position >= $2",
+        )
+        .bind(part.as_uuid())
+        .bind(next)
+        .execute(&mut *tx)
+        .await?;
         let id = PartImageId::new();
         let (inline, hex) = match image.bytes {
             ImageBytes::Inline(bytes) => (Some(bytes), None),
@@ -3370,10 +3429,11 @@ impl PgParts {
             Option<String>,
             Option<i64>,
             Option<String>,
+            Option<String>,
         );
 
         let rows: Vec<SourceRow> = sqlx::query_as(
-            "SELECT id, url, vendor, external_id, title, license, price_minor, currency \
+            "SELECT id, url, vendor, external_id, title, license, price_minor, currency, description \
              FROM part_source WHERE part_id = $1 ORDER BY created_at, id",
         )
         .bind(part.as_uuid())
@@ -3383,7 +3443,17 @@ impl PgParts {
         Ok(rows
             .into_iter()
             .map(
-                |(id, url, vendor, external_id, title, license, price_minor, currency)| {
+                |(
+                    id,
+                    url,
+                    vendor,
+                    external_id,
+                    title,
+                    license,
+                    price_minor,
+                    currency,
+                    description,
+                )| {
                     PartSourceRow {
                         id: PartSourceId::from_uuid(id),
                         url,
@@ -3393,6 +3463,7 @@ impl PgParts {
                         license,
                         price_minor,
                         currency,
+                        description,
                     }
                 },
             )
@@ -3415,13 +3486,14 @@ impl PgParts {
         let written: Uuid = sqlx::query_scalar(
             "INSERT INTO part_source \
                  (id, part_id, url, vendor, external_id, title, license, price_minor, currency, \
-                  retrieved_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+                  retrieved_at, description) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10) \
              ON CONFLICT (part_id, url) DO UPDATE SET \
                  vendor = excluded.vendor, external_id = excluded.external_id, \
                  title = excluded.title, license = excluded.license, \
                  price_minor = excluded.price_minor, currency = excluded.currency, \
-                 retrieved_at = excluded.retrieved_at \
+                 retrieved_at = excluded.retrieved_at, \
+                 description = coalesce(excluded.description, part_source.description) \
              RETURNING id",
         )
         .bind(id.as_uuid())
@@ -3433,9 +3505,29 @@ impl PgParts {
         .bind(source.license)
         .bind(source.price_minor)
         .bind(source.currency)
+        .bind(source.description)
         .fetch_one(&self.0)
         .await?;
         Ok(PartSourceId::from_uuid(written))
+    }
+
+    /// Give the part's source row for `url` the page's description, where it has none (A15).
+    pub async fn fill_source_description(
+        &self,
+        part: PartId,
+        url: &str,
+        description: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE part_source SET description = $3 \
+              WHERE part_id = $1 AND url = $2 AND description IS NULL",
+        )
+        .bind(part.as_uuid())
+        .bind(url)
+        .bind(description)
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     /// Whether any gallery references these bytes.
@@ -3476,6 +3568,8 @@ pub struct PartSourceRow {
     /// Minor units, so 12.50 EUR is 1250 — `0015` explains why this is never a float.
     pub price_minor: Option<i64>,
     pub currency: Option<String>,
+    /// What the page says about the model (A15).
+    pub description: Option<String>,
 }
 
 /// What [`PgParts::add_part_source`] writes. Every field optional, because a source with a
@@ -3489,6 +3583,7 @@ pub struct NewPartSource<'a> {
     pub license: Option<&'a str>,
     pub price_minor: Option<i64>,
     pub currency: Option<&'a str>,
+    pub description: Option<&'a str>,
 }
 
 /// How a picture sits in its frame — `part_image_known_fit` and `part_image_focus_in_range`
@@ -3511,8 +3606,12 @@ pub enum ImageBytes<'a> {
     Blob(&'a BlobHash),
 }
 
-/// When `insert_part_image` writes its row. The part is locked for every guard but
-/// `Always`, so the check and the insert see the same gallery.
+/// Pictures of the model rather than of the thing: the 3D view's snapshot, a 3MF's own thumbnail, and the renders
+/// that came before R3. A card prefers any other picture to these (A15).
+const MODEL_PICTURES: &[&str] = &["snapshot", "embedded", "rendered"];
+
+/// When `insert_part_image` writes its row. The part is locked first, so the check and the insert see the same
+/// gallery.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Guard {
     Always,

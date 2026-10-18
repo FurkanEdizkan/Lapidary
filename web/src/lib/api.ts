@@ -1081,6 +1081,21 @@ export async function setImageFraming(
   }
 }
 
+/**
+ * `PUT /api/parts/{id}/images/order` — every picture of the part, first to last (A15). The server refuses a set
+ * that is not the part's whole gallery, which is a page behind another tab.
+ */
+export async function reorderPartImages(part: PartId, ids: readonly PartImageId[]): Promise<void> {
+  const response = await fetch(`/api/parts/${encodeURIComponent(part)}/images/order`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  })
+  if (!response.ok) {
+    throw new Error(`reordering returned ${response.status}`)
+  }
+}
+
 /** `GET /api/parts/{id}/sources` — where a part came from, oldest first. */
 export async function fetchPartSources(part: PartId): Promise<PartSource[]> {
   const response = await fetch(`/api/parts/${encodeURIComponent(part)}/sources`)

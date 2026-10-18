@@ -124,6 +124,8 @@ pub struct Model {
     pub license: Option<String>,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    /// The site's own categories for it (MyMiniFactory's); they join the part's tags, never its library category.
+    pub categories: Vec<String>,
     /// Picture URLs, the site's chosen one first.
     pub images: Vec<String>,
     pub files: Vec<RemoteFile>,

@@ -38,11 +38,10 @@ const CARD_SHAPE: Record<Layout, string> = {
   list: 'ease-mechanical group relative flex cursor-pointer items-center gap-3 overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-2 duration-[var(--duration-fast)] hover:border-[var(--color-edge)]',
 }
 
+// Edge to edge since A15: the owner's pictures are photographs, and the inset left them a third smaller than the tile.
 const WELL: Record<Layout, string> = {
-  detail:
-    'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]',
-  gallery:
-    'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)] p-[7%]',
+  detail: 'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)]',
+  gallery: 'relative flex aspect-square items-center justify-center overflow-hidden bg-[var(--color-raised)]',
   list: 'relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] bg-[var(--color-raised)] p-1',
 }
 
@@ -206,13 +205,11 @@ export function Card({
       className={selected ? `${CARD_SHAPE[layout]} outline-2 outline-[var(--color-accent)]` : CARD_SHAPE[layout]}
     >
       {/*
-        The well the render sits in, one step *down* from the card and inset from it.
+        The well the picture sits in, one step *down* from the card.
 
-        `v2` paints the thumbnail `center/86%` on `#17171b` rather than filling the tile:
-        the render floats with air around it, which is what makes a wall of parts read as
-        objects on shelves instead of as a mosaic. `p-[7%]` is the same 86% from the other
-        side, in the one unit that keeps it proportional as the density control changes the
-        column width.
+        Until A15 it was inset 7% (`v2`'s `center/86%`), which suited renders floating on a shelf. The owner's
+        pictures are photographs and store renders with their own backgrounds, and the inset only made them a
+        third smaller, so the picture now fills the well and its framing (`pictureStyle`) decides the crop.
       */}
       {/*
         Rendered only while selecting, never rendered and hidden: with selection off the card's
@@ -270,7 +267,7 @@ export function Card({
             >
               <Icon name="caretRight" />
             </button>
-            <span className="tabular absolute top-[9%] right-[9%] z-10 rounded-[var(--radius-ctl)] bg-[rgba(18,18,20,0.8)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)]">
+            <span className="tabular absolute top-2 right-2 z-10 rounded-[var(--radius-ctl)] bg-[rgba(18,18,20,0.8)] px-1.5 py-0.5 text-[11px] text-[var(--color-muted)]">
               {strings.parts.pictureOf((shown % total) + 1, total)}
             </span>
           </>

@@ -86,6 +86,7 @@ pub(crate) async fn model(sites: &Sites, id: &str, key: Option<&str>) -> Result<
         license: text(&thing["license"]),
         description: text(&thing["description"]),
         tags: tags(&thing["tags"]),
+        categories: Vec::new(),
         images: pictures,
         files,
     })

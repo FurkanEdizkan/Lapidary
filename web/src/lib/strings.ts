@@ -1573,6 +1573,12 @@ export const strings = {
      * read failure while every assertion comparing the two through `strings` agreed.
      */
     galleryFailed: 'Could not load the pictures for this part.',
+    /** A15: the gallery is in the owner's order, and the first picture is the card's. */
+    orderHint: 'Drag pictures to order them. The first is the one on the card.',
+    onCard: 'On the card',
+    moveEarlier: (label: string) => `Move ${label} earlier`,
+    moveLater: (label: string) => `Move ${label} later`,
+    reorderFailed: 'The new order was not saved. Reload the page and try again.',
     add: 'Add a picture',
     adding: 'Storing…',
     /** Named alt text, because "image" tells a screen reader nothing it did not know. */
@@ -1718,6 +1724,9 @@ export const strings = {
   sources: {
     /** "Fetch details" (A2): fill the part from its model's page, downloading nothing. */
     fetch: 'Fetch details',
+    /** A page's description, kept on its source row (A15); long ones open on request. */
+    showAll: 'Show all',
+    showLess: 'Show less',
     fetchLabel: 'Model page to fetch details from',
     fetchPlaceholder: 'https://www.printables.com/model/…',
     fetching: 'Fetching the page’s details. Its pictures, tags and licence appear here in a moment.',

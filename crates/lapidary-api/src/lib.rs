@@ -405,6 +405,11 @@ fn guarded(db: PgPool) -> Router<AppState> {
         // different: this is the only route in the application that makes an
         // outbound request, and it should be legible as that from the route table.
         .route("/api/parts/{id}/images/from-url", post(images::from_url))
+        // The gallery's order, first picture first (A15).
+        .route(
+            "/api/parts/{id}/images/order",
+            axum::routing::put(images::reorder),
+        )
         // Re-framing carries both ids because an image id on its own is a bare
         // handle to a row, and the repo checks the pair — see `set_image_framing`.
         .route(

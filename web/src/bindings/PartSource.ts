@@ -30,4 +30,8 @@ priceMinor: number | null,
 /**
  * ISO 4217. Meaningless without `price_minor`, which the database also insists on.
  */
-currency: string | null, };
+currency: string | null, 
+/**
+ * What the model's page says about it, as Fetch details found it (A15).
+ */
+description: string | null, };
