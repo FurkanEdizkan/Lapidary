@@ -129,6 +129,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A10](A10.md) | Upload single files, and zip and 7z archives | 12 | Rust + web | A9 | see [A10.md](A10.md) | — | merged `419f300` | `feat/upload-archives` |
 | [A11](A11.md) | The viewer reads models off the page's thread | 12 | web | A10 | see [A11.md](A11.md) | — | merged `222578c` | `feat/viewer-worker` |
 | [A12](A12.md) | Grid, size, measure and axes in the 3D view | 12 | web | A11 | see [A12.md](A12.md) | — | merged `26b1632` | `feat/viewer-tools` |
+| [A13](A13.md) | Packs: archives in the library, kept packed | 12 | Rust + web | A12 | see [A13.md](A13.md) | 0067 | open | `feat/packs` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
