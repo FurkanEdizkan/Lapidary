@@ -146,7 +146,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A27](A27.md) | The cut: the sign-in drawing becomes a gem | 13 | web + docs | A26 | see [A27.md](A27.md) | — | merged `a78e68b` | `feat/the-cut` |
 | [A28](A28.md) | The library wall: sign-in shows the library's own pictures | 14 | api + db + web + docs | A27 | see [A28.md](A28.md) | 0069 | merged `bc1f7ad` | `feat/the-wall` |
 | [A29](A29.md) | The empty frame: the diamond goes | 14 | web + docs | A28 | see [A29.md](A29.md) | — | merged `68af7c9` | `feat/the-empty-frame` |
-| [A30](A30.md) | A grid that holds twenty thousand parts | 15 | api + web | A29 | see [A30.md](A30.md) | — | open | `perf/windowed-grid` |
+| [A30](A30.md) | A grid that holds twenty thousand parts | 15 | api + web | A29 | see [A30.md](A30.md) | — | merged `2e82a8f` | `perf/windowed-grid` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
