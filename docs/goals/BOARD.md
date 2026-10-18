@@ -141,7 +141,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A22](A22.md) | Dialogs with presence | 13 | web | A18 | see [A22.md](A22.md) | — | merged `53f935b` | `feat/dialog-presence` |
 | [A23](A23.md) | Part page: stage overlay and filmstrip | 13 | web | A16, A21 | see [A23.md](A23.md) | — | merged `f9813ee` | `feat/part-stage` |
 | [A24](A24.md) | Dashboard, settings, people, profile, tags, shared | 13 | web | A21 | see [A24.md](A24.md) | — | merged `ffa5e36` | `feat/pages-pass` |
-| A25 | Redesign finish pass: screenshots, reviews, budget | 13 | web + docs | all | see [REDESIGN.md](REDESIGN.md) | — | open | — |
+| [A25](A25.md) | Redesign finish pass: screenshots, reviews, budget | 13 | web + docs | all | see [A25.md](A25.md) | — | claimed | `feat/redesign-finish` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
