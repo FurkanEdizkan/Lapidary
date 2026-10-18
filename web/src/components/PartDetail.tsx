@@ -824,7 +824,9 @@ export function Preview({
         src={src}
         alt={strings.parts.pictureAlt(part.name)}
         className="h-full w-full"
-        style={pictureStyle(image)}
+        // The stage shows the whole picture (A16): its box is wide and of fixed height, and a stored `cover` cut a
+        // square store picture to a band. Cards and the gallery keep the framing, which is what it is for.
+        style={stage ? { objectFit: 'contain' } : pictureStyle(image)}
       />
     )
   const viewable = part.sourceFormat !== null && MESH_FORMATS.includes(part.sourceFormat)
