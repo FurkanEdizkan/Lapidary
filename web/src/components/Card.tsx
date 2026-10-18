@@ -81,7 +81,8 @@ const FOOTER: Record<Layout, string> = {
   // stops, the padding or the text sizes here change.
   gallery:
     'absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-[linear-gradient(180deg,rgba(18,18,20,0)_0%,rgba(18,18,20,0.93)_2.5rem,rgba(18,18,20,0.97)_100%)] px-3 pt-6 pb-2.5',
-  list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1',
+  // Under `sm` the figures always go under the name: wrapping only when the name is long put them in two places.
+  list: 'flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1 max-sm:flex-col max-sm:items-start',
 }
 
 /**

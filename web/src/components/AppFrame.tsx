@@ -85,9 +85,23 @@ const ROW = 'ease-mechanical flex min-h-9 items-center border-l-2 px-3 text-sm d
 const ROW_HERE = `${ROW} border-[var(--color-bright)] font-semibold text-[var(--color-bright)]`
 const ROW_THERE = `${ROW} border-transparent text-[var(--color-muted)] hover:text-[var(--color-text)]`
 
-/** The 2px Quicklime line under the current place, at the header's foot. */
-function Marker({ inset = 'inset-x-3' }: { inset?: 'inset-x-3' | 'inset-x-1' }) {
-  return <Indicator id={MARKER} move="base" aria-hidden="true" data-place-marker className={`absolute bottom-0 h-0.5 bg-[var(--color-bright)] ${inset}`} />
+/**
+ * The 2px Quicklime line under the current place, at the header's foot. Among the three places it is one `Indicator`
+ * that travels between them. Under the account button it is a plain line: under `md` the places are `display: none`, so
+ * a shared marker would fly in from a 0×0 box at the window's corner, and DESIGN.md moves it among the places only.
+ */
+function Marker({ travels = true }: { travels?: boolean }) {
+  return travels ? (
+    <Indicator
+      id={MARKER}
+      move="base"
+      aria-hidden="true"
+      data-place-marker
+      className="absolute inset-x-3 bottom-0 h-0.5 bg-[var(--color-bright)]"
+    />
+  ) : (
+    <span aria-hidden="true" data-place-marker className="absolute inset-x-1 bottom-0 h-0.5 bg-[var(--color-bright)]" />
+  )
 }
 
 /**
@@ -209,7 +223,7 @@ function UserMenu({ current }: { current?: Place }) {
         {strings.user.signOut}
       </button>
     </Menu>
-    {marked ? <Marker inset="inset-x-1" /> : null}
+    {marked ? <Marker travels={false} /> : null}
     </div>
   )
 }
