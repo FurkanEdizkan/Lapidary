@@ -7,7 +7,7 @@
 
 use axum::Json;
 use axum::extract::Path;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use lapidary_sites::{Site, SiteError, Sites};
@@ -93,16 +93,19 @@ async fn serve() -> String {
             if bearer(&h) == Some("tv-token") { STL.into_response() } else { StatusCode::UNAUTHORIZED.into_response() }
         }))
         .route("/mmf/api/v2/user", get(|h: HeaderMap| async move { keyed(&h, json!({"username": "scantheworld"})) }))
+        .route("/mmf/api/v2/categories", get(|uri: Uri| async move { mmf_key(&uri, json!({"total_count": 1, "items": []})) }))
         .route(
             "/mmf/api/v2/objects/{id}",
             get({
                 let b = base.clone();
-                move |h: HeaderMap| {
+                move |h: HeaderMap, uri: Uri| {
                     let b = b.clone();
                     async move {
+                        // An API key reads the object as `?key=`, with no download link (A14).
+                        let api_key = uri.query().is_some_and(|q| q.contains("key=mmf-api-key"));
                         // The download link is only there for a signed-in account, as the spec says.
                         let link = if bearer(&h).is_some() { json!(format!("{b}/files/david.stl")) } else { Value::Null };
-                        keyed(&h, json!({
+                        let object = json!({
                             "id": 2052, "url": "https://www.myminifactory.com/object/3d-print-michelangelo-s-david-in-florence-italy-2052",
                             "name": "David", "description": "When all was finished.",
                             "license": "Download - Share - Maintain License - Credit - Remix - Commercial - Exclusive",
@@ -112,8 +115,9 @@ async fn serve() -> String {
                                 {"id": 1, "is_primary": false, "standard": {"url": format!("{b}/files/side.jpg")}},
                                 {"id": 2, "is_primary": true, "large": {"url": format!("{b}/files/front.jpg")}, "standard": {"url": format!("{b}/files/front-720.jpg")}}
                             ],
-                            "files": {"total_count": 1, "items": [{"id": 141114, "filename": "scan-the-world-michelangelo-s-david.stl", "size": 35, "download_url": link}]}
-                        }))
+                            "files": {"total_count": 1, "items": [{"id": 141114, "filename": "scan-the-world-michelangelo-s-david.stl", "size": "35", "download_url": link}]}
+                        });
+                        if api_key { Json(object).into_response() } else { keyed(&h, object) }
                     }
                 }
             }),
@@ -149,6 +153,19 @@ fn keyed(headers: &HeaderMap, body: Value) -> Response {
             Json(json!({"error": "Unauthorized", "code": 401, "type": "NO_TOKEN_PROVIDED"})),
         )
             .into_response(),
+    }
+}
+
+/// MyMiniFactory's API key goes in the query, and only `mmf-api-key` is one.
+fn mmf_key(uri: &Uri, body: Value) -> Response {
+    if uri.query().is_some_and(|q| q.contains("key=mmf-api-key")) {
+        Json(body).into_response()
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "access_denied"})),
+        )
+            .into_response()
     }
 }
 
@@ -317,6 +334,40 @@ async fn a_myminifactory_object_downloads_only_with_an_account_token() {
             .expect("downloads"),
         STL
     );
+}
+
+#[tokio::test]
+async fn a_myminifactory_api_key_reads_the_object_but_cannot_download() {
+    let sites = Sites::local(&serve().await);
+    let key = Some("mmf-api-key");
+    assert!(
+        sites
+            .check(Site::MyMiniFactory, key)
+            .await
+            .expect("a good API key")
+            .contains("API key"),
+        "the check says what an API key can do"
+    );
+    let model = sites
+        .model(Site::MyMiniFactory, "2052", key)
+        .await
+        .expect("reads");
+    assert_eq!(model.name, "David");
+    assert_eq!(model.tags, ["david", "sculpture", "Marble"]);
+    assert_eq!(model.images.len(), 2);
+    assert_eq!(
+        model.files[0].size,
+        Some(35),
+        "a size sent as a string is still read"
+    );
+    assert!(matches!(
+        sites.download(&model, &model.files[0], key).await,
+        Err(SiteError::NotFree { .. })
+    ));
+    assert!(matches!(
+        sites.check(Site::MyMiniFactory, Some("not-a-key")).await,
+        Err(SiteError::BadKey { .. })
+    ));
 }
 
 #[tokio::test]

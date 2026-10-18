@@ -301,7 +301,7 @@ async fn one_hop(
         .user_agent(concat!("Lapidary/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| FetchError::Unreachable {
-            detail: e.to_string(),
+            detail: e.without_url().to_string(),
         })?;
     let mut request = match json {
         Some(body) => client
@@ -314,7 +314,7 @@ async fn one_hop(
         request = request.header(name.as_str(), value.as_str());
     }
     request.send().await.map_err(|e| FetchError::Unreachable {
-        detail: e.to_string(),
+        detail: e.without_url().to_string(),
     })
 }
 
@@ -327,7 +327,7 @@ async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<
         .chunk()
         .await
         .map_err(|e| FetchError::Unreachable {
-            detail: e.to_string(),
+            detail: e.without_url().to_string(),
         })?
     {
         if body.len() + chunk.len() > cap {
