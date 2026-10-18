@@ -687,6 +687,8 @@ test('the first widget on an empty dashboard costs one resolve', async () => {
   fireEvent.click(within(dialog).getByRole('button', { name: strings.dashboard.addConfirm }))
   await waitFor(() => expect(resolves(calls)).toHaveLength(1))
   expect(resolves(calls)[0]?.body?.widgets).toHaveLength(1)
+  // The empty state's opener went with the empty state; focus lands on the header's Add a widget, not on <body>.
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: strings.dashboard.add }))
   // And no second one arrives a tick later.
   await new Promise((settle) => {
     setTimeout(settle, 80)

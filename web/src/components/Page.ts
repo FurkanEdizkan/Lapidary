@@ -14,14 +14,24 @@ export const SECTION_TITLE = 'text-xs font-medium tracking-wider text-[var(--col
 
 /** The page's one standing control: brighter and heavier than the quiet ones, never blue. */
 export const STANDING =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px'
+  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50 disabled:hover:translate-y-0'
 
 /**
  * A quiet control beside a field (DESIGN.md § Buttons): transparent, an Edge boundary, a Graphite label that lifts to
  * Chalk under the pointer, 32px so it stands as tall as the field it sits beside. Library and Import in the header.
  */
 export const QUIET =
-  'ease-mechanical flex min-h-8 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 text-xs whitespace-nowrap text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)]'
+  'ease-mechanical flex min-h-8 flex-none items-center gap-1.5 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 text-xs whitespace-nowrap text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-50'
 
 /** Scope type (DESIGN.md § Typography): the line naming what the grid shows, and the title of an empty grid. */
 export const SCOPE = 'text-[15px] leading-tight font-semibold text-[var(--color-bright)]'
+
+/**
+ * A value nobody can change here — the port when deploy/.env fixes it, the models folder — set as a fact: mono on the
+ * Bench Grey well with no Edge, because an Edge border promises you can type (DESIGN.md § Inputs / Fields).
+ */
+export const FACT =
+  'w-fit max-w-full rounded-[var(--radius-ctl)] bg-[var(--color-raised)] px-2 py-1.5 font-mono text-[13px] break-all text-[var(--color-text)]'
+
+/** A hint under a field or a fact: 12px Graphite, never 11px, at a shorter measure than prose. */
+export const HINT = 'max-w-[60ch] text-xs text-[var(--color-muted)]'
