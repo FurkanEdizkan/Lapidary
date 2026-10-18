@@ -61,7 +61,7 @@ export function Field({
     <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
       {label}
       {children}
-      {hint === undefined ? null : <span className="text-[11px] text-[var(--color-dim)]">{hint}</span>}
+      {hint === undefined ? null : <span className="max-w-[60ch] text-xs text-[var(--color-muted)]">{hint}</span>}
     </label>
   )
 }

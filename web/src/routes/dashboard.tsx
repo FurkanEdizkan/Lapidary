@@ -15,7 +15,7 @@ import { useAppEvents } from '../lib/events'
 import { strings } from '../lib/strings'
 import type { LibraryId, WidgetRequest, WidgetResult } from '../lib/types'
 import { AppFrame } from '../components/AppFrame'
-import { HEADLINE, LEAD } from '../components/Page'
+import { HEADLINE, LEAD, SCOPE, SECTION, STANDING } from '../components/Page'
 import { AddGroup, AddWidget } from '../components/dashboard/AddWidget'
 import { Board, settleAll } from '../components/dashboard/Board'
 
@@ -175,23 +175,22 @@ export function DashboardPage({ library }: { library: LibraryId }) {
     () => askFor(layout.widgets.map(requestOf)),
   )
 
+  /*
+    Keys already spoken for: the ones on the board, and the ones the answer still holds. A key handed out twice inside
+    one page would show the removed widget's cached result.
+  */
+  const taken = [...layout.widgets.map((widget) => widget.key), ...results.keys()]
+  const empty = layout.widgets.length === 0
   return (
     <AppFrame
       current="dashboard"
       library={library}
       skipTo={{ href: '#dashboard', label: strings.dashboard.title }}
-      actions={
-        <AddWidget
-          layout={layout}
-          onLayout={save}
-          library={library}
-          /*
-            Keys already spoken for: the ones on the board, and the ones the answer still holds.
-            A key handed out twice inside one page would show the removed widget's cached result.
-          */
-          taken={[...layout.widgets.map((widget) => widget.key), ...results.keys()]}
-        />
-      }
+      /*
+        In the header only once the board has something on it. An empty board carries its own Add a widget, standing,
+        where the eye already is (A17's audit found it 1200px away), and one page has one of it.
+      */
+      actions={empty ? undefined : <AddWidget layout={layout} onLayout={save} library={library} taken={taken} />}
     >
       {/* Rendered, not assigned: React 19 hoists it, so the route that owns the page owns its title. */}
       <title>{strings.titles.dashboard}</title>
@@ -204,20 +203,22 @@ export function DashboardPage({ library }: { library: LibraryId }) {
       <div id="dashboard">
         <h2 className={HEADLINE}>{strings.dashboard.title}</h2>
         <p className={LEAD}>{strings.dashboard.lead}</p>
-        <p className="mt-1 max-w-[70ch] text-xs text-[var(--color-muted)]">{strings.dashboard.perBrowser}</p>
-        {layout.widgets.length === 0 ? (
-          <section className="mt-10 border-t border-[var(--color-border)] pt-6">
-            <h3 className="text-sm font-medium text-[var(--color-bright)]">{strings.dashboard.empty}</h3>
-            <p className="mt-2 max-w-[70ch] text-sm text-[var(--color-dim)]">{strings.dashboard.emptyLead}</p>
+        {empty ? (
+          <section className={SECTION} aria-labelledby="dashboard-empty">
+            <h3 id="dashboard-empty" className={SCOPE}>
+              {strings.dashboard.empty}
+            </h3>
+            <p className={LEAD}>{strings.dashboard.emptyLead}</p>
+            <div className="mt-5">
+              <AddWidget layout={layout} onLayout={save} library={library} taken={taken} standing />
+            </div>
           </section>
         ) : asked.isError ? (
-          <section className="mt-10 border-t border-[var(--color-border)] pt-6">
-            <p className="max-w-[70ch] text-sm text-[var(--color-dim)]">{strings.dashboard.loadFailed}</p>
-            <button
-              type="button"
-              className="ease-mechanical mt-3 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
-              onClick={() => void asked.refetch()}
-            >
+          <section className={SECTION}>
+            <p role="alert" className="max-w-[70ch] text-sm text-[var(--color-dim)]">
+              {strings.dashboard.loadFailed}
+            </p>
+            <button type="button" className={`${STANDING} mt-4`} onClick={() => void asked.refetch()}>
               {strings.dashboard.retry}
             </button>
           </section>
@@ -227,7 +228,9 @@ export function DashboardPage({ library }: { library: LibraryId }) {
             if (widget !== undefined) askFor([requestOf(widget)])
           }} />
         )}
-        {layout.widgets.length === 0 ? null : <AddGroup layout={layout} onLayout={save} />}
+        {empty ? null : <AddGroup layout={layout} onLayout={save} />}
+        {/* A note about the whole page, after it: Graphite at 12px, not a second lead (A17's audit). */}
+        <p className="mt-10 max-w-[70ch] text-xs text-[var(--color-muted)]">{strings.dashboard.perBrowser}</p>
       </div>
     </AppFrame>
   )

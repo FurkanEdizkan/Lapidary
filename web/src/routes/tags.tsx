@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
-import { HEADLINE, LEAD } from '../components/Page'
+import { HEADLINE, LEAD, STANDING } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import {
   LETTER_JUMP_AT,
@@ -78,9 +78,13 @@ export function TagsPage({ library, order }: { library: LibraryId; order?: 'name
             {strings.tagIndex.failed}
           </p>
         ) : tags.data === undefined ? null : tags.data.length === 0 ? (
-          <p className="mt-6 max-w-[70ch] text-sm text-[var(--color-muted)]">
-            {strings.tagIndex.none}
-          </p>
+          <div className="mt-6 flex flex-col items-start gap-4">
+            <p className="max-w-[70ch] text-sm text-[var(--color-dim)]">{strings.tagIndex.none}</p>
+            {/* An empty page is a way on, not only a sentence (A17's audit): the grid is where a model is tagged. */}
+            <Link to="/" search={library === DEFAULT_LIBRARY_ID ? {} : { library }} className={STANDING}>
+              {strings.tagIndex.openModels}
+            </Link>
+          </div>
         ) : (
           <>
             <Order library={library} order={order} />

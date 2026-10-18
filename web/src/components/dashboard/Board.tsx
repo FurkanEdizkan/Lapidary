@@ -4,10 +4,11 @@ import { flipFrom } from '../../lib/flip'
 import { strings } from '../../lib/strings'
 import type { StoredLayout, StoredWidget } from '../../lib/dashboard'
 import type { WidgetResult } from '../../lib/types'
-import { Dialog } from '../Dialog'
+import { DIALOG_FOOT, Dialog, closeMenu } from '../Dialog'
+import { Presence } from '../../lib/motion-react'
+import { STANDING } from '../Page'
 import { Icon } from '../Icon'
 import { Menu } from '../Menu'
-import { closeMenu } from '../Dialog'
 import { WidgetSettings } from './AddWidget'
 import { drawValue, limitsOf, registry, widgetTitle } from './registry'
 import {
@@ -412,8 +413,10 @@ export function Board({
           </section>
         )
       })}
-      {settingsWidget === undefined ? null : (
+      <Presence>
+        {settingsWidget === undefined ? null : (
         <WidgetSettings
+          key={`configure-${settingsWidget.key}`}
           stored={settingsWidget}
           onClose={() => setSettingsFor(null)}
           onSave={(widget) => {
@@ -426,24 +429,36 @@ export function Board({
             setSettingsFor(null)
           }}
         />
-      )}
-      {renamingGroup === undefined ? null : (
-        <RenameGroup group={renamingGroup} onClose={() => setRenaming(null)} onRename={renameGroup} />
-      )}
-      {removingGroup === undefined || home === undefined ? null : (
-        <Dialog title={strings.dashboard.removeGroup(removingGroup.name)} onClose={() => setRemoving(null)}>
-          <p className="max-w-prose text-sm text-[var(--color-dim)]">
-            {strings.dashboard.removeGroupKeeps(removingGroup.name, home.name)}
-          </p>
-          <button
-            type="button"
-            className="ease-mechanical mt-4 self-start rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px"
-            onClick={() => removeGroup(removingGroup.id)}
+        )}
+      </Presence>
+      <Presence>
+        {renamingGroup === undefined ? null : (
+          <RenameGroup
+            key={`rename-${renamingGroup.id}`}
+            group={renamingGroup}
+            onClose={() => setRenaming(null)}
+            onRename={renameGroup}
+          />
+        )}
+      </Presence>
+      <Presence>
+        {removingGroup === undefined || home === undefined ? null : (
+          <Dialog
+            key={`remove-${removingGroup.id}`}
+            title={strings.dashboard.removeGroup(removingGroup.name)}
+            onClose={() => setRemoving(null)}
           >
-            {strings.dashboard.removeGroupConfirm}
-          </button>
-        </Dialog>
-      )}
+            <p className="max-w-[70ch] text-sm text-[var(--color-dim)]">
+              {strings.dashboard.removeGroupKeeps(removingGroup.name, home.name)}
+            </p>
+            <div className={DIALOG_FOOT}>
+              <button type="button" className={STANDING} onClick={() => removeGroup(removingGroup.id)}>
+                {strings.dashboard.removeGroupConfirm}
+              </button>
+            </div>
+          </Dialog>
+        )}
+      </Presence>
     </>
   )
 }
@@ -465,17 +480,19 @@ function RenameGroup({
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text)]"
+          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)]"
         />
       </label>
-      <button
-        type="button"
-        disabled={name.trim().length === 0}
-        className="ease-mechanical mt-4 self-start rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        onClick={() => onRename(group.id, name.trim())}
-      >
-        {strings.dashboard.renameGroupConfirm}
-      </button>
+      <div className={DIALOG_FOOT}>
+        <button
+          type="button"
+          disabled={name.trim().length === 0}
+          className={STANDING}
+          onClick={() => onRename(group.id, name.trim())}
+        >
+          {strings.dashboard.renameGroupConfirm}
+        </button>
+      </div>
     </Dialog>
   )
 }

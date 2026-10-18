@@ -33,6 +33,7 @@ function stub(settings: SiteSettings = SETTINGS) {
         return { ok: true, status: 200, json: async () => ({ ok: true, account: 'scantheworld', message: 'MyMiniFactory answers: the key works for scantheworld.' }) }
       }
       if (method !== 'GET') return { ok: true, status: 204, json: async () => null }
+      if (url === '/api/settings/server') return { ok: true, status: 200, json: async () => ({ port: 32000, lockedBy: 'LAPIDARY_PORT' }) }
       return { ok: true, status: 200, json: async () => settings }
     }),
   )
@@ -97,4 +98,14 @@ test('switched off, the page says so and nothing can be checked', async () => {
   expect(await screen.findByText(strings.settings.switchedOff)).toBeTruthy()
   const printables = await row('Printables')
   expect((within(printables).getByRole('button', { name: strings.settings.checkSite }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+/** A17's audit: the locked port was drawn as an input. A value nobody can change here is a fact, not a field. */
+test('a port fixed by deploy/.env reads as a fact, not as a field', async () => {
+  stub()
+  renderPage()
+  const value = await screen.findByText('32000')
+  expect(value.tagName).toBe('DD')
+  expect(screen.queryByRole('spinbutton')).toBeNull()
+  screen.getByText(strings.settings.portLocked('LAPIDARY_PORT'))
 })

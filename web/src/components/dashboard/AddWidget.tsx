@@ -5,7 +5,9 @@ import { MAX_LIMIT, MAX_WIDGETS, nextKey, widgetFrom } from '../../lib/dashboard
 import type { DrawnWidget, StoredLayout, StoredWidget } from '../../lib/dashboard'
 import { strings } from '../../lib/strings'
 import type { FacetKind, LibraryId, SavedFilterId } from '../../lib/types'
-import { Dialog } from '../Dialog'
+import { Presence } from '../../lib/motion-react'
+import { DIALOG_FOOT, Dialog } from '../Dialog'
+import { STANDING } from '../Page'
 import { KINDS, registry, type Field } from './registry'
 
 /**
@@ -25,10 +27,8 @@ import { KINDS, registry, type Field } from './registry'
 const FIELD = 'mt-3 flex flex-col gap-1 text-xs text-[var(--color-muted)]'
 
 const INPUT =
-  'rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text)]'
+  'rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)]'
 
-const CONFIRM =
-  'ease-mechanical mt-5 self-start rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-4 py-2 text-sm font-semibold text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
 const OPENER =
   'ease-mechanical flex min-h-8 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 py-1.5 text-xs text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
@@ -181,6 +181,7 @@ export function AddWidget({
   onLayout,
   library,
   taken,
+  standing = false,
 }: {
   layout: StoredLayout
   onLayout: (next: StoredLayout) => void
@@ -192,6 +193,8 @@ export function AddWidget({
    * result under the new one's heading.
    */
   taken: readonly string[]
+  /** The empty dashboard's own Add a widget: the page's one standing control while there is nothing else on it. */
+  standing?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const full = layout.widgets.length >= MAX_WIDGETS
@@ -199,17 +202,25 @@ export function AddWidget({
     <>
       <button
         type="button"
-        className={OPENER}
+        className={standing ? STANDING : OPENER}
+        data-dashboard-add={standing ? undefined : ''}
         disabled={full}
         title={full ? strings.dashboard.full(MAX_WIDGETS) : undefined}
         onClick={() => setOpen(true)}
       >
         {strings.dashboard.add}
       </button>
-      {!open ? null : (
+      <Presence>
+        {open ? (
         <AddWidgetDialog
+          key="add-widget"
           layout={layout}
           library={library}
+          /*
+            The empty board's opener leaves with the empty state the moment the first widget lands, and this dialog with
+            it, so focus goes to the header's Add a widget, which arrived in the same change.
+          */
+          returnFocus={standing ? () => document.querySelector<HTMLElement>('[data-dashboard-add]') : undefined}
           onClose={() => setOpen(false)}
           onAdd={(widget, group, libraryName) => {
             const spec = registry[widget.kind]
@@ -229,7 +240,8 @@ export function AddWidget({
             setOpen(false)
           }}
         />
-      )}
+        ) : null}
+      </Presence>
     </>
   )
 }
@@ -237,11 +249,13 @@ export function AddWidget({
 function AddWidgetDialog({
   layout,
   library,
+  returnFocus,
   onClose,
   onAdd,
 }: {
   layout: StoredLayout
   library: LibraryId
+  returnFocus?: () => HTMLElement | null
   onClose: () => void
   onAdd: (widget: DrawnWidget, group: string, libraryName: string | null) => void
 }) {
@@ -256,7 +270,7 @@ function AddWidgetDialog({
   })
   const widget = widgetFrom(draft)
   return (
-    <Dialog title={strings.dashboard.addTitle} onClose={onClose}>
+    <Dialog title={strings.dashboard.addTitle} onClose={onClose} returnFocus={returnFocus}>
       <label className={FIELD}>
         {strings.dashboard.addKind}
         <select
@@ -284,9 +298,10 @@ function AddWidgetDialog({
           </select>
         </label>
       )}
+      <div className={DIALOG_FOOT}>
       <button
         type="button"
-        className={CONFIRM}
+        className={STANDING}
         disabled={widget === null}
         onClick={() => {
           if (widget === null) return
@@ -298,6 +313,7 @@ function AddWidgetDialog({
       >
         {strings.dashboard.addConfirm}
       </button>
+      </div>
     </Dialog>
   )
 }
@@ -329,9 +345,11 @@ export function WidgetSettings({
   return (
     <Dialog title={strings.dashboard.settingsTitle(registry[stored.widget.kind].label)} onClose={onClose}>
       <Config draft={draft} onChange={setDraft} libraries={libraries} />
-      <button type="button" className={CONFIRM} disabled={widget === null} onClick={() => widget !== null && onSave(widget)}>
-        {strings.dashboard.settingsSave}
-      </button>
+      <div className={DIALOG_FOOT}>
+        <button type="button" className={STANDING} disabled={widget === null} onClick={() => widget !== null && onSave(widget)}>
+          {strings.dashboard.settingsSave}
+        </button>
+      </div>
     </Dialog>
   )
 }
@@ -359,15 +377,17 @@ export function AddGroup({
       >
         {strings.dashboard.addGroup}
       </button>
-      {!open ? null : (
-        <Dialog title={strings.dashboard.addGroupTitle} onClose={() => setOpen(false)}>
+      <Presence>
+        {open ? (
+        <Dialog key="add-group" title={strings.dashboard.addGroupTitle} onClose={() => setOpen(false)}>
           <label className={FIELD}>
             {strings.dashboard.groupNameLabel}
             <input className={INPUT} value={name} onChange={(event) => setName(event.target.value)} />
           </label>
+          <div className={DIALOG_FOOT}>
           <button
             type="button"
-            className={CONFIRM}
+            className={STANDING}
             disabled={name.trim().length === 0}
             onClick={() => {
               const id = nextKey(layout.groups.map((group) => group.id), 'g')
@@ -377,8 +397,10 @@ export function AddGroup({
           >
             {strings.dashboard.addGroupConfirm}
           </button>
+          </div>
         </Dialog>
-      )}
+        ) : null}
+      </Presence>
     </>
   )
 }

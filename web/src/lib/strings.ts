@@ -149,6 +149,7 @@ export const strings = {
     moving: (port: number) => `Moving Lapidary to port ${port}…`,
     moveLost: (port: number) =>
       `Lapidary moved to port ${port} but this page could not reach it. Open it on port ${port} yourself.`,
+    foldersHeading: 'Folders',
     modelsFolder: 'Models folder',
     modelsFolderHint:
       'Where your models are, and where uploads, imports and removed models go. Choosing another restarts Lapidary on it; models read from the current one must be removed from the library first.',
@@ -211,6 +212,7 @@ export const strings = {
         : `Shared with you by ${owner}: you can look at it and download it. Only they can change it.`,
     place: 'Shared with me',
     title_page: 'Shared with me',
+    leadPage: 'Models other people shared with you, newest first. Open one to look at it and download it.',
     empty: 'Nobody has shared a model with you yet.',
     loadingPage: 'Loading what was shared with you…',
     failed: 'Could not load what was shared with you. Check that the server is running, then reload.',
@@ -220,8 +222,12 @@ export const strings = {
     title: 'People',
     lead: 'Everybody with an account on this install. Each person sees their own models and the ones shared with them.',
     adminsOnly: 'Only an admin can add or remove people.',
-    you: 'you',
-    admin: 'admin',
+    /** Beside your own name in the list. */
+    you: 'You',
+    listHeading: 'Accounts',
+    role: 'Role',
+    admin: 'Admin',
+    member: 'Member',
     addHeading: 'Add a person',
     username: 'Username',
     displayName: 'Display name',
@@ -1931,6 +1937,8 @@ export const strings = {
     otherInitial: 'Numbers and symbols',
     /** A library nobody has tagged yet. Not a failure, and it says what to do about it. */
     none: 'No model in this library is tagged yet. Open a model and add a tag to it — a project, a use, a shelf — and it will be here.',
+    /** The empty index's way on: the grid, where a model is opened and tagged. */
+    openModels: 'Open a model',
     failed: 'Could not load this library’s tags. Check that the api service is running, then reload.',
     /** The link out of the grid’s filter panel, into the whole library’s tags. */
     all: 'All tags…',

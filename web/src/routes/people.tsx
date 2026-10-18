@@ -39,20 +39,30 @@ export function PeoplePage() {
             {note}
           </p>
         )}
-        {people.isPending ? (
-          <p className="mt-6 text-[var(--color-muted)]">{strings.people.loading}</p>
-        ) : people.isError ? (
-          <p role="alert" className="mt-6 text-[var(--color-muted)]">
-            {strings.people.failed}
-          </p>
+        <section className={SECTION} aria-labelledby="people-accounts">
+          <h3 id="people-accounts" className={SECTION_TITLE}>
+            {strings.people.listHeading}
+          </h3>
+          {people.isPending ? (
+            <p className="mt-4 text-sm text-[var(--color-muted)]">{strings.people.loading}</p>
+          ) : people.isError ? (
+            <p role="alert" className="mt-4 max-w-[70ch] text-sm text-[var(--color-muted)]">
+              {strings.people.failed}
+            </p>
+          ) : (
+            // Rows divided, not boxed: the last one has no rule of its own above the next section's (A17's audit).
+            <ul role="list" className="flex flex-col divide-y divide-[var(--color-border)]">
+              {people.data.map((person) => (
+                <PersonRow key={person.id} person={person} you={person.id === me?.id} admin={admin} onNote={setNote} />
+              ))}
+            </ul>
+          )}
+        </section>
+        {admin ? (
+          <AddPerson onNote={setNote} />
         ) : (
-          <ul role="list" className="mt-6 flex flex-col border-t border-[var(--color-border)]">
-            {people.data.map((person) => (
-              <PersonRow key={person.id} person={person} you={person.id === me?.id} admin={admin} onNote={setNote} />
-            ))}
-          </ul>
+          <p className="mt-6 max-w-[70ch] text-sm text-[var(--color-dim)]">{strings.people.adminsOnly}</p>
         )}
-        {admin ? <AddPerson onNote={setNote} /> : <p className="mt-6 text-sm text-[var(--color-dim)]">{strings.people.adminsOnly}</p>}
       </section>
     </AppFrame>
   )
@@ -91,11 +101,13 @@ function PersonRow({
     },
   })
   return (
-    <li className="flex flex-col gap-2 border-b border-[var(--color-border)] py-3">
+    <li className="flex flex-col gap-2 py-3">
+      {/*
+        Each value says what it is (A17's audit read "rig rig admin you"): the name in Title, then a labelled username
+        and role. The username is drawn only when it is not already the name above it.
+      */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-semibold text-[var(--color-bright)]">{name}</span>
-        <span className="text-xs text-[var(--color-dim)]">{person.username}</span>
-        {person.isAdmin ? <span className="text-xs text-[var(--color-muted)]">{strings.people.admin}</span> : null}
+        <span className="text-sm font-semibold text-[var(--color-bright)]">{name}</span>
         {you ? <span className="text-xs text-[var(--color-muted)]">{strings.people.you}</span> : null}
         {admin && !you ? (
           <span className="ml-auto flex gap-3">
@@ -108,6 +120,18 @@ function PersonRow({
           </span>
         ) : null}
       </div>
+      <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+        {person.displayName === null ? null : (
+          <div className="flex items-baseline gap-2">
+            <dt className="text-[var(--color-muted)]">{strings.people.username}</dt>
+            <dd className="font-mono text-[var(--color-dim)]">{person.username}</dd>
+          </div>
+        )}
+        <div className="flex items-baseline gap-2">
+          <dt className="text-[var(--color-muted)]">{strings.people.role}</dt>
+          <dd className="text-[var(--color-dim)]">{person.isAdmin ? strings.people.admin : strings.people.member}</dd>
+        </div>
+      </dl>
       {resetting ? (
         <form
           className="flex flex-wrap items-end gap-2"
@@ -179,14 +203,14 @@ function AddPerson({ onNote }: { onNote: (note: string) => void }) {
     <section className={SECTION}>
       <h3 className={SECTION_TITLE}>{strings.people.addHeading}</h3>
       <form
-        className="mt-4 grid max-w-xl gap-3 sm:grid-cols-2"
+        className="mt-4 flex max-w-[28rem] flex-col gap-3"
         onSubmit={(event) => {
           event.preventDefault()
           if (!add.isPending) add.mutate()
         }}
       >
         <Field label={strings.people.username}>
-          <input type="text" autoComplete="off" value={username} onChange={(event) => setUsername(event.target.value)} className={INPUT} />
+          <input type="text" autoComplete="off" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} className={INPUT} />
         </Field>
         <Field label={strings.people.displayName}>
           <input type="text" autoComplete="off" value={displayName} onChange={(event) => setDisplayName(event.target.value)} className={INPUT} />
@@ -194,16 +218,16 @@ function AddPerson({ onNote }: { onNote: (note: string) => void }) {
         <Field label={strings.people.password} hint={strings.people.passwordHint}>
           <input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} className={INPUT} />
         </Field>
-        <label className="flex items-center gap-2 self-center text-sm">
+        <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={isAdmin} onChange={(event) => setIsAdmin(event.target.checked)} className="size-4 accent-[var(--color-accent)]" />
           {strings.people.makeAdmin}
         </label>
         {add.isError ? (
-          <p role="alert" className="text-sm text-[var(--color-text)] sm:col-span-2">
+          <p role="alert" className="text-sm text-[var(--color-text)]">
             {add.error.message}
           </p>
         ) : null}
-        <div className="sm:col-span-2">
+        <div className="mt-1">
           <button type="submit" disabled={add.isPending} className={STANDING}>
             {add.isPending ? strings.people.adding : strings.people.add}
           </button>
