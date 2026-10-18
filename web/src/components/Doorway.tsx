@@ -27,7 +27,7 @@ export function Doorway({
       <main className="grid min-h-dvh grid-rows-[auto_1fr] lg:grid-cols-[55fr_45fr] lg:grid-rows-1">
         <div className="stage-lamp relative flex h-36 flex-col overflow-hidden border-b border-[var(--color-border)] lg:h-auto lg:border-r lg:border-b-0">
           {/*
-            Below `lg` the drawing is larger than its band and cropped by it, off to the right of the mark. Centred by
+            Below `lg` the aside is larger than its band and cropped by it, off to the right of the mark. Centred by
             flex, not a translate: a transformed ancestor would capture setup's intro, which centres on the viewport.
           */}
           {backdrop}

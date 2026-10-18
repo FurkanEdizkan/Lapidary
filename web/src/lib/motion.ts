@@ -1,6 +1,5 @@
 import { animate } from 'animejs/animation'
 import { cubicBezier } from 'animejs/easings'
-import { createDrawable } from 'animejs/svg'
 import { stagger } from 'animejs/utils'
 import { waapi } from 'animejs/waapi'
 import { STAGGERED, bezier, reduced, staggerStep, tokens, type Tokens } from './motion-tokens'
@@ -89,101 +88,5 @@ export function tween<T extends object>(
   })
   return () => {
     animation.cancel()
-  }
-}
-
-/**
- * Lines drawing themselves, in turn: the lattice's arrival (A19, A20).
- *
- * An authored moment, so it may run past `--duration-slow`: each line takes `--duration-scene` and the run is spread
- * over `total` ms (at most 3 s, so it is still within WCAG 2.2.2's five seconds once it settles). It draws once and
- * stays drawn; nothing here loops. Under reduced motion the lines are simply there. `onDone` runs either way, once.
- *
- * `heads`, when given, are accent copies of `lines`, one for one: each rides the tip of its line as a short segment
- * and fades out before that line is finished, so the accent is only ever where something is being drawn. The caller
- * removes them on `onDone`; blue at rest is a defect. Under reduced motion they are never animated, so a caller
- * should not render them then.
- */
-export function drawIn(
-  lines: readonly SVGGeometryElement[],
-  onDone: () => void = noop,
-  total = 1800,
-  heads: readonly SVGGeometryElement[] = [],
-): () => void {
-  const targets = lines.filter((line) => typeof line.getTotalLength === 'function')
-  if (targets.length === 0 || reduced()) {
-    onDone()
-    return noop
-  }
-  const t = tokens()
-  const spread = Math.max(0, Math.min(total, 3000) - t.scene)
-  const step = targets.length > 1 ? spread / (targets.length - 1) : 0
-  const drawables = createDrawable(targets as SVGGeometryElement[])
-  const animation = animate(drawables, {
-    draw: ['0 0', '0 1'],
-    duration: t.scene,
-    ease: curve(t),
-    delay: stagger(step),
-    onComplete: () => onDone(),
-  })
-  const tips = heads.filter((head) => typeof head.getTotalLength === 'function')
-  if (tips.length === 0) {
-    return () => {
-      animation.revert()
-    }
-  }
-  // The head is the last few percent of what is drawn so far, riding the line's tip, and it fades over the line's
-  // last `--duration-fast`, so each line is grey the moment it is complete (DESIGN.md § Lattice).
-  const head = animate(createDrawable(tips as SVGGeometryElement[]), {
-    draw: ['0 0', '0.92 1'],
-    duration: t.scene,
-    ease: curve(t),
-    delay: stagger(step),
-  })
-  const fade = waapi.animate(tips as unknown as HTMLElement[], {
-    opacity: [1, 0],
-    duration: t.fast,
-    ease: t.ease,
-    delay: stagger(step, { start: t.scene - t.fast }),
-  })
-  return () => {
-    animation.revert()
-    head.revert()
-    fade.revert()
-  }
-}
-
-/** A running cycle, and how to hold it: WCAG 2.2.2 wants anything that loops to be pausable. */
-export type Cycle = { pause: () => void; play: () => void; cancel: () => void }
-
-const STILL_CYCLE: Cycle = { pause: noop, play: noop, cancel: noop }
-
-/**
- * A number running from 0 to 1 and round again, for ever, at an even pace: the sign-in drawing's turn (A26).
- *
- * The one thing in the product that loops, which is why it hands back a pause: its caller must show a control for it
- * and stop it while the page is hidden. Under reduced motion nothing runs and `onFrame` is never called, so the
- * drawing stays as it was drawn.
- */
-export function cycle(periodMs: number, onFrame: (progress: number) => void): Cycle {
-  if (reduced()) return STILL_CYCLE
-  const clock = { progress: 0 }
-  const animation = animate(clock, {
-    progress: [0, 1],
-    duration: periodMs,
-    ease: 'linear',
-    loop: true,
-    onUpdate: () => onFrame(clock.progress),
-  })
-  return {
-    pause: () => {
-      animation.pause()
-    },
-    play: () => {
-      animation.play()
-    },
-    cancel: () => {
-      animation.cancel()
-    },
   }
 }

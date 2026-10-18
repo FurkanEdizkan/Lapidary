@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { STAGGERED, arrive, drawIn, durationMs, staggerStep, tween } from './motion'
+import { STAGGERED, arrive, durationMs, staggerStep, tween } from './motion'
 
 function reducedMotion(matches: boolean) {
   vi.stubGlobal(
@@ -98,11 +98,4 @@ test('each animation engine is imported in one place only', () => {
   expect(importing(/from\s+['"]animejs(\/[\w-]+)?['"]/)).toEqual(['./motion.ts'])
   expect(importing(/from\s+['"]motion(\/[\w-]+)?['"]/)).toEqual(['./motion-features.ts', './motion-react.tsx'])
   expect(importing(/from\s+['"]framer-motion/)).toEqual([])
-})
-
-test('lines under reduced motion are simply drawn, and the run still says it is done', () => {
-  reducedMotion(true)
-  const done = vi.fn()
-  drawIn([document.createElementNS('http://www.w3.org/2000/svg', 'path')], done)
-  expect(done).toHaveBeenCalledTimes(1)
 })

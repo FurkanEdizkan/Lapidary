@@ -40,7 +40,11 @@
      reduced motion on and off, and this file now says what A18–A24 shipped where it had
      drifted: the route enter inside AppFrame, the still Lattice for a missing picture, the
      format chip, Card framing, FACT and HINT, the Quicklime stepper marker, the grey checkbox,
-     and the words-that-act tier of quiet controls. -->
+     and the words-that-act tier of quiet controls.
+
+     2026-10-18, A28–A29: the sign-in page's left half is the Wall (the library's pictures shared
+     with everybody), and the Lattice is gone: a missing picture is an Empty frame, and setup's
+     intro is the mark alone (owner: "change placeholders to empty frame and delete the diamond"). -->
 ---
 name: Lapidary
 description: A visual index for 3D part libraries, where the part is lit and the bench is not.
@@ -172,9 +176,9 @@ components:
   stage:
     backgroundColor: "{colors.lamp}"
     rounded: "{rounded.md}"
-  lattice:
-    textColor: "{colors.edge}"
-    strokeWidth: "1px"
+  empty-frame:
+    borderColor: "{colors.border}"
+    rounded: "{rounded.md}"
 ---
 
 # Design System: Lapidary
@@ -201,21 +205,21 @@ and it holds the part's own picture, whole, on the lamp's pool. When somebody pr
 three.js draws the original mesh on that same pool, set down on a soft contact shadow.
 Everything outside a stage is flat, tonal and silent.
 
-**The cutting bench** (2026-10-18). The redesign adds one motif and no new colour: geometry
-drawn as fine grey lines, the way a part looks laid out on a marking table before it is cut.
-At full size it is the Lattice, and it appears in only two places, the sign-in page and setup.
-Everywhere else the same idea shows only as hairlines: the Scribe Line, a stepper's rail, the
+**The wall** (2026-10-18, A28). The front door shows the library itself: the pictures of parts
+shared with everybody, drifting past in columns of cards, and before there are any, the empty
+frames that will hold them. The same empty frame stands in for a missing picture everywhere
+(A29). Everywhere else the bench shows only as hairlines: the Scribe Line, a stepper's rail, the
 marker under the current place.
 
 **Key Characteristics:**
 
 - Near-black ground; the part on its lamp-lit stage is the only lit thing on the page
 - Archivo for every word, JetBrains Mono for every figure; headings share one weight (600) and part by size and colour
-- One saturated colour, reserved for live interaction and the Lattice's draw head while it moves
+- One saturated colour, reserved for live interaction and the Wall's found tile while it moves
 - Flat by tonal layering; a shadow only under something that floats over the page
 - A picture fills its card's tile; the card's hairline lifts to Edge under the pointer
 - Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware; authored moments only at the front door
-- One decorative motif, the drawn Lattice, and only on the pages before you are signed in
+- One decorative motif, the Wall, and only on the sign-in page
 
 ## Colors
 
@@ -227,7 +231,7 @@ other saturated values in the system.
 
 - **Layout Blue** (`#2cb4f5`): the machinist's marking dye. It marks what is *live right
   now* — a valid drop target, the focus ring, a selected card's outline, upload progress,
-  text selection and the caret, and the Lattice's draw head while it is drawing. It is never
+  text selection and the caret, and the Wall's found tile while it drifts. It is never
   used for emphasis, never for a heading, and never on a resting control: Upload and Download
   stand without it.
 
@@ -411,9 +415,9 @@ on the furniture. The only shadows are the one an overlay throws by being in fro
 and the one a part throws on the lamp's ground.
 
 **The Lamp Rule.** The lamp's pool (Lamp at 50% 42% fading to Anodised Black at the box's
-closest side) is the one gradient in the system and belongs only under a part or a drawing of
-one: the part page's stage, the quick look's stage, the viewer a **view** press opens, and the
-Doorway's left half under the Lattice. `closest-side`, so no rectangle shows where it stops.
+closest side) is the one gradient in the system and belongs only under a part or the frame
+that waits for one: the part page's stage, the quick look's stage, the viewer a **view** press
+opens, a card with no picture, and the Doorway's left half under the Wall. `closest-side`, so no rectangle shows where it stops.
 
 ## Shapes
 
@@ -439,9 +443,9 @@ only made them a third smaller. A **stage** is the opposite: it shows the whole 
 `contain`, on the lamp (A16), because the stage is where you look at the part, and a crop there
 hides the thing you came to see. The tile crops; the stage never does.
 
-A part with no picture has the still Lattice on the lamp's pool, and its format in the footer's
-chip (see Lattice). It never shows a blank that looks like a picture failed to load — the
-dashboard's recently-added widget showed one until A25, and now shows the still Lattice too.
+A part with no picture has an Empty frame on the lamp's pool, and its format in the footer's
+chip (see Empty frame). It never shows a blank that looks like a picture failed to load — the
+dashboard's recently-added widget showed one until A25, and now shows the Empty frame too.
 
 **The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
 Edge, not Scribe Line. A divider gets the hairline.
@@ -461,15 +465,15 @@ how a rule gets carried out.
   route; 280 for the longest a person waits on anything they asked for — the quick look's flight,
   a whole `arrive()` run. Nothing a person does every day takes longer.
 - **Springs are for layout only**, and critically damped: `{ type: 'spring', visualDuration: 0.28,
-  bounce: 0 }`. A spring moves something that changed *place* — the stepper's rail marker, the
-  Lattice sliding into setup's left column — because a
+  bounce: 0 }`. A spring moves something that changed *place* — the stepper's rail marker —
+  because a
   layout change can be interrupted halfway and a spring picks up from where it is. It never
   overshoots: bounce is a toy's motion, and this is a tool. Hover, opacity and presence are never
   springs.
-- **Authored moments exist only at the front door**, and every one can be skipped. The sign-in
-  page's Lattice drawing itself and the intro into setup are the whole list. They get the two
-  long tokens: `--duration-scene` (480 ms, one scene inside a moment, such as the diamond and
-  Lattice drawing in at the centre) and `--duration-intro` (900 ms, the ceiling for a whole
+- **Authored moments exist only at the front door**, and every one can be skipped. The intro into
+  setup is the whole list (the sign-in Wall is a loop, below, not a moment). They get the two
+  long tokens: `--duration-scene` (480 ms, one scene inside a moment, such as the mark holding
+  at the centre) and `--duration-intro` (900 ms, the ceiling for a whole
   moment, end to end). A key, a click or the visible **Skip** ends a moment at its end state.
   Inside the app there are no authored moments: a person opens it forty times a day, and an
   animation that was charming once is a wait the fortieth time.
@@ -480,16 +484,14 @@ how a rule gets carried out.
   while the page is hidden, and is still under reduced motion. It is the front door's one loop and
   nothing inside the app may borrow it.
 - **Only `transform`, `opacity` and SVG `stroke-dashoffset` are animated** — `translate`, `scale`
-  and `rotate` are transform. The one exception is the sign-in drawing (A26, A27): it turns in three
-  dimensions, which no 2D transform can say, so `cycle` rewrites its lines' `d` and its facets'
-  `fill-opacity` each frame, straight to the SVG. Nothing animates `width`, `height`, `top`, `left`,
+  and `rotate` are transform. Nothing animates `width`, `height`, `top`, `left`,
   `filter`, colour or `box-shadow`; a hover's border brightening is a colour change with no
   transition at all, under the 1px lift that does move.
 - **Reduced motion is the end state**, never a slower or shorter version. CSS transitions drop to
-  0.01 ms (`styles.css`), `arrive()` and `drawIn()` jump, the flight does not fly, and
+  0.01 ms (`styles.css`), `arrive()` jumps, the flight does not fly, and
   `MotionRoot` passes `{ duration: 0 }` to everything under it when `reduced()` is true. A
-  front-door moment does not play at all: the Lattice is drawn and settled in its first frame.
-- **Blue at rest is still a defect.** The Lattice's draw head is Layout Blue only while it is
+  front-door moment does not play at all, and the Wall stands still.
+- **Blue at rest is still a defect.** The Wall's found tile is Layout Blue only while it is
   moving; when a moment ends, or is skipped, or never starts, there is no blue left on the page
   but the brand mark.
 - **Every Motion element carries `transition-none`.** `styles.css` gives every element a base
@@ -498,7 +500,7 @@ how a rule gets carried out.
   and the motion smears. The primitives in `motion-react.tsx` put `transition-none` on their
   `m.div` themselves, so feature code cannot forget it. `motion.ts` sends DOM targets through
   anime's Web Animations adapter, which no CSS transition sees; anything anime drives by inline
-  style instead (A18 checks `drawIn()`'s SVG strokes) carries `transition-none` as well.
+  style instead carries `transition-none` as well.
 - **Motion must say something.** Each animation answers one of: something arrived, something
   left, something changed place, or this is where you are. "It looks nice" is not on the list.
 
@@ -513,8 +515,6 @@ generalised by A18) fails the build if either is imported anywhere else, and ban
     `min(24 ms, (280 − 120) / (n − 1))`, so the whole run lands inside 280 ms; anything after
     the twelfth lands with it. Reverted on completion so no inline style outranks a hover lift.
     Never for a refetch of what is already on screen. Unchanged by the redesign.
-  - **drawIn()** (A18) — the Lattice drawing itself: anime's `createDrawable` and a stagger over
-    its edges on `stroke-dashoffset`, inside `--duration-intro`.
   - **tween()** — numbers on a three.js object, at 180 ms by default.
   - **curve()** — the same curve as a function, for a script drawing its own frames.
 - **motion** — motion.dev's MIT `motion` package, pinned exactly and bundled by Vite, so an
@@ -567,72 +567,33 @@ motion.
 
 - **At `lg` and wider, a 55/45 grid**, full height (`min-h-dvh`, never `min-h-screen`, which jumps
   under a phone's address bar). **The left half** is an `aside`: the `stage-lamp` pool, the
-  Lattice drawn on it, and at its foot the diamond, the wordmark and one pitch line from
+  Wall on sign-in or the Stepper in setup, and at its foot the diamond, the wordmark and one pitch line from
   `strings.ts` in Ash. **The right half** is the form, `max-w-sm`, centred in its half both ways,
   with the page's one Headline over it.
-- **Why 55/45.** The drawing is the reason the split exists, so it gets the larger half; the form
+- **Why 55/45.** The left half is the reason the split exists, so it gets the larger half; the form
   needs only 24rem, and a form centred in 45% of a wide screen sits where the eye already is.
   50/50 reads as two equal things competing; this is one thing and its frame.
-- **Below `lg`**, one column: the Lattice becomes a band about 9rem tall above the form, the pool
+- **Below `lg`**, one column: the left half becomes a band about 9rem tall above the form, the pool
   still under it, and the form follows at full width with a 16px gutter.
 - **The left half shows pictures and no other data** (A28, owner 2026-10-18). On sign-in it is the
   Wall: the first pictures of parts **shared with everybody**, never a private part or one shared
-  with chosen people, and never a name, id, count or figure. Setup's Lattice is drawn from a pure,
-  deterministic function, not from a part. And no invented testimonial or user count either:
+  with chosen people, and never a name, id, count or figure. And no invented testimonial or user count either:
   PRODUCT.md calls the product pre-alpha.
 - **The form keeps its labels, names and order.** Labels above fields, the standing **Sign in**
   never wrapping, and the forgot-password note under it, never beside it (at 390 beside it wrapped
   the button onto two lines).
-- **Setup** uses the same split: the left half holds the Lattice and the Stepper; the right holds
+- **Setup** uses the same split: the left half holds the Stepper; the right holds
   the step. See Stepper.
 
-### Lattice
+### Empty frame
 
-The drawn motif: a part laid out as a fine triangle mesh, the way geometry looks before it is cut.
-It is the only decoration in the product, which is why it is allowed only where there is nothing
-else to show.
-
-- **What it is.** An SVG of a round brilliant — the stone a lapidary cuts, and the shape the brand's
-  diamond already names (A27, owner 2026-10-18: "something unique, not just a simple gear"; it was a
-  spur gear from A19 to A26). Its 73 facets (table, stars, bezels, upper and lower girdles, the
-  girdle, pavilion mains) are a wireframe in a three-quarter view with hidden lines, produced by a
-  pure, deterministic `lattice()` in `web/src/lib/lattice.ts`, unit-tested for its facet and edge
-  counts, no duplicate edges, every point of every frame inside the viewBox, a seamless step, and
-  the same output every time. It is drawn
-  by `web/src/components/Lattice.tsx`, `aria-hidden`, because it says nothing a reader needs.
-- **Strokes.** 1px (`vector-effect: non-scaling-stroke`), round joins, all **Edge** (`#65656d`):
-  lines between facets that face the reader at 95%, lines on the far side at 20%, so the stone reads
-  solid and the far side is texture. No fill at rest except the lamp under it. No second hue.
-- **The draw head.** While an edge is drawing, its leading end — the last few percent of its
-  length — is Layout Blue, the marking dye moving across the bench. The head exists only while the
-  stroke is moving; each edge settles to its grey the moment it is complete.
-- **It draws in 2.4 s on sign-in**, so it reads as drawing rather than a sweep (owner's call,
-  2026-10-18); setup's intro (A20) keeps inside `--duration-intro` and then stays still.
-- **On sign-in it keeps moving** (A26, owner 2026-10-18: "it should not stop after one cycle").
-  It draws a rough stone — the same facets in the wrong places, a lumpy pebble a little larger —
-  and then cuts it (A27): over two cycles each vertex moves to its place, girdle first and culet
-  last, and the facets being cut tint Layout Blue. Then, for ever, it turns one eighth (the stone's
-  symmetry, so a step looks like none and the loop has no seam) in a little under 1.8 s, holds, and
-  turns again, every 3.2 s, while three studio lights sweep a little and back, so glints — a facet
-  that mirrors a light into the eye, filled Layout Blue at up to 50% — run across the crown even
-  while it holds. The girdle is matte and never glints. Blue is on only what moves, so the rule
-  holds. A quiet **Pause the drawing** control sits at the drawing's foot
-  (WCAG 2.2.2), the turn stops while the tab is hidden, and the lines are written straight to the
-  SVG each frame by anime.js's `cycle` (`lib/motion.ts`), never through React.
-- **Since A28 sign-in shows the Wall instead**, so this live mode is unused; setup still draws it once.
-- **Everywhere else it never loops**, never drifts, never redraws on hover or on focus.
-- **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
-  grey, no blue — and never moves.
-- **Drawing only at the front door.** Sign-in and setup draw it, as a lazy import. Under `lg` the band
-  is shorter than the drawing, which is cropped by it on purpose (A19), so setup's intro lands into a
-  crop as well.
-- **Still, it stands in for a missing picture** (A17's audit, taken by the lead): on a card and on
-  the part page's stage, `<Lattice still />` is the settled final frame — the cut brilliant, no
-  glint, one shared path tree, no
-  `drawIn`, no blue — over the lamp, with the format. Most parts have no picture, and forty
-  identical "STL" squares said nothing. It never moves there. The list row, the quick look and the
-  dashboard's recently-added widget use the same still frame. It loads with the grid's chunk (which
-  already carries anime for `arrive()`), never with the entry.
+What stands in for a missing picture (A29, `web/src/components/EmptyFrame.tsx`): the Wall's empty
+tile — a square, 1px Border, `--radius-md` (`--radius-sm` at list and dashboard sizes), no fill —
+on the lamp's pool the well already draws. Cards in every layout, the part page's stage, the quick
+look and the dashboard's recently-added widget. It never moves, and it is `aria-hidden`: the well
+says "no picture" to a reader in an `sr-only` word with the format, once. Most parts have no
+picture, and forty identical "STL" squares said nothing; an empty frame says a picture goes here.
+Until A29 this was the Lattice, a drawn brilliant, which also drew sign-in (A19–A27) and setup's intro.
 
 ### Wall
 
@@ -662,7 +623,7 @@ brilliant): the library's own pictures as cards drifting past in columns, behind
 
 Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
 
-- **On the left**, under the Lattice: a vertical list of the steps — Account, Server, Options —
+- **On the left**: a vertical list of the steps — Account, Server, Options —
   each a 13px Title with the current one in Quicklime and `aria-current="step"`, the done ones in
   Ash with a 12px check glyph, the ones ahead in Graphite. Beside it a 1px Scribe Line rail, with
   a 2px Quicklime marker over the current step's length that moves by `layoutId` (the layout spring).
@@ -677,11 +638,10 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
   as a horizontal hairline under it, its done part in Quicklime.
 - **Server's folders are facts** (`FACT`), as in Settings, and every hint is `HINT`. Back and Skip
   are quiet and bounded by Edge.
-- **The intro into setup** (once per page load, inside `--duration-intro`): the diamond and the
-  Lattice draw in at the centre over `--duration-scene`; then the Lattice slides into the left
-  column (`layoutId`) while the wizard rises 8px and fades in. A key, a click or **Skip** ends it.
+- **The intro into setup** (once per page load, inside `--duration-intro`): the brand mark holds at
+  the centre over `--duration-scene`; then it fades while the wizard rises 8px and fades in. A key, a click or **Skip** ends it.
   Under reduced motion it does not play.
-- **Done.** The Lattice's lines settle and the diamond fills while `followRestart` or `followPort`
+- **Done.** The diamond fills while `followRestart` or `followPort`
   runs. The animation never delays either: if the server answers first, the page moves on.
 
 ### Buttons
@@ -778,7 +738,7 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   line at 11px in Graphite: the format chip, part number in Ash, the triangle count, and the
   approximate mark with its dotted Edge underline whose title explains it. Present at rest,
   always; nothing about a part hides behind hover.
-- **No picture:** the tile is the still Lattice on the lamp's pool (A21), and the format is the
+- **No picture:** the tile is an Empty frame on the lamp's pool (A29), and the format is the
   footer's chip to the eye and an `sr-only` word in the well to a reader, said once. Forty
   identical "STL" squares, as the audit found, said nothing.
 - **Several pictures:** a "1 of 3" count and two round arrows on the tile, shown under the pointer,
@@ -793,7 +753,7 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
   Blue edge (it is a live narrowing), 4px/12px padding, a 12px close glyph. A format chip is a
   4px-radius Bench Grey label in mono Graphite, uppercased in CSS, with no edge: it is a fact, not
   a control. It leads a card's figures line, and it sits at the stage's foot opposite View, over a
-  picture as well as over the Lattice (A23), so the format is in the same place whatever the stage
+  picture as well as over the Empty frame (A23), so the format is in the same place whatever the stage
   holds.
 - **State:** a chip that narrows a result set says what it narrowed to and dismisses on click,
   widening the search. It lifts 1px on hover.
@@ -880,7 +840,7 @@ nothing more.
 
 ### Do:
 
-- **Do** keep Layout Blue (`#2cb4f5`) for live interaction and for the Lattice's draw head while
+- **Do** keep Layout Blue (`#2cb4f5`) for live interaction and for the Wall's found tile while
   it moves. A resting screenshot containing it anywhere but the brand mark is a defect.
 - **Do** set every pasteable or comparable figure — path, hash, part number, dimension,
   count — in mono with tabular figures, selectable, never middle-elided.

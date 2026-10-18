@@ -32,7 +32,7 @@ import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
 import { breakable, pictureStyle } from './Card'
-import Lattice from './Lattice'
+import { EmptyFrame } from './EmptyFrame'
 import { Crossfade, Presence } from '../lib/motion-react'
 import type {
   BatchId,
@@ -815,7 +815,7 @@ const OVERLAY =
  * **The part on its stage, and the button that asks for 3D.**
  *
  * Since R1 nothing loads a mesh because a page opened. The stage holds the chosen picture whole (`contain`, A16), or,
- * for the part with no picture — most of them — the still lattice on the lamp with the part's format (A23). **view**
+ * for the part with no picture — most of them — an empty frame on the lamp with the part's format (A23). **view**
  * is what replaces either with the model, read from the original file in the browser, on the same pool.
  *
  * The button appears only where there is something to draw and something to draw it with: one of the three mesh
@@ -850,10 +850,10 @@ export function Preview({
   })
   const all = images.data ?? []
   const image = all.find((candidate) => candidate.id === selected) ?? all[0] ?? null
-  // Pending draws the lamp alone, so a part with a picture never shows the lattice for a moment first.
+  // Pending draws the lamp alone, so a part with a picture never shows the empty frame for a moment first.
   const poster = images.isPending ? null : image === null ? (
     <div className="grid h-full w-full place-items-center">
-      <Lattice still className="size-[70%]" />
+      <EmptyFrame className="h-[70%] w-auto max-w-[70%]" />
     </div>
   ) : (
     // The whole picture (A16): a stored `cover` is the card's framing, and on a stage it cut a square picture to a band.
@@ -900,7 +900,7 @@ export function Preview({
       */}
       <Presence initial={false}>
         {poster === null ? null : (
-          <Crossfade key={image?.id ?? 'lattice'} className="absolute inset-0">
+          <Crossfade key={image?.id ?? 'empty'} className="absolute inset-0">
             {poster}
           </Crossfade>
         )}
