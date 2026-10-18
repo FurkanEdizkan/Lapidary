@@ -134,7 +134,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A15](A15.md) | A page's description and categories, pictures first, gallery order | 12 | Rust + web | A14 | see [A15.md](A15.md) | 0068 | merged `0c684d1` | `feat/picture-order` |
 | [A16](A16.md) | The part page shows the whole picture | 13 | web | A15 | see [A16.md](A16.md) | — | merged `f96bcf8` | `fix/hero-whole-picture` |
 | [A17](A17.md) | Redesign direction: audit, DESIGN.md, motion doctrine | 13 | docs | — | see [A17.md](A17.md) | — | claimed | `docs/redesign-direction` |
-| A18 | Motion foundation: `motion` pinned beside anime.js | 13 | web | A17 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
+| [A18](A18.md) | Motion foundation: `motion` pinned beside anime.js | 13 | web | A17 | see [A18.md](A18.md) | — | claimed | `feat/motion-foundation` |
 | A19 | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A20 | Setup: intro, stepper wizard, done moment | 13 | web | A19 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A21 | App shell, grid cards, route enter | 13 | web | A18 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
