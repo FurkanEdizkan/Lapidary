@@ -132,19 +132,19 @@ export function drawIn(
       animation.revert()
     }
   }
-  // The head's segment is the last fifth of what is drawn so far, and it is gone by the time the line is half drawn:
-  // a thin moving band at the drawing's front, never a blue copy of the part.
+  // The head is the last few percent of what is drawn so far, riding the line's tip, and it fades over the line's
+  // last `--duration-fast`, so each line is grey the moment it is complete (DESIGN.md § Lattice).
   const head = animate(createDrawable(tips as SVGGeometryElement[]), {
-    draw: ['0 0', '0.8 1'],
+    draw: ['0 0', '0.92 1'],
     duration: t.scene,
     ease: curve(t),
     delay: stagger(step),
   })
   const fade = waapi.animate(tips as unknown as HTMLElement[], {
     opacity: [1, 0],
-    duration: t.base,
+    duration: t.fast,
     ease: t.ease,
-    delay: stagger(step, { start: t.fast / 2 }),
+    delay: stagger(step, { start: t.scene - t.fast }),
   })
   return () => {
     animation.revert()

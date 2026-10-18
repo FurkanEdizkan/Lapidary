@@ -8,7 +8,8 @@
  * triangulated faces that make it a mesh rather than an outline.
  */
 
-export type LatticeEdge = { d: string; depth: number }
+/** `depth` is 0 nearest the reader and 1 farthest; `inner` is the face triangulation rather than the outline. */
+export type LatticeEdge = { d: string; depth: number; inner: boolean }
 
 export type Lattice = { viewBox: string; edges: LatticeEdge[] }
 
@@ -78,13 +79,14 @@ export function lattice(): Lattice {
   const hubTop = hubAngles.map((angle) => add(polar(angle, HUB, FACE + HUB_HEIGHT)))
   const bore = hubAngles.map((angle) => add(polar(angle, BORE, FACE + HUB_HEIGHT)))
 
-  const pairs: [number, number][] = []
+  const pairs: [number, number, boolean][] = []
+  let inner = false
   const seen = new Set<string>()
   const edge = (a: number, b: number) => {
     const key = a < b ? `${a}:${b}` : `${b}:${a}`
     if (a === b || seen.has(key)) return
     seen.add(key)
-    pairs.push([a, b])
+    pairs.push([a, b, inner])
   }
   const ring = (indices: readonly number[]) => indices.forEach((a, i) => edge(a, indices[(i + 1) % indices.length]!))
   const hubs = hubAngles.length
@@ -100,6 +102,7 @@ export function lattice(): Lattice {
   ring(hubTop)
   ring(bore)
   // The front face between the profile and the hub, as a fan strip.
+  inner = true
   for (let i = 0; i < hubs; i++) {
     const p = front.length
     edge(hubBase[i]!, front[(2 * i) % p]!)
@@ -118,9 +121,11 @@ export function lattice(): Lattice {
   const depths = projected.map((p) => p.depth)
   const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
   const [near, far] = [Math.min(...depths), Math.max(...depths)]
-  const scale = (SIZE - 2 * MARGIN) / Math.max(maxX - minX, maxY - minY)
-  const offsetX = (SIZE - (maxX - minX) * scale) / 2
-  const offsetY = (SIZE - (maxY - minY) * scale) / 2
+  // As wide as SIZE and as tall as the part needs, so a frame can place the drawing by its own bounds.
+  const scale = (SIZE - 2 * MARGIN) / (maxX - minX)
+  const height = Math.ceil((maxY - minY) * scale + 2 * MARGIN)
+  const offsetX = MARGIN
+  const offsetY = MARGIN
   const round = (value: number) => Math.round(value * 10) / 10
   const at = (i: number) => {
     const p = projected[i]!
@@ -128,10 +133,11 @@ export function lattice(): Lattice {
   }
 
   return {
-    viewBox: `0 0 ${SIZE} ${SIZE}`,
-    edges: pairs.map(([a, b]) => ({
+    viewBox: `0 0 ${SIZE} ${height}`,
+    edges: pairs.map(([a, b, inner]) => ({
       d: `M ${at(a)} L ${at(b)}`,
       depth: Math.round((((projected[a]!.depth + projected[b]!.depth) / 2 - near) / (far - near || 1)) * 100) / 100,
+      inner,
     })),
   }
 }

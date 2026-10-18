@@ -13,10 +13,13 @@ import { BrandMark } from './AppFrame'
 export function Doorway({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   if (aside !== undefined) {
     return (
-      <main className="grid min-h-[100dvh] grid-rows-[auto_1fr] lg:grid-cols-[55fr_45fr] lg:grid-rows-1">
-        <div className="stage-lamp relative flex h-[30vh] min-h-56 flex-col overflow-hidden border-b border-[var(--color-border)] lg:h-auto lg:border-r lg:border-b-0">
-          <div className="flex min-h-0 flex-1 items-center justify-center px-6 pt-6 lg:px-16 lg:pt-16">{aside}</div>
-          <div className="flex flex-col gap-2 px-4 pb-4 lg:px-12 lg:pb-12">
+      <main className="grid min-h-dvh grid-rows-[auto_1fr] lg:grid-cols-[55fr_45fr] lg:grid-rows-1">
+        <div className="stage-lamp relative flex h-36 flex-col overflow-hidden border-b border-[var(--color-border)] lg:h-auto lg:border-r lg:border-b-0">
+          {/* Below `lg` the drawing is larger than its band and cropped by it, off to the right of the mark. */}
+          <div className="absolute top-1/2 -right-14 w-80 -translate-y-1/2 lg:static lg:flex lg:min-h-0 lg:w-auto lg:flex-1 lg:translate-y-0 lg:items-center lg:justify-center lg:p-16">
+            {aside}
+          </div>
+          <div className="absolute bottom-0 left-0 flex flex-col gap-3 p-4 lg:static lg:p-12">
             <div className="flex items-center gap-[9px]">
               <BrandMark />
               <span className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</span>

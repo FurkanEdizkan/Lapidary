@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { lattice } from '../lib/lattice'
+import { lattice, type LatticeEdge } from '../lib/lattice'
 import { drawIn, reduced } from '../lib/motion'
 
 /** The whole run, first line to last settled: inside WCAG 2.2.2's five seconds with room to spare. */
@@ -8,32 +8,40 @@ const TOTAL = 2400
 /** Computed once: the geometry never changes, and two renders must draw the same part. */
 const GEAR = lattice()
 
-/** Near edges in Graphite, far ones in the control edge's grey and fainter, so the part reads in depth. */
-function tone(depth: number): { stroke: string; strokeOpacity: number } {
-  return {
-    stroke: depth < 0.5 ? 'var(--color-muted)' : 'var(--color-edge)',
-    strokeOpacity: Math.round((1 - 0.55 * depth) * 100) / 100,
-  }
+/**
+ * Settled strokes (DESIGN.md § Lattice): Edge for the outline, farther edges fainter so the part reads in depth, and
+ * the Scribe Line for the face triangulation, so the outline reads first and the mesh is texture.
+ */
+function tone({ depth, inner }: LatticeEdge): { stroke: string; strokeOpacity?: number } {
+  if (inner) return { stroke: 'var(--color-border)' }
+  return { stroke: 'var(--color-edge)', strokeOpacity: Math.round((1 - 0.5 * depth) * 100) / 100 }
 }
 
+/** The grey lines, built once and shared by every Lattice on the page: a still one costs one element tree. */
+const LINES = GEAR.edges.map((edge) => (
+  <path key={edge.d} d={edge.d} vectorEffect="non-scaling-stroke" {...tone(edge)} />
+))
+
 /**
- * The sign-in page's drawing (A19): a gear's wireframe that draws itself once, line by line, with a short accent head
- * at the drawing's front, then stays grey and still. Decorative, so hidden from assistive technology. Under reduced
- * motion it is simply drawn, and the accent is never rendered at all.
+ * The drawn motif (A19): a gear's wireframe that draws itself once, line by line, with a short accent head at each
+ * line's tip, then stays grey and still. Decorative, so hidden from assistive technology.
  *
- * The default export is for `lazy()`: anime.js arrives with this chunk, never on the grid's path.
+ * `still` renders the final frame at once and never animates: for standing in where there is no picture, many at a
+ * time. Under reduced motion every Lattice is still, and the accent is never rendered.
+ *
+ * The default export is for `lazy()` on sign-in, so anime.js arrives with that chunk.
  */
-export default function Lattice({ className }: { className?: string }) {
+export default function Lattice({ className, still = false }: { className?: string; still?: boolean }) {
   const lines = useRef<SVGGElement>(null)
   const heads = useRef<SVGGElement>(null)
-  const [drawing, setDrawing] = useState(() => !reduced())
+  const [drawing, setDrawing] = useState(() => !still && !reduced())
 
   useEffect(() => {
-    if (lines.current === null) return
+    if (still || lines.current === null) return
     const paths = (group: SVGGElement | null) =>
       group === null ? [] : Array.from(group.querySelectorAll<SVGGeometryElement>('path'))
     return drawIn(paths(lines.current), () => setDrawing(false), TOTAL, paths(heads.current))
-  }, [])
+  }, [still])
 
   return (
     <svg
@@ -43,13 +51,10 @@ export default function Lattice({ className }: { className?: string }) {
       fill="none"
       strokeWidth={1}
       strokeLinecap="round"
-      className={`transition-none ${className ?? ''}`}
+      strokeLinejoin="round"
+      className={className === undefined ? 'transition-none' : `transition-none ${className}`}
     >
-      <g ref={lines}>
-        {GEAR.edges.map(({ d, depth }) => (
-          <path key={d} d={d} vectorEffect="non-scaling-stroke" {...tone(depth)} />
-        ))}
-      </g>
+      <g ref={lines}>{LINES}</g>
       {drawing ? (
         <g ref={heads} stroke="var(--color-accent)" data-draw-head="">
           {GEAR.edges.map(({ d }) => (

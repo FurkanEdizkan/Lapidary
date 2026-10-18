@@ -26,54 +26,56 @@ export function LoginPage() {
     <Doorway
       aside={
         <Suspense fallback={null}>
-          <Lattice className="size-full max-h-[min(36rem,100%)] max-w-xl" />
+          <Lattice className="w-full max-w-2xl" />
         </Suspense>
       }
     >
       <title>{strings.titles.login}</title>
-      <div>
-        <h2 className={HEADLINE}>{strings.login.title}</h2>
-        <p className={LEAD}>{strings.login.lead}</p>
-        <form
-          className="mt-8 flex flex-col gap-5"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!submit.isPending) submit.mutate()
-          }}
-        >
-          <Field label={strings.login.usernameLabel}>
-            <input
-              type="text"
-              autoComplete="username"
-              required
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              className={INPUT}
-            />
-          </Field>
-          <Field label={strings.login.passwordLabel}>
-            <input
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className={INPUT}
-            />
-          </Field>
-          {submit.isError ? (
-            <p role="alert" className="text-sm text-[var(--color-text)]">
-              {submit.error instanceof Refused ? submit.error.message : strings.login.failed}
-            </p>
-          ) : null}
-          <div className="flex items-center justify-between gap-3">
-            <button type="submit" disabled={submit.isPending} className={`${STANDING} disabled:opacity-50`}>
-              {submit.isPending ? strings.login.signingIn : strings.login.submit}
-            </button>
-            <span className="text-xs text-[var(--color-dim)]">{strings.login.forgot}</span>
-          </div>
-        </form>
-      </div>
+      <h2 className={HEADLINE}>{strings.login.title}</h2>
+      <p className={LEAD}>{strings.login.lead}</p>
+      <form
+        className="mt-8 flex flex-col gap-5"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!submit.isPending) submit.mutate()
+        }}
+      >
+        <Field label={strings.login.usernameLabel}>
+          <input
+            type="text"
+            autoComplete="username"
+            required
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            className={INPUT}
+          />
+        </Field>
+        <Field label={strings.login.passwordLabel}>
+          <input
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            className={INPUT}
+          />
+        </Field>
+        {submit.isError ? (
+          <p role="alert" className="text-sm text-[var(--color-text)]">
+            {submit.error instanceof Refused ? submit.error.message : strings.login.failed}
+          </p>
+        ) : null}
+        <div className="mt-1 flex flex-col items-start gap-4">
+          <button
+            type="submit"
+            disabled={submit.isPending}
+            className={`${STANDING} whitespace-nowrap disabled:opacity-50`}
+          >
+            {submit.isPending ? strings.login.signingIn : strings.login.submit}
+          </button>
+          <p className="text-xs text-[var(--color-muted)]">{strings.login.forgot}</p>
+        </div>
+      </form>
     </Doorway>
   )
 }
