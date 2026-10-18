@@ -10,6 +10,7 @@ import { Figure } from './Figure'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
 import { Icon } from './Icon'
+import { Fade } from '../lib/motion-react'
 
 /** Where the quick look sits beside the grid rather than over it: 1280px and up. */
 const PANE_QUERY = '(min-width: 80rem)'
@@ -71,9 +72,12 @@ function QuickLookPane({
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
   return (
+    // Fades in by presence (A23), not a keyframe; opacity only, because `flipFrom` measures the stage's picture inside
+    // this in the same frame, and a moving ancestor would land the flight off its place.
+    <Fade className="sticky top-4 w-[26rem] shrink-0">
     <aside
       aria-labelledby={titleId}
-      className="panel-in sticky top-4 max-h-[calc(100vh-2rem)] w-[26rem] shrink-0 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
+      className="max-h-[calc(100vh-2rem)] overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4"
     >
       <div className="flex items-start justify-between gap-4">
         <h2 id={titleId} className="text-sm font-medium">
@@ -91,6 +95,7 @@ function QuickLookPane({
       </div>
       {children}
     </aside>
+    </Fade>
   )
 }
 
@@ -277,7 +282,7 @@ export function StageLook({
               </p>
             </div>
           ) : (
-            <Preview part={data} stage />
+            <Preview part={data} />
           )}
         </div>
         <div className="flex min-w-0 flex-col gap-4 text-sm">

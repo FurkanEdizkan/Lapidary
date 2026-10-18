@@ -32,6 +32,8 @@ import { Figure } from './Figure'
 import { hasWebGL } from '../lib/viewer-math'
 import { arrive } from '../lib/motion'
 import { breakable, pictureStyle } from './Card'
+import Lattice from './Lattice'
+import { Crossfade, Presence } from '../lib/motion-react'
 import type {
   BatchId,
   BlobHash,
@@ -105,7 +107,8 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
   }
 
   return (
-    <div className="flex flex-col items-center gap-1">
+    // The chosen picture as a card crops it: the strip's tiles choose, so the crop is set here.
+    <div className="mt-3 flex items-start gap-3">
       {/*
         A `<button>` and not a bare `<img>` with a handler: this is a control, it is reached
         by Tab, and the browser's own focus ring is worth more than a div with a role.
@@ -127,7 +130,7 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
           event.preventDefault()
           move(step[0], step[1])
         }}
-        className="block h-24 w-24 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]"
+        className="block size-16 flex-none cursor-crosshair overflow-hidden rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)]"
       >
         <img
           src={image.src}
@@ -140,30 +143,32 @@ function Framed({ part, image, label }: { part: PartId; image: PartImage; label:
           }}
         />
       </button>
-      {/*
-        Two states, so a toggle rather than a pair of radios. `cover` fills the tile and
-        loses the edges; `contain` shows the whole picture and letterboxes it. Which one is
-        right depends on the picture, which is why this is a control and not a constant.
-      */}
-      <button
-        type="button"
-        onClick={() =>
-          reframe.mutate({
-            fit: filling ? 'contain' : 'cover',
-            focusX: image.focusX,
-            focusY: image.focusY,
-          })
-        }
-        disabled={reframe.isPending}
-        className="ease-mechanical rounded px-1 text-[10px] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:underline disabled:opacity-50"
-      >
-        {filling ? strings.images.fitWhole : strings.images.fitFill}
-      </button>
-      {reframe.isError ? (
-        <p role="alert" className="w-24 text-center text-[10px] leading-snug text-[var(--color-muted)]">
-          {strings.images.reframeFailed}
-        </p>
-      ) : null}
+      <div className="flex min-w-0 flex-col items-start gap-1.5 text-xs">
+        <p className="text-[var(--color-muted)]">{strings.images.framing}</p>
+        {/*
+          Two states, so a toggle rather than a pair of radios. `cover` fills the tile and
+          loses the edges; `contain` shows the whole picture and letterboxes it.
+        */}
+        <button
+          type="button"
+          onClick={() =>
+            reframe.mutate({
+              fit: filling ? 'contain' : 'cover',
+              focusX: image.focusX,
+              focusY: image.focusY,
+            })
+          }
+          disabled={reframe.isPending}
+          className="ease-mechanical inline-flex h-6 items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          {filling ? strings.images.fitWhole : strings.images.fitFill}
+        </button>
+        {reframe.isError ? (
+          <p role="alert" className="max-w-prose leading-snug text-[var(--color-muted)]">
+            {strings.images.reframeFailed}
+          </p>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -203,6 +208,8 @@ function Description({ text }: { text: string }) {
 function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  /** The fetch form (A2), also closed until asked for. */
+  const [fetching, setFetching] = useState(false)
   const [refusal, setRefusal] = useState<string | null>(null)
 
   const sources = useQuery({
@@ -253,10 +260,21 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
   // missing with nothing on screen saying so, which is the one failure mode it has.
   if (!sources.isError && recorded.length === 0 && !recordable) return null
   return (
-    <section className="mb-6">
-      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {strings.sources.title}
-      </h3>
+    <section className="mb-8">
+      <Label
+        title={strings.sources.title}
+        action={
+          recordable && !open ? (
+            <Opener
+              name={strings.sources.add}
+              onOpen={() => {
+                setRefusal(null)
+                setOpen(true)
+              }}
+            />
+          ) : undefined
+        }
+      />
       {sources.isError ? (
         <p role="alert" className="mb-2 max-w-prose text-sm text-[var(--color-muted)]">
           {strings.sources.failed}
@@ -267,7 +285,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
           {recorded.map((source) => (
             <li
               key={source.id}
-              className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+              className="rounded-[var(--radius-ctl)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
             >
               <p>
                 {source.url === null ? (
@@ -305,7 +323,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
           ))}
         </ul>
       )}
-      {!recordable ? null : open ? (
+      {!recordable || !open ? null : (
         <form
           className="max-w-lg space-y-2"
           onSubmit={(event) => {
@@ -320,7 +338,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
                 name={field.name}
                 type={field.type}
                 step={field.type === 'number' ? '0.01' : undefined}
-                className="mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+                className="mt-1 block h-8 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent)]"
               />
             </label>
           ))}
@@ -328,7 +346,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             <button
               type="submit"
               disabled={add.isPending}
-              className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+              className={QUIET}
             >
               {add.isPending ? strings.sources.saving : strings.sources.save}
             </button>
@@ -341,24 +359,19 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
             </button>
           </div>
         </form>
-      ) : (
-        <button
-          type="button"
-          onClick={() => {
-            setRefusal(null)
-            setOpen(true)
-          }}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
-        >
-          {strings.sources.add}
-        </button>
       )}
       {refusal === null ? null : (
         <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
           {refusal}
         </p>
       )}
-      {recordable ? <FetchDetails part={part} /> : null}
+      {!recordable ? null : fetching ? (
+        <FetchDetails part={part} onClose={() => setFetching(false)} />
+      ) : (
+        <button type="button" onClick={() => setFetching(true)} className={`${QUIET} mt-3`}>
+          {strings.sources.fetch}
+        </button>
+      )}
     </section>
   )
 }
@@ -367,7 +380,7 @@ function Sources({ part, recordable }: { part: PartId; recordable: boolean }) {
  * "Fetch details" (A2): the model's page fills in the part — source, licence, tags, pictures — and
  * nothing is downloaded. It runs as a job, so the page asks again a moment later rather than waiting.
  */
-function FetchDetails({ part }: { part: PartId }) {
+function FetchDetails({ part, onClose }: { part: PartId; onClose: () => void }) {
   const queryClient = useQueryClient()
   const [url, setUrl] = useState('')
   const [note, setNote] = useState<string | null>(null)
@@ -394,22 +407,29 @@ function FetchDetails({ part }: { part: PartId }) {
         event.preventDefault()
         if (url.trim() !== '' && !fetchNow.isPending) fetchNow.mutate()
       }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') onClose()
+      }}
     >
       <input
         type="url"
         inputMode="url"
+        autoFocus
         value={url}
         onChange={(event) => setUrl(event.target.value)}
         aria-label={strings.sources.fetchLabel}
         placeholder={strings.sources.fetchPlaceholder}
-        className="min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm"
+        className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 text-sm text-[var(--color-text)]"
       />
+      <button type="submit" disabled={url.trim() === '' || fetchNow.isPending} className={QUIET_FIELD}>
+        {strings.sources.fetchNow}
+      </button>
       <button
-        type="submit"
-        disabled={url.trim() === '' || fetchNow.isPending}
-        className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+        type="button"
+        onClick={onClose}
+        className="h-8 rounded px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-text)]"
       >
-        {strings.sources.fetch}
+        {strings.detail.cancel}
       </button>
       {note === null ? null : (
         <p role="status" className="w-full text-xs text-[var(--color-muted)]">
@@ -489,7 +509,7 @@ function WordList({
   part: PartDetailData
   recordable: boolean
   values: readonly string[]
-  text: { title: string; field: string; add: string; saving: string; remove: (value: string) => string }
+  text: { title: string; field: string; add: string; open: string; saving: string; remove: (value: string) => string }
   save: (part: PartDetailData['id'], values: readonly string[]) => Promise<{ kind: 'saved' } | { kind: 'refused'; message: string }>
   /** A line under the list, such as where its values came from. */
   note?: string | null
@@ -508,6 +528,8 @@ function WordList({
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
   const [refusal, setRefusal] = useState<string | null>(null)
+  /** The add-form stands closed until asked for (DESIGN.md § The stage and filmstrip, the column beside it). */
+  const [adding, setAdding] = useState(false)
   const settle = (result: { kind: 'saved' } | { kind: 'refused'; message: string }) => {
     if (result.kind === 'refused') {
       setRefusal(result.message)
@@ -535,16 +557,17 @@ function WordList({
   // as nothing at all wherever the list cannot be edited.
   if (tags.length === 0 && !recordable && note === null) return null
   return (
-    <section className="mb-6">
-      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {text.title}
-      </h3>
+    <section className="mb-8">
+      <Label
+        title={text.title}
+        action={recordable && !adding ? <Opener name={text.open} onOpen={() => setAdding(true)} /> : undefined}
+      />
       {tags.length === 0 ? null : (
         <ul role="list" className="mb-2 flex list-none flex-wrap gap-1">
           {tags.map((tag) => (
             <li
               key={tag}
-              className="flex items-center gap-1 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-sm"
+              className="flex h-6 items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-raised)] px-2 text-xs text-[var(--color-text)]"
             >
               {chip === undefined ? tag : chip(tag)}
               {recordable ? (
@@ -562,28 +585,36 @@ function WordList({
           ))}
         </ul>
       )}
-      {recordable ? (
+      {recordable && adding ? (
+        // Stays open after a save, so several can be added in a row; Escape or Cancel closes it.
         <form
           className="flex max-w-sm items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault()
             if (draft.trim() !== '') save.mutate([...tags, draft])
           }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setAdding(false)
+          }}
         >
           <label className="block flex-1 text-xs text-[var(--color-muted)]">
             {text.field}
             <input
               value={draft}
+              autoFocus
               onChange={(event) => setDraft(event.target.value)}
-              className="mt-0.5 block w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-sm focus:border-[var(--color-accent)]"
+              className="mt-1 block h-8 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 text-sm text-[var(--color-text)] focus:border-[var(--color-accent)]"
             />
           </label>
-          <button
-            type="submit"
-            disabled={save.isPending}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-          >
+          <button type="submit" disabled={save.isPending} className={QUIET_FIELD}>
             {save.isPending ? text.saving : text.add}
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdding(false)}
+            className="h-8 rounded px-1 text-xs text-[var(--color-muted)] hover:text-[var(--color-text)]"
+          >
+            {strings.detail.cancel}
           </button>
         </form>
       ) : null}
@@ -627,10 +658,8 @@ function Fields({ part, recordable }: { part: PartDetailData; recordable: boolea
     : fields.data.filter((field) => custom[field.key] !== undefined)
   if (shown.length === 0 && orphaned.length === 0) return null
   return (
-    <section className="mb-6">
-      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {strings.fields.title}
-      </h3>
+    <section className="mb-8">
+      <Label title={strings.fields.title} />
       {shown.length === 0 ? null : (
         <dl className="grid max-w-sm grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 text-sm">
           {shown.map((field) => (
@@ -772,68 +801,69 @@ function FieldValue({
 /** Loaded only where a browser can draw it: three.js lives in this chunk and nowhere else. */
 const Viewer = lazy(() => import('./Viewer'))
 
-const FRAME =
-  'relative h-40 w-40 overflow-hidden rounded border border-[var(--color-border)] bg-[var(--color-surface)]'
+/** The stage's box: the lamp's pool, 10px radius, filling what its parent gives it (DESIGN.md § The stage). */
+const LAMP = 'stage-lamp relative h-full min-h-[16rem] w-full overflow-hidden rounded-md'
 
 /**
- * **The part's picture, and a button that asks for 3D.**
+ * A control on the stage's foot (DESIGN.md § Buttons, Overlay control): a Machined Slate plate with an Edge boundary,
+ * never set straight on the lamp, where Edge does not clear 3:1.
+ */
+const OVERLAY =
+  'ease-mechanical pointer-events-auto inline-flex h-8 items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-3 text-sm font-medium text-[var(--color-text)] duration-[var(--duration-fast)] hover:-translate-y-px hover:text-[var(--color-bright)]'
+
+/**
+ * **The part on its stage, and the button that asks for 3D.**
  *
- * Since R1 nothing loads a mesh because a page opened. The picture is the part's own first
- * gallery image — the same one the card shows, off the request `Gallery` below already makes —
- * and **view** is what replaces it with the model, read from the original file in the browser.
+ * Since R1 nothing loads a mesh because a page opened. The stage holds the chosen picture whole (`contain`, A16), or,
+ * for the part with no picture — most of them — the still lattice on the lamp with the part's format (A23). **view**
+ * is what replaces either with the model, read from the original file in the browser, on the same pool.
  *
- * **The picture or nothing**, since R3: the rendered thumbnail that stood behind it has no
- * producer and no field on the wire any more.
- *
- * The button appears only where there is something to draw and something to draw it with: one of
- * the three mesh formats, and WebGL. A STEP part has no **view** — `mesh.ts` has no loader for it
- * — and keeps its figures and its download, which is what it had before.
+ * The button appears only where there is something to draw and something to draw it with: one of the three mesh
+ * formats, and WebGL. A pack has no **view** — `mesh.ts` has no loader for it — and keeps its download.
  */
 export function Preview({
   part,
-  stage = false,
+  selected = null,
   recordable = false,
 }: {
   part: PartDetailData
-  /** The quick look's stage: the view fills its parent instead of a 10rem frame. */
-  stage?: boolean
+  /** The picture chosen in the filmstrip; the first one when nothing is, or when the chosen one has gone. */
+  selected?: PartImageId | null
   /** Whether the view may be kept as the part's picture: only where the page records changes. */
   recordable?: boolean
 }) {
   const queryClient = useQueryClient()
   const [viewing, setViewing] = useState(false)
-  // A different part in the same Preview — the quick look steps through the grid without
-  // unmounting — closes the view rather than carrying one part's model to the next.
-  const [viewedPart, setViewedPart] = useState(part.id)
-  if (viewedPart !== part.id) {
-    setViewedPart(part.id)
+  // A different part in the same Preview — the quick look steps through the grid without unmounting — closes the
+  // view rather than carrying one part's model to the next. So does choosing another picture: it is a request to
+  // look at that picture.
+  const shownKey = `${part.id}:${selected ?? ''}`
+  const [seen, setSeen] = useState(shownKey)
+  if (seen !== shownKey) {
+    setSeen(shownKey)
     setViewing(false)
   }
-  // The same query key `Gallery` uses, so this costs no second request: react-query hands both
-  // the one answer. The first image in gallery order, which is the card's as well.
+  // The same query key the filmstrip uses, so this costs no second request: react-query hands both the one answer.
   const images = useQuery({
     queryKey: ['part-images', part.id],
     queryFn: () => fetchPartImages(part.id),
   })
-  const image = images.data?.[0] ?? null
-  const frame = stage ? 'stage-lamp relative h-full min-h-[16rem] w-full overflow-hidden rounded-md' : FRAME
-  const src = image?.src ?? null
-  const poster =
-    src === null ? null : (
-      <img
-        src={src}
-        alt={strings.parts.pictureAlt(part.name)}
-        className="h-full w-full"
-        // The stage shows the whole picture (A16): its box is wide and of fixed height, and a stored `cover` cut a
-        // square store picture to a band. Cards and the gallery keep the framing, which is what it is for.
-        style={stage ? { objectFit: 'contain' } : pictureStyle(image)}
-      />
-    )
+  const all = images.data ?? []
+  const image = all.find((candidate) => candidate.id === selected) ?? all[0] ?? null
+  // Pending draws the lamp alone, so a part with a picture never shows the lattice for a moment first.
+  const poster = images.isPending ? null : image === null ? (
+    <div className="grid h-full w-full place-items-center">
+      <Lattice still className="size-[62%]" />
+    </div>
+  ) : (
+    // The whole picture (A16): a stored `cover` is the card's framing, and on a stage it cut a square picture to a band.
+    <img src={image.src} alt={strings.parts.pictureAlt(part.name)} className="h-full w-full" style={{ objectFit: 'contain' }} />
+  )
   const viewable = part.sourceFormat !== null && MESH_FORMATS.includes(part.sourceFormat)
   const drawable = hasWebGL()
   if (viewing && viewable && drawable) {
     return (
-      <Suspense fallback={<div className={frame}>{poster}</div>}>
+      <Suspense fallback={<div className={LAMP}>{poster}</div>}>
         {/*
           Keyed by part: the quick look and the part page both hand the same Preview a different
           part without unmounting it, and a view kept across parts keeps the last part's framing.
@@ -842,7 +872,7 @@ export function Preview({
           key={part.id}
           part={part}
           poster={poster}
-          stage={stage}
+          stage
           // Only for a part with no picture yet: a snapshot joins the end of the gallery, so on a part
           // that has one it would not be "the picture" the button promises.
           keep={
@@ -859,18 +889,38 @@ export function Preview({
       </Suspense>
     )
   }
+  // The format is the stage's caption when there is no picture (DESIGN.md: "the lamp and the format"); over a
+  // picture it is still the one fact about the file the stage can say.
+  const format = part.sourceFormat === null ? (image === null ? strings.parts.noPicture(null) : null) : part.sourceFormat.toUpperCase()
   return (
-    <figure className={stage ? 'flex h-full min-h-0 w-full flex-col' : undefined}>
-      {poster === null ? null : <div className={frame}>{poster}</div>}
-      {!viewable ? null : drawable ? (
-        <button type="button" onClick={() => setViewing(true)} className={`${control} mt-2 flex-none`}>
-          {strings.viewer.view}
-        </button>
-      ) : (
-        <figcaption className="mt-1 max-w-40 text-xs text-[var(--color-muted)]">
-          {strings.viewer.noWebGL}
-        </figcaption>
-      )}
+    <figure className={LAMP}>
+      {/*
+        One layer per picture, crossing over `base` when the filmstrip changes it (DESIGN.md § Motion). `initial`
+        off: the first picture is carried in from its card by `flipFrom`, and must not fade under the flight.
+      */}
+      <Presence initial={false}>
+        {poster === null ? null : (
+          <Crossfade key={image?.id ?? 'lattice'} className="absolute inset-0">
+            {poster}
+          </Crossfade>
+        )}
+      </Presence>
+      <figcaption className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-wrap items-end justify-between gap-2">
+        {format === null || images.isPending ? <span /> : (
+          <span className="tabular rounded-[4px] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-muted)]">
+            {format}
+          </span>
+        )}
+        {!viewable ? null : drawable ? (
+          <button type="button" onClick={() => setViewing(true)} className={OVERLAY}>
+            {strings.viewer.view}
+          </button>
+        ) : (
+          <span className="max-w-xs rounded-[var(--radius-ctl)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-muted)]">
+            {strings.viewer.noWebGL}
+          </span>
+        )}
+      </figcaption>
     </figure>
   )
 }
@@ -991,7 +1041,10 @@ export function Detail({
   // `?? []` for a server from before materials, as the list below does: read once, because both the
   // list and the mass row have to agree about how many the part holds.
   const materials = part.materials ?? []
-  const preview = <Preview part={part} stage={page} recordable={recordable} />
+  // The picture on the stage, chosen in the filmstrip; it belongs to one part, so another part starts at its first.
+  const [chosen, setChosen] = useState<{ part: PartId; image: PartImageId } | null>(null)
+  const selected = chosen?.part === part.id ? chosen.image : null
+  const preview = <Preview part={part} selected={selected} recordable={recordable} />
   const heading = (
     <>
       {titled ? null : (
@@ -1026,8 +1079,9 @@ export function Detail({
             {strings.download.original}
           </a>
         )}
+        {/* Quiet beside Download, the page's one standing control (DESIGN.md § Buttons). */}
         {part.sourceHash === null ? null : (
-          <CopyLink key={part.id} part={part.id} name={part.name} className={page ? standing : control} />
+          <CopyLink key={part.id} part={part.id} name={part.name} className={control} />
         )}
         {/* Never for a pack (A13): there is no mesh in it to write a 3MF from. */}
         {part.sourceHash !== null &&
@@ -1048,7 +1102,13 @@ export function Detail({
   )
   const gallery = (
     // A shared model's pictures are shown and not added to (A4); the owner adds them.
-    <Gallery part={part.id} name={part.name} editable={recordable} />
+    <Filmstrip
+      part={part.id}
+      name={part.name}
+      editable={recordable}
+      selected={selected}
+      onSelect={(image) => setChosen({ part: part.id, image })}
+    />
   )
   const about = (
     <>
@@ -1243,17 +1303,16 @@ export function Detail({
 
   if (!page) {
     return (
-      <article className="mt-4">
-        <header className="mb-6 flex flex-wrap items-start gap-x-6 gap-y-3">
-          {preview}
-          <div>
-            {heading}
-            {tools}
-          </div>
-        </header>
+      // The quick look: the same stage and filmstrip as the page (A23), then the column's matter in its order.
+      <article className="mt-3">
+        <div className="h-64">{preview}</div>
         {gallery}
-        {about}
+        <div className="mt-1 mb-6">
+          {heading}
+          {tools}
+        </div>
         {geometry}
+        {about}
         {rest}
       </article>
     )
@@ -1283,9 +1342,9 @@ export function Detail({
         {heading}
         {tools}
       </div>
-      <div className="scrim-in min-w-0 lg:sticky lg:top-[4.5rem] lg:col-start-1 lg:row-span-2 lg:row-start-1">
-        <div className="h-[min(60vh,26rem)] lg:h-[min(72vh,52rem)] lg:min-h-[20rem]">{preview}</div>
-        <div className="mt-4">{gallery}</div>
+      <div className="min-w-0 lg:sticky lg:top-[4.5rem] lg:col-start-1 lg:row-span-2 lg:row-start-1">
+        <div className="h-[min(56vh,24rem)] lg:h-[min(64vh,46rem)] lg:min-h-[20rem]">{preview}</div>
+        {gallery}
       </div>
       <div ref={info} className="min-w-0 lg:col-start-2 lg:row-start-2">
         <div>{geometry}</div>
@@ -1378,10 +1437,8 @@ function History({ part }: { part: PartId }) {
   const all = revisions.data ?? []
   if (all.length < 2) return null
   return (
-    <section id="part-history" className="mb-6 scroll-mt-20">
-      <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-        {strings.detail.history}
-      </h3>
+    <section id="part-history" className="mb-8 scroll-mt-20">
+      <Label title={strings.detail.history} />
       <ol role="list" className="flex flex-col gap-2 text-sm">
         {all.map((revision) => (
           <li key={revision.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -1515,6 +1572,28 @@ function PackSection({ pack }: { pack: PackContents }) {
     </Section>
   )
 }
+/**
+ * A section's label over its Scribe Line (DESIGN.md § Layout, page anatomy), with room at its end for the section's
+ * one quiet action: an add-form opens from here rather than standing open.
+ */
+function Label({ title, action }: { title: string; action?: ReactNode }) {
+  return (
+    <div className="mb-3 flex min-h-6 items-center justify-between gap-3 border-b border-[var(--color-border)] pb-1.5">
+      <h3 className="text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">{title}</h3>
+      {action}
+    </div>
+  )
+}
+
+/** The quiet Add in a label row: the visible word, and a name that says what it adds. */
+function Opener({ name, onOpen }: { name: string; onOpen: () => void }) {
+  return (
+    <button type="button" aria-label={name} onClick={onOpen} className={QUIET}>
+      {strings.detail.add}
+    </button>
+  )
+}
+
 function Section({
   id,
   title,
@@ -1528,10 +1607,8 @@ function Section({
   children: ReactNode
 }) {
   return (
-    <section id={id} className="mb-6 scroll-mt-20">
-      <h3 className="mb-2 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-        {title}
-      </h3>
+    <section id={id} className="mb-8 scroll-mt-20">
+      <Label title={title} />
       {note === undefined ? null : (
         <p className="mb-2 text-xs text-[var(--color-muted)]">{note}</p>
       )}
@@ -1561,20 +1638,40 @@ function moved(images: readonly PartImage[], id: PartImageId, index: number): Pa
   return rest
 }
 
+/** A quiet button (DESIGN.md § Buttons): transparent, Edge, Graphite 12px, 24px tall. */
+const QUIET =
+  'ease-mechanical inline-flex h-6 items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px hover:text-[var(--color-text)] disabled:opacity-50'
+
+/** The same, beside a 32px field. */
+const QUIET_FIELD = QUIET.replace('h-6', 'h-8')
+
 /**
- * The pictures somebody attached, and the control that attaches one.
+ * The pictures somebody attached, as a filmstrip directly under the stage (A23, DESIGN.md § The stage and filmstrip),
+ * and the controls that attach one, which are the strip's last tile.
  *
- * **Above the render rather than instead of it.** The generated view is the honest picture
- * of the geometry and stays; a photograph is what the geometry cannot show — the finish, the
- * colour, the thing next to a hand. `part_image`'s ordering column is what lets both exist,
- * which was an owner decision and not an accident of schema.
+ * Each tile is a button that puts its picture on the stage; the arrow keys walk the strip. A15's order stays on the
+ * tiles — drag, and the move buttons a keyboard has — and the first picture is still the card's. The card's framing
+ * of the chosen picture is set under the strip, because a click on a tile now chooses it.
  *
- * Rendered inside `Detail`, so it appears on the page and in the grid's quick-look from one
- * definition. That is the same reason `Detail` is shared at all.
+ * Rendered inside `Detail`, so it appears on the page and in the grid's quick look from one definition. Where
+ * nothing can be added and there is at most one picture, there is no strip: the stage already shows it.
  */
-function Gallery({ part, name, editable = true }: { part: PartId; name: string; editable?: boolean }) {
+function Filmstrip({
+  part,
+  name,
+  editable = true,
+  selected,
+  onSelect,
+}: {
+  part: PartId
+  name: string
+  editable?: boolean
+  selected: PartImageId | null
+  onSelect: (image: PartImageId) => void
+}) {
   const queryClient = useQueryClient()
   const picker = useRef<HTMLInputElement>(null)
+  const tiles = useRef<(HTMLButtonElement | null)[]>([])
   /** The server's own sentence about a refused file — it names the limit that was broken. */
   const [refusal, setRefusal] = useState<string | null>(null)
   /** What the last accepted upload was stored at, so a silent resize is not silent. */
@@ -1588,8 +1685,7 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
   })
 
   // One mutation for both ways in, because the server answers both the same way: a stored
-  // size, or a sentence saying what was wrong with what it was given. A second mutation
-  // would be a second copy of the refusal handling below.
+  // size, or a sentence saying what was wrong with what it was given.
   const add = useMutation({
     mutationFn: (source: File | string) => uploadPartImage(part, source),
     onMutate: () => {
@@ -1626,134 +1722,163 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
       setDraft(null)
     },
   })
+  const at = Math.max(0, shown.findIndex((image) => image.id === selected))
+  const current = shown[at] ?? null
+  if (!editable && !images.isError && gallery.length < 2) return null
+
+  /** Left and right walk the strip, Home and End jump to its ends; the stage follows the focus. */
+  const walk = (from: number, key: string) => {
+    const last = shown.length - 1
+    const to = key === 'ArrowLeft' ? from - 1 : key === 'ArrowRight' ? from + 1 : key === 'Home' ? 0 : key === 'End' ? last : null
+    if (to === null) return false
+    const next = shown[Math.max(0, Math.min(last, to))]
+    if (next !== undefined) {
+      onSelect(next.id)
+      tiles.current[Math.max(0, Math.min(last, to))]?.focus()
+    }
+    return true
+  }
+
   return (
-    <section className="mb-6">
-      <h3 className="mb-2 text-xs tracking-wider text-[var(--color-muted)] uppercase">
-        {strings.images.title}
-      </h3>
+    <section aria-label={strings.images.title} className="mt-3">
       {/* Same reason as `Sources`: an empty gallery and one we could not read are different. */}
       {images.isError ? (
         <p role="alert" className="mb-2 max-w-prose text-sm text-[var(--color-muted)]">
           {strings.images.galleryFailed}
         </p>
       ) : null}
-      {gallery.length === 0 ? null : (
-        <>
-          <ul role="list" className="mb-2 flex list-none flex-wrap gap-2">
-            {shown.map((image, index) => {
-              const label = strings.images.alt(name, index)
-              return (
-                <li
-                  key={image.id}
-                  draggable={ordering}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = 'move'
-                    setDragged(image.id)
-                  }}
-                  onDragOver={(event) => {
-                    if (dragged === null) return
-                    event.preventDefault()
-                    if (dragged !== image.id) setDraft(moved(shown, dragged, index))
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    if (draft !== null) reorder.mutate(draft)
-                    setDragged(null)
-                  }}
-                  onDragEnd={(event) => {
-                    setDragged(null)
-                    // Let go outside the gallery: the order goes back to the stored one.
-                    if (event.dataTransfer.dropEffect === 'none') setDraft(null)
-                  }}
-                  className={dragged === image.id ? 'opacity-50' : undefined}
-                >
-                  <Framed part={part} image={image} label={label} />
-                  {!ordering ? null : (
-                    <div className="flex items-center justify-center gap-1">
-                      <button
-                        type="button"
-                        aria-label={strings.images.moveEarlier(label)}
-                        disabled={index === 0 || reorder.isPending}
-                        onClick={() => reorder.mutate(moved(shown, image.id, index - 1))}
-                        className="rounded p-0.5 text-[var(--color-muted)] disabled:opacity-30"
-                      >
-                        <Icon name="caretLeft" />
-                      </button>
-                      {index !== 0 ? null : (
-                        <span className="text-[10px] text-[var(--color-muted)]">{strings.images.onCard}</span>
-                      )}
-                      <button
-                        type="button"
-                        aria-label={strings.images.moveLater(label)}
-                        disabled={index === shown.length - 1 || reorder.isPending}
-                        onClick={() => reorder.mutate(moved(shown, image.id, index + 1))}
-                        className="rounded p-0.5 text-[var(--color-muted)] disabled:opacity-30"
-                      >
-                        <Icon name="caretRight" />
-                      </button>
-                    </div>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-          {!ordering ? null : <p className="mb-2 text-xs text-[var(--color-muted)]">{strings.images.orderHint}</p>}
-          {!reorder.isError ? null : (
-            <p role="alert" className="mb-2 max-w-prose text-xs text-[var(--color-muted)]">
-              {strings.images.reorderFailed}
-            </p>
-          )}
-        </>
-      )}
-      <div className={editable ? 'flex flex-wrap items-center gap-2' : 'hidden'}>
-        {/*
-          Hidden, and driven by the button beside it: a bare file input is unstyleable across
-          browsers and announces itself as "Choose file", which is not what this does. The
-          button carries the label and the input carries the capability.
-        */}
-        <input
-          ref={picker}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file !== undefined) add.mutate(file)
-            // Cleared so that picking the same file twice in a row fires `change` the second
-            // time: without this, a failed upload could not be retried with the same file.
-            event.target.value = ''
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => picker.current?.click()}
-          disabled={add.isPending}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
-          {add.isPending ? strings.images.adding : strings.images.add}
-        </button>
-        {url !== null ? null : (
-          <button
-            type="button"
-            onClick={() => {
-              setRefusal(null)
-              setUrl('')
-            }}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
-            {strings.images.addFromUrl}
-          </button>
+      <ul role="list" title={ordering ? strings.images.orderHint : undefined} className="flex list-none flex-wrap items-start gap-2">
+        {shown.map((image, index) => {
+          const label = strings.images.alt(name, index)
+          const chosen = index === at
+          return (
+            <li
+              key={image.id}
+              draggable={ordering}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                setDragged(image.id)
+              }}
+              onDragOver={(event) => {
+                if (dragged === null) return
+                event.preventDefault()
+                if (dragged !== image.id) setDraft(moved(shown, dragged, index))
+              }}
+              onDrop={(event) => {
+                event.preventDefault()
+                if (draft !== null) reorder.mutate(draft)
+                setDragged(null)
+              }}
+              onDragEnd={(event) => {
+                setDragged(null)
+                // Let go outside the strip: the order goes back to the stored one.
+                if (event.dataTransfer.dropEffect === 'none') setDraft(null)
+              }}
+              className={`flex w-16 flex-col ${dragged === image.id ? 'opacity-50' : ''}`}
+            >
+              {/*
+                The tile's name is the picture's, so the image inside is decoration to a reader: the one
+                `images.alt` image on the page is the framing control's, under the strip.
+              */}
+              <button
+                ref={(button) => {
+                  tiles.current[index] = button
+                }}
+                type="button"
+                aria-label={label}
+                aria-current={chosen ? 'true' : undefined}
+                title={image.sourceUrl === null ? undefined : strings.images.from(image.sourceUrl)}
+                onClick={() => onSelect(image.id)}
+                onKeyDown={(event) => {
+                  if (walk(index, event.key)) event.preventDefault()
+                }}
+                className={`block size-16 overflow-hidden rounded-[var(--radius-ctl)] border bg-[var(--color-raised)] hover:border-[var(--color-edge)] ${chosen ? 'border-[var(--color-edge)]' : 'border-[var(--color-border)]'}`}
+              >
+                <img src={image.src} alt="" draggable={false} className="h-full w-full" style={pictureStyle(image)} />
+              </button>
+              {/* The current one's mark: a 2px Quicklime underline, a position as well as a colour. */}
+              <span
+                aria-hidden="true"
+                className={`mx-auto mt-1 h-0.5 w-8 rounded-full ${chosen ? 'bg-[var(--color-bright)]' : 'bg-transparent'}`}
+              />
+              {!ordering ? null : (
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    aria-label={strings.images.moveEarlier(label)}
+                    disabled={index === 0 || reorder.isPending}
+                    onClick={() => reorder.mutate(moved(shown, image.id, index - 1))}
+                    className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-30"
+                  >
+                    <Icon name="caretLeft" size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={strings.images.moveLater(label)}
+                    disabled={index === shown.length - 1 || reorder.isPending}
+                    onClick={() => reorder.mutate(moved(shown, image.id, index + 1))}
+                    className="rounded p-1 text-[var(--color-muted)] hover:text-[var(--color-text)] disabled:opacity-30"
+                  >
+                    <Icon name="caretRight" size={12} />
+                  </button>
+                </div>
+              )}
+              {index !== 0 || !ordering ? null : (
+                <span className="text-center text-[10px] leading-tight text-[var(--color-muted)]">{strings.images.onCard}</span>
+              )}
+            </li>
+          )
+        })}
+        {!editable ? null : (
+          <li className="flex h-16 flex-col justify-center gap-1.5">
+            {/*
+              Hidden, and driven by the button beside it: a bare file input is unstyleable across
+              browsers and announces itself as "Choose file", which is not what this does.
+            */}
+            <input
+              ref={picker}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file !== undefined) add.mutate(file)
+                // Cleared so that picking the same file twice in a row fires `change` the second
+                // time: without this, a failed upload could not be retried with the same file.
+                event.target.value = ''
+              }}
+            />
+            <button type="button" onClick={() => picker.current?.click()} disabled={add.isPending} className={QUIET}>
+              {add.isPending ? strings.images.adding : strings.images.add}
+            </button>
+            {url !== null ? null : (
+              <button
+                type="button"
+                onClick={() => {
+                  setRefusal(null)
+                  setUrl('')
+                }}
+                className={QUIET}
+              >
+                {strings.images.addFromUrl}
+              </button>
+            )}
+          </li>
         )}
-      </div>
+      </ul>
+      {!reorder.isError ? null : (
+        <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
+          {strings.images.reorderFailed}
+        </p>
+      )}
       {/*
         A real `<form>`, so Enter submits it — pasting an address and pressing Enter is what
-        a person will do, and an input with a button beside it silently does nothing. The
-        browser's own `type="url"` validity check is deliberately not leaned on: the refusals
-        that matter are about where the address points, and only the server can know those.
+        a person will do. The refusals that matter are about where the address points, and
+        only the server can know those.
       */}
       {url === null ? null : (
         <form
-          className="mt-2 flex flex-wrap items-center gap-2"
+          className="mt-2 flex max-w-lg flex-wrap items-center gap-2"
           onSubmit={(event) => {
             event.preventDefault()
             const trimmed = url.trim()
@@ -1765,22 +1890,17 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
             value={url}
             autoFocus
             onChange={(event) => setUrl(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setUrl(null)
+            }}
             placeholder={strings.images.urlPlaceholder}
             aria-label={strings.images.urlLabel}
-            className="min-w-64 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-surface)] px-2 py-1 text-xs"
+            className="h-8 min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 text-xs"
           />
-          <button
-            type="submit"
-            disabled={add.isPending || url.trim() === ''}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-2 py-1 text-xs text-[var(--color-muted)] duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-          >
+          <button type="submit" disabled={add.isPending || url.trim() === ''} className={QUIET}>
             {add.isPending ? strings.images.fetching : strings.images.fetch}
           </button>
-          <button
-            type="button"
-            onClick={() => setUrl(null)}
-            className="rounded px-2 py-1 text-xs text-[var(--color-muted)]"
-          >
+          <button type="button" onClick={() => setUrl(null)} className="h-6 rounded px-2 text-xs text-[var(--color-muted)] hover:text-[var(--color-text)]">
             {strings.images.cancelUrl}
           </button>
         </form>
@@ -1799,6 +1919,9 @@ function Gallery({ part, name, editable = true }: { part: PartId; name: string; 
         <p role="alert" className="mt-2 max-w-prose text-xs text-[var(--color-muted)]">
           {strings.images.failed}
         </p>
+      )}
+      {!editable || current === null ? null : (
+        <Framed key={current.id} part={part} image={current} label={strings.images.alt(name, at)} />
       )}
     </section>
   )
