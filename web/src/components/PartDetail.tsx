@@ -1460,7 +1460,8 @@ function PackSection({ pack }: { pack: PackContents }) {
       {pack.unread !== null ? (
         <p className="max-w-prose text-sm text-[var(--color-muted)]">{pack.unread}</p>
       ) : (
-        <>
+        // One child: the section lays its children out side by side.
+        <div className="min-w-0">
           {shared === null ? null : (
             <p className="mb-1 text-xs break-all text-[var(--color-muted)]">{strings.detail.pack.inside(shared)}</p>
           )}
@@ -1482,7 +1483,7 @@ function PackSection({ pack }: { pack: PackContents }) {
               {strings.detail.pack.more(pack.total - pack.entries.length)}
             </p>
           ) : null}
-        </>
+        </div>
       )}
     </Section>
   )
