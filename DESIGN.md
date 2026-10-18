@@ -666,8 +666,8 @@ import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overl
 60% black scrim.
 
 - **Arrival and departure are presence** (A22), replacing the `scrim-in` and `panel-in` keyframes:
-  the scrim fades over 120 ms and the panel rises 4px and fades over 180 ms; leaving is the same,
-  reversed, at 120 ms. Focus handling is unchanged: focus moves in, is trapped, and returns to the
+  the scrim fades and the panel rises 8px from a 0.98 scale over 180 ms; leaving fades it over
+  120 ms, and it stops being a dialog (no role, inert) the moment it starts to leave. Focus handling is unchanged: focus moves in, is trapped, and returns to the
   control that opened it.
 - **Focus is unchanged by the redesign.** The audit saw the close button's Layout Blue ring in the
   Import dialog's first frame, but that dialog was opened by a scripted click, which Chrome's
