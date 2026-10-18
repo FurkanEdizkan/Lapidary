@@ -1,4 +1,5 @@
 import { Outlet, createRootRoute, redirect } from '@tanstack/react-router'
+import { MotionRoot } from '../lib/motion-react'
 import { gate } from '../lib/session'
 
 /**
@@ -7,6 +8,8 @@ import { gate } from '../lib/session'
  *
  * Before any page, the session gate (A1): nobody with an account yet goes to setup, a person who
  * is not signed in goes to sign in.
+ *
+ * `MotionRoot` (A18) gives every page Motion's tokens and its answer to reduced motion.
  */
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
@@ -15,7 +18,9 @@ export const Route = createRootRoute({
   },
   component: () => (
     <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
-      <Outlet />
+      <MotionRoot>
+        <Outlet />
+      </MotionRoot>
     </div>
   ),
 })

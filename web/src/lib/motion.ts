@@ -1,6 +1,9 @@
 import { animate } from 'animejs/animation'
 import { cubicBezier } from 'animejs/easings'
+import { createDrawable } from 'animejs/svg'
+import { stagger } from 'animejs/utils'
 import { waapi } from 'animejs/waapi'
+import { STAGGERED, bezier, reduced, staggerStep, tokens, type Tokens } from './motion-tokens'
 
 /**
  * The one place motion is sequenced in script.
@@ -17,56 +20,7 @@ import { waapi } from 'animejs/waapi'
  * ever sees it.
  */
 
-/** The motion tokens, as numbers a script can use. */
-export type Tokens = { fast: number; base: number; slow: number; ease: string }
-
-const FALLBACK: Tokens = { fast: 120, base: 180, slow: 280, ease: 'cubic-bezier(0.2, 0, 0, 1)' }
-
-/** `120ms` → 120, `0.12s` → 120, anything unreadable → `fallback`. */
-export function durationMs(value: string, fallback: number): number {
-  const trimmed = value.trim()
-  const number = Number.parseFloat(trimmed)
-  if (!Number.isFinite(number)) return fallback
-  return trimmed.endsWith('ms') ? number : trimmed.endsWith('s') ? number * 1000 : number
-}
-
-/** Read from `styles.css` rather than restated here, so a token edit reaches script too. */
-export function tokens(): Tokens {
-  if (typeof getComputedStyle !== 'function') return FALLBACK
-  const root = getComputedStyle(document.documentElement)
-  return {
-    fast: durationMs(root.getPropertyValue('--duration-fast'), FALLBACK.fast),
-    base: durationMs(root.getPropertyValue('--duration-base'), FALLBACK.base),
-    slow: durationMs(root.getPropertyValue('--duration-slow'), FALLBACK.slow),
-    ease: root.getPropertyValue('--ease-mechanical').trim() || FALLBACK.ease,
-  }
-}
-
-/**
- * The reader asked for less motion, or the runtime cannot say whether they did.
- *
- * `styles.css` cuts CSS transitions under the media query, but that rule never reaches a
- * script, so each script-driven move asks here. No `matchMedia` counts as asking: that is
- * the test renderer, and a jump to the end state is the answer every test wants anyway.
- */
-export function reduced(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-/** How many arrivals take a turn. Anything after the twelfth lands with the twelfth. */
-export const STAGGERED = 12
-
-/**
- * The gap between two arrivals: 24 ms at most, and less when there are many, so the last
- * one still finishes inside `--duration-slow`. With twelve cards and 120 ms moves that is
- * (280 − 120) / 11 ≈ 14.5 ms.
- */
-export function staggerStep(count: number, t: Tokens = FALLBACK): number {
-  const turns = Math.min(count, STAGGERED) - 1
-  if (turns <= 0) return 0
-  return Math.min(24, (t.slow - t.fast) / turns)
-}
+export { STAGGERED, bezier, durationMs, reduced, staggerStep, tokens, type Tokens } from './motion-tokens'
 
 const noop = () => {}
 
@@ -105,8 +59,7 @@ export function arrive(elements: readonly HTMLElement[]): () => void {
  * turntable's step back). Same parsing as `tween`, so the curve still has one definition.
  */
 export function curve(t: Tokens = tokens()): (progress: number) => number {
-  const [x1, y1, x2, y2] = (t.ease.match(/-?[\d.]+/g) ?? []).map(Number)
-  return cubicBezier(x1 ?? 0.2, y1 ?? 0, x2 ?? 0, y2 ?? 1)
+  return cubicBezier(...bezier(t))
 }
 
 /**
@@ -136,5 +89,37 @@ export function tween<T extends object>(
   })
   return () => {
     animation.cancel()
+  }
+}
+
+/**
+ * Lines drawing themselves, in turn: the lattice's arrival (A19, A20).
+ *
+ * An authored moment, so it may run past `--duration-slow`: each line takes `--duration-scene` and the run is spread
+ * over `total` ms (at most 3 s, so it is still within WCAG 2.2.2's five seconds once it settles). It draws once and
+ * stays drawn; nothing here loops. Under reduced motion the lines are simply there. `onDone` runs either way, once.
+ */
+export function drawIn(
+  lines: readonly SVGGeometryElement[],
+  onDone: () => void = noop,
+  total = 1800,
+): () => void {
+  const targets = lines.filter((line) => typeof line.getTotalLength === 'function')
+  if (targets.length === 0 || reduced()) {
+    onDone()
+    return noop
+  }
+  const t = tokens()
+  const spread = Math.max(0, Math.min(total, 3000) - t.scene)
+  const drawables = createDrawable(targets as SVGGeometryElement[])
+  const animation = animate(drawables, {
+    draw: ['0 0', '0 1'],
+    duration: t.scene,
+    ease: curve(t),
+    delay: stagger(targets.length > 1 ? spread / (targets.length - 1) : 0),
+    onComplete: () => onDone(),
+  })
+  return () => {
+    animation.revert()
   }
 }

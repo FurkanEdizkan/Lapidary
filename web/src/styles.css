@@ -171,6 +171,9 @@
   --duration-fast: 120ms;
   --duration-base: 180ms;
   --duration-slow: 280ms;
+  /* The front door's authored moments only (A17, A18): the lattice's scenes and the intro into setup. */
+  --duration-scene: 480ms;
+  --duration-intro: 900ms;
 }
 
 /* Dark only. No light mode, no toggle. */

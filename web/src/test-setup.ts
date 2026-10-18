@@ -10,3 +10,10 @@ vi.mock('./lib/session', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/session')>()),
   gate: async () => null,
 }))
+
+/*
+  Motion's animations finish at once in tests (A18): a step that has to leave before the next one mounts would
+  otherwise hold both in the DOM for the length of its exit.
+*/
+import { MotionGlobalConfig } from 'motion/react'
+MotionGlobalConfig.skipAnimations = true
