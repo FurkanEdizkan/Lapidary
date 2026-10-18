@@ -208,15 +208,36 @@ impl WorkerHandler {
                 .await;
         }
         let at = source_path.to_owned();
-        // 1. Read bytes. A missing file may mean the mount is not ready yet, so this is
-        // Transient — unlike every step below it, this one has nothing to do with the bytes.
-        let (bytes, stat) = LibraryReader::open(&self.ingest_dir)
-            .read_at(&at)
+        // 0. Unchanged since it was indexed (A30's measurement, A31): the same size and modification time as the
+        // part's current revision at this path is a file not read again, as a pack is not. A rescan of a library is
+        // then a stat per file rather than every byte of it.
+        let stat = LibraryReader::open(&self.ingest_dir)
+            .stat_at(&at)
             .map_err(|e| HandlerError::Transient {
                 message: format!("Could not read {source_path} in your folders: {e}"),
             })?;
-        // 2. BLAKE3 -- hash first, always. Everything below branches on this.
-        let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+        if self.unchanged(library, source_path, &at, &stat).await? {
+            return Ok(Outcome::Skipped);
+        }
+        // 1. Read bytes, and 2. BLAKE3 -- hash first, always; everything below branches on it. Off the async threads,
+        // since a mesh can be hundreds of megabytes. A missing file may mean the mount is not ready yet, so this is
+        // Transient — unlike every step below it, this one has nothing to do with the bytes.
+        let (bytes, stat, hash) = {
+            let dir = self.ingest_dir.clone();
+            let rel = at.clone();
+            tokio::task::spawn_blocking(move || {
+                let (bytes, stat) = LibraryReader::open(&dir).read_at(&rel)?;
+                let hash = BlobHash::from_bytes(*blake3::hash(&bytes).as_bytes());
+                Ok::<_, lapidary_storage::StorageError>((bytes, stat, hash))
+            })
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Reading {source_path} stopped: {e}"),
+            })?
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Could not read {source_path} in your folders: {e}"),
+            })?
+        };
         let at = FileAt {
             root: FileRoot::Library,
             path: &at,
@@ -451,14 +472,7 @@ impl WorkerHandler {
             path,
             mtime_ns: stat.mtime_ns,
         };
-        if let Some(current) = PgRevisions(self.db.clone())
-            .current(library, source_path)
-            .await
-            .map_err(classify_db)?
-            && current.storage_path.as_deref() == Some(path)
-            && current.size_bytes == i64::try_from(stat.size).ok()
-            && current.mtime_ns == Some(stat.mtime_ns)
-        {
+        if self.unchanged(library, source_path, path, &stat).await? {
             return Ok(Outcome::Skipped);
         }
         let file = dir.join(path);
@@ -489,6 +503,26 @@ impl WorkerHandler {
             at,
         )
         .await
+    }
+
+    /// Whether the part at `source_path` already holds this file as it is now: its current revision is stored at
+    /// `path` with this size and modification time. Then nothing is read (A13 for packs, A31 for meshes).
+    async fn unchanged(
+        &self,
+        library: LibraryId,
+        source_path: &str,
+        path: &str,
+        stat: &lapidary_storage::FileStat,
+    ) -> Result<bool, HandlerError> {
+        Ok(PgRevisions(self.db.clone())
+            .current(library, source_path)
+            .await
+            .map_err(classify_db)?
+            .is_some_and(|current| {
+                current.storage_path.as_deref() == Some(path)
+                    && current.size_bytes == i64::try_from(stat.size).ok()
+                    && current.mtime_ns == Some(stat.mtime_ns)
+            }))
     }
 
     async fn index_body(

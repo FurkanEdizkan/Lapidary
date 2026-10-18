@@ -152,6 +152,24 @@ impl PgJobs {
         self.enqueue(library, &jobs).await
     }
 
+    /// Forget the finished file jobs of `library`'s earlier batches (A31), leaving `keep` alone. A scan leaves one row
+    /// per file, so without this every rescan grew the table by the library's size. Only a batch with nothing left to
+    /// do loses its rows, so a tab still watching one is not shown it shrinking; failures stay, because a person reads
+    /// them, and so does every scan job, which is how the examples know a library has history.
+    pub async fn prune_finished(&self, library: LibraryId, keep: BatchId) -> Result<u64, DbError> {
+        let gone = sqlx::query(
+            "DELETE FROM job j WHERE j.library_id = $1 AND j.batch_id <> $2 \
+               AND j.kind = 'ingest_file' AND j.state = 'done' \
+               AND NOT EXISTS (SELECT 1 FROM job o WHERE o.batch_id = j.batch_id \
+                               AND o.state IN ('pending', 'running'))",
+        )
+        .bind(library.as_uuid())
+        .bind(keep.as_uuid())
+        .execute(&self.0)
+        .await?;
+        Ok(gone.rows_affected())
+    }
+
     /// Queue a build of `revision`'s `produce`, unless one is already pending or running.
     ///
     /// Returns the batch holding the build and whether this call queued it. A build already on

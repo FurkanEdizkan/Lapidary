@@ -1574,3 +1574,67 @@ async fn the_stale_sweep_never_queues_a_kind_nothing_builds(pool: PgPool) {
             .expect("derive jobs");
     assert_eq!(produced, ["export_stl"]);
 }
+
+/// A31: a scan forgets the finished file jobs of earlier finished batches. It keeps its own batch, failures, any batch
+/// still running, and scan jobs (the examples' "this library has history").
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn pruning_forgets_only_finished_file_jobs_of_finished_earlier_batches(pool: PgPool) {
+    let jobs = PgJobs(pool.clone());
+    let paths = [
+        "bracket-lp-1042-03.stl".to_owned(),
+        "flange-dn40-lp-3310-02.stl".to_owned(),
+    ];
+    let (old, _) = jobs.enqueue_scan(seeded(), &paths).await.expect("enqueues");
+    let (running, _) = jobs
+        .enqueue_scan(seeded(), &paths[..1])
+        .await
+        .expect("enqueues");
+    let (now, _) = jobs.enqueue_scan(seeded(), &paths).await.expect("enqueues");
+    // The old batch: one done, one failed. The running one keeps a pending job. The new one is done.
+    sqlx::query(
+        "UPDATE job SET state = CASE WHEN payload->>'path' = 'bracket-lp-1042-03.stl' THEN 'done' ELSE 'failed' END, \
+         outcome = CASE WHEN payload->>'path' = 'bracket-lp-1042-03.stl' THEN 'ingested' END, \
+         last_error = CASE WHEN payload->>'path' <> 'bracket-lp-1042-03.stl' THEN 'Could not read this STL.' END \
+         WHERE batch_id = $1",
+    )
+    .bind(old.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("finishes the old batch");
+    sqlx::query("UPDATE job SET state = 'done', outcome = 'ingested' WHERE batch_id = $1")
+        .bind(now.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("finishes the new batch");
+    jobs.record_seeded(seeded()).await.expect("a scan job");
+
+    assert_eq!(
+        jobs.prune_finished(seeded(), now).await.expect("prunes"),
+        1,
+        "only the old batch's done file job"
+    );
+    let left: Vec<(Uuid, String, String)> =
+        sqlx::query_as("SELECT batch_id, kind, state FROM job ORDER BY batch_id, kind, state")
+            .fetch_all(&pool)
+            .await
+            .expect("reads");
+    assert!(
+        left.iter()
+            .any(|(b, _, s)| *b == old.as_uuid() && s == "failed"),
+        "failures stay"
+    );
+    assert!(
+        left.iter().any(|(b, _, _)| *b == running.as_uuid()),
+        "a batch still running is not touched"
+    );
+    assert_eq!(
+        left.iter().filter(|(b, _, _)| *b == now.as_uuid()).count(),
+        2,
+        "its own batch stays"
+    );
+    assert!(
+        left.iter().any(|(_, k, _)| k == "scan_directory"),
+        "the scan job stays"
+    );
+    assert!(jobs.library_has_history(seeded()).await.expect("asks"));
+}

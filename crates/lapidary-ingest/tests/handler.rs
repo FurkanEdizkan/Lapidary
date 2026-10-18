@@ -3659,3 +3659,50 @@ async fn a_scan_keeps_archives_packed_as_one_part_each(pool: PgPool) {
         Outcome::Skipped
     );
 }
+
+/// A31: a file whose size and modification time match its current revision is not read again — the rescan of an
+/// unchanged library is a stat per file. Proved by changing the bytes behind its back with both kept: the scan does
+/// not notice. Moving the mtime, as any edit does, and it is read, hashed and becomes the next revision.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_unchanged_size_and_mtime_is_not_read_again_and_a_new_mtime_is(pool: PgPool) {
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let file = ingest_dir.path().join(BRACKET);
+    std::fs::write(&file, BRACKET_FIXTURE).expect("stages the fixture");
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("ingests"),
+        Outcome::Ingested
+    );
+
+    let indexed = std::fs::metadata(&file)
+        .expect("stat")
+        .modified()
+        .expect("an mtime");
+    let mut other = BRACKET_FIXTURE.to_vec();
+    other[20] = b'x'; // the 80-byte header: still a valid STL, other bytes, the same size
+    std::fs::write(&file, &other).expect("rewrites it");
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("opens it")
+        .set_modified(indexed)
+        .expect("puts the mtime back");
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("runs again"),
+        Outcome::Skipped,
+        "same size, same mtime: not read"
+    );
+
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("opens it")
+        .set_modified(indexed + std::time::Duration::from_secs(60))
+        .expect("moves the mtime");
+    assert_eq!(
+        handler.handle(&job_for(BRACKET)).await.expect("runs again"),
+        Outcome::Revised,
+        "a new mtime is read, and its other bytes are the next revision"
+    );
+}

@@ -192,6 +192,10 @@ impl WorkerHandler {
                      never ingested twice."
                 ),
             })?;
+        // The rows earlier scans left. Housekeeping: a failure here costs only table size, so it never fails the scan.
+        if let Err(err) = PgJobs(self.db.clone()).prune_finished(library, batch).await {
+            tracing::warn!(error = %err, "could not prune the finished jobs of earlier scans");
+        }
         Ok(Outcome::Scanned)
     }
 }
