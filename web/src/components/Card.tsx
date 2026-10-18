@@ -46,6 +46,16 @@ const WELL: Record<Layout, string> = {
   list: 'relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-[var(--radius-ctl)] bg-[var(--color-raised)] p-1',
 }
 
+/**
+ * The still lattice's size per layout. The gallery's name sits over the lower third of its well, so there the
+ * drawing is smaller and raised clear of it; the detail card's footer is below the well.
+ */
+const LATTICE: Record<Layout, string> = {
+  detail: 'size-[76%]',
+  gallery: 'size-[56%] -translate-y-[16%]',
+  list: 'size-full',
+}
+
 /** A well with no picture: the lamp's pool under the still lattice, as on a stage (DESIGN.md § Lattice). */
 const BARE_WELL: Record<Layout, string> = {
   detail: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
@@ -241,7 +251,7 @@ export function Card({
           // Lattice): the settled frame of the sign-in drawing over the lamp, one shared path tree, never moving.
           // The format is the footer's chip to the eye; the word here is what a reader hears, once.
           <>
-            <Lattice still className={layout === 'list' ? 'size-full' : 'size-[76%]'} />
+            <Lattice still className={LATTICE[layout]} />
             <span className="sr-only">{strings.parts.noPicture(part.sourceFormat)}</span>
           </>
         ) : (
