@@ -131,7 +131,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A12](A12.md) | Grid, size, measure and axes in the 3D view | 12 | web | A11 | see [A12.md](A12.md) | — | merged `26b1632` | `feat/viewer-tools` |
 | [A13](A13.md) | Packs: archives in the library, kept packed | 12 | Rust + web | A12 | see [A13.md](A13.md) | 0067 | merged `b5e01c7` | `feat/packs` |
 | [A14](A14.md) | MyMiniFactory answers to its API key | 12 | Rust + web | A13 | see [A14.md](A14.md) | — | merged `ea073a3` | `fix/mmf-api-key` |
-| [A15](A15.md) | A page's description and categories, pictures first, gallery order | 12 | Rust + web | A14 | see [A15.md](A15.md) | 0068 | claimed | `feat/picture-order` |
+| [A15](A15.md) | A page's description and categories, pictures first, gallery order | 12 | Rust + web | A14 | see [A15.md](A15.md) | 0068 | merged `0c684d1` | `feat/picture-order` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
