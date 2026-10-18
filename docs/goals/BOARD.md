@@ -144,7 +144,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A25](A25.md) | Redesign finish pass: screenshots, reviews, budget | 13 | web + docs | all | see [A25.md](A25.md) | — | merged `eac0123` | `feat/redesign-finish` |
 | [A26](A26.md) | The sign-in drawing keeps moving | 13 | web + docs | A25 | see [A26.md](A26.md) | — | merged `0a58dc1` | `feat/living-lattice` |
 | [A27](A27.md) | The cut: the sign-in drawing becomes a gem | 13 | web + docs | A26 | see [A27.md](A27.md) | — | merged `a78e68b` | `feat/the-cut` |
-| [A28](A28.md) | The library wall: sign-in shows the library's own pictures | 14 | api + db + web + docs | A27 | see [A28.md](A28.md) | 0069 | open | `feat/the-wall` |
+| [A28](A28.md) | The library wall: sign-in shows the library's own pictures | 14 | api + db + web + docs | A27 | see [A28.md](A28.md) | 0069 | merged `bc1f7ad` | `feat/the-wall` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
