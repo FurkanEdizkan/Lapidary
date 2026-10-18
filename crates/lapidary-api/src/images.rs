@@ -6,7 +6,7 @@ use crate::AppState;
 use crate::derive::internal_error;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -193,6 +193,58 @@ pub(crate) fn part_image(row: lapidary_db::PartImageRow) -> PartImage {
         focus_x: row.focus.0,
         focus_y: row.focus.1,
     }
+}
+
+/// A card's picture (A30): always an address, never the bytes, so a grid page stays small and the
+/// browser caches each picture once. A blob is `/api/blob/{hash}`; an inline image, which has no
+/// hash, is `/api/parts/{part}/images/{id}` (`bytes` below). The grid's query does not read the
+/// inline bytes at all.
+pub(crate) fn card_image(part: PartId, row: lapidary_db::PartImageRow) -> PartImage {
+    let src = match &row.hash {
+        Some(hash) => format!("/api/blob/{}", hash.to_hex()),
+        None => format!("/api/parts/{part}/images/{}", row.id),
+    };
+    PartImage {
+        src,
+        ..part_image(row)
+    }
+}
+
+/// `GET /api/parts/{id}/images/{imageId}` — one picture's bytes (A30). `auth::scope` has checked the
+/// viewer may see the part; the image must be that part's. An image id names fixed bytes (re-framing
+/// changes how it sits, never what it is), so it caches for good, privately.
+pub async fn bytes(
+    State(state): State<AppState>,
+    Path((part, image)): Path<(PartId, PartImageId)>,
+) -> Response {
+    let rows = match PgParts(state.db).part_images(part).await {
+        Ok(rows) => rows,
+        Err(err) => return internal_error(&err, "reading a part's picture failed"),
+    };
+    let Some(row) = rows.into_iter().find(|row| row.id == image) else {
+        return crate::blob::not_found();
+    };
+    let bytes = match (row.inline_webp, row.hash) {
+        (Some(bytes), _) => bytes,
+        (None, Some(hash)) => {
+            match lapidary_storage::DerivativeStore::open(&state.blob_root).get(&hash) {
+                Ok(bytes) => bytes,
+                Err(_) => return crate::blob::not_found(),
+            }
+        }
+        (None, None) => return crate::blob::not_found(),
+    };
+    (
+        [
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
+            (header::CONTENT_TYPE, crate::blob::content_type(&bytes)),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// What an upload produced: the id to address it by, and the size it was stored at.

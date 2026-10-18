@@ -6,8 +6,9 @@
 //! enough to be given the bytes it names.
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use image::{ImageBuffer, ImageFormat, Rgba};
+use serde_json::json;
 mod common;
 use common::router;
 use lapidary_api::{AppState, Role};
@@ -592,4 +593,47 @@ async fn a_photograph_goes_before_the_snapshot_and_the_owner_can_reorder_them(po
         snapshot.as_str(),
         "a refused order changed nothing"
     );
+}
+
+/// A30: a grid card carries its picture's address, never its bytes, and that address serves the
+/// bytes with a cache that never asks again.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_card_addresses_its_inline_picture_and_the_address_serves_it(pool: sqlx::PgPool) {
+    let store = tempfile::tempdir().expect("a store");
+    let part = seed_part(&pool).await;
+    let (status, body) = send(state(pool.clone(), store.path()), upload(part, png(128))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let image = json(&body)["id"].as_str().expect("an id").to_owned();
+
+    let (_, body) = send(
+        state(pool.clone(), store.path()),
+        Request::builder()
+            .uri(format!("/api/libraries/{SEEDED_LIBRARY}/parts"))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    let page = json(&body);
+    let card = page["parts"]
+        .as_array()
+        .and_then(|cards| cards.iter().find(|card| card["id"] == json!(part)))
+        .expect("the part's card");
+    let src = card["image"]["src"].as_str().expect("a picture");
+    assert_eq!(src, format!("/api/parts/{part}/images/{image}"));
+
+    let response = router(state(pool, store.path()), Role::Api)
+        .oneshot(
+            Request::builder()
+                .uri(src)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("responds");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, max-age=31536000, immutable"
+    );
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/webp");
 }

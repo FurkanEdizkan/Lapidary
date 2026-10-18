@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { type Density, type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
@@ -43,11 +43,16 @@ export function MorePages({
     // reconnects while its target is already visible fires immediately — which is a
     // second request for the page still in flight. The guard is inside the callback
     // instead, where it reads the current value.
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        onMore()
-      }
-    })
+    // Two screens ahead (A30): a page of cards is a few tens of kB now that pictures are addresses, so the next one
+    // is asked for well before the end comes into view, and a steady scroll never waits at the bottom.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          onMore()
+        }
+      },
+      { rootMargin: '0px 0px 200% 0px' },
+    )
     observer.observe(node)
     return () => observer.disconnect()
   }, [hasMore, onMore])
@@ -75,6 +80,61 @@ export function MorePages({
       )}
     </>
   )
+}
+
+/** Rows drawn beyond the window, above and below, so a fast scroll does not show a gap. */
+const OVERSCAN_ROWS = 4
+
+/** Which rows of the grid are drawn: the window's, and how tall a row is. `null` until measured. */
+type Window = { columns: number; rowHeight: number; first: number; last: number }
+
+/**
+ * The rows of `list` the viewport shows (A30), from one measured row: the browser resolves
+ * `repeat(auto-fill, …)` to a column count, which `grid-template-columns` reports, and every card in
+ * a row is the row's height. Measured again on scroll, on resize and when the cards change. A layout
+ * with nothing to measure (a test) reports `null`, and every card is drawn.
+ */
+function useRowWindow(list: React.RefObject<HTMLUListElement | null>, count: number, layout: Layout, density: Density) {
+  const [view, setView] = useState<Window | null>(null)
+  useLayoutEffect(() => {
+    const node = list.current
+    if (node === null) return
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const style = getComputedStyle(node)
+      const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length
+      const item = node.firstElementChild
+      const height = item instanceof HTMLElement ? item.offsetHeight : 0
+      if (columns === 0 || height === 0) {
+        setView(null)
+        return
+      }
+      const rowHeight = height + (Number.parseFloat(style.rowGap) || 0)
+      // Where the grid starts on the page: its border box, which the padding for undrawn rows is inside.
+      const start = node.getBoundingClientRect().top + window.scrollY
+      const rows = Math.ceil(count / columns)
+      const first = Math.max(0, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS)
+      const last = Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS)
+      setView((now) =>
+        now !== null && now.columns === columns && now.rowHeight === rowHeight && now.first === first && now.last === last
+          ? now
+          : { columns, rowHeight, first, last },
+      )
+    }
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(measure)
+    }
+    measure()
+    window.addEventListener('scroll', schedule, { passive: true })
+    window.addEventListener('resize', schedule)
+    return () => {
+      if (frame !== 0) cancelAnimationFrame(frame)
+      window.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+    }
+  }, [list, count, layout, density])
+  return view
 }
 
 export function Grid({
@@ -149,6 +209,13 @@ export function Grid({
           ? '[contain-intrinsic-size:auto_15rem]'
           : '[contain-intrinsic-size:auto_18.5rem]'
   const list = useRef<HTMLUListElement>(null)
+  // Only the rows in view are in the DOM (A30): at twenty thousand cards a grid that kept every one
+  // held 300,000 nodes and each next page took longer to land than the last.
+  const view = useRowWindow(list, parts.length, layout, density)
+  const start = view === null ? 0 : view.first * view.columns
+  const end = view === null ? parts.length : Math.min(parts.length, (view.last + 1) * view.columns)
+  const rows = view === null ? 0 : Math.ceil(parts.length / view.columns)
+  const drawn = parts.slice(start, end)
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.
@@ -160,7 +227,7 @@ export function Grid({
     parts.forEach((part, index) => {
       if (shown.current.has(part.id)) return
       shown.current.add(part.id)
-      const item = items[index]
+      const item = index >= start && index < end ? items[index - start] : undefined
       // Only what is on screen. A card below the fold is skipped by `content-visibility`
       // anyway, and would otherwise sit at opacity 0 for its turn with nobody watching.
       if (item instanceof HTMLElement && item.getBoundingClientRect().top < window.innerHeight) {
@@ -170,6 +237,7 @@ export function Grid({
     // Not cancelled when `parts` changes again: a refetch landing mid-arrival would snap the
     // cards visible, and an animation on a card that unmounts simply ends with it.
     if (arriving.length > 0) arrive(arriving)
+    // `start` and `end` only say which cards are drawn; a scroll that draws new rows is not an arrival.
   }, [parts])
 
   return (
@@ -177,6 +245,15 @@ export function Grid({
       ref={list}
       role="list"
       className={`grid list-none ${columns}`}
+      // The rows not drawn stand in as padding, so the scrollbar is the whole grid's.
+      style={
+        view === null
+          ? undefined
+          : {
+              paddingTop: view.first * view.rowHeight,
+              paddingBottom: Math.max(0, rows - 1 - view.last) * view.rowHeight,
+            }
+      }
       // Ctrl/Cmd-A inside the grid selects every part loaded, while selecting. Anywhere else
       // it is still the browser's own select-all.
       onKeyDown={(event) => {
@@ -186,25 +263,9 @@ export function Grid({
         }
       }}
     >
-      {parts.map((part) => (
-        // `content-visibility: auto` is the virtualization, and it is one CSS property
-        // rather than a dependency. It tells the browser to skip layout, paint and image
-        // decode for a card that is off screen, which is what a virtualizer buys — while
-        // this grid stays a plain `repeat(auto-fill, …)` CSS grid, whose column count
-        // changes with the viewport and which a virtualizer would therefore have to
-        // measure and re-measure to know a row height it currently never needs.
-        //
-        // `contain-intrinsic-size` is not optional beside it. Without a placeholder size
-        // a skipped card measures zero, so the page height collapses and the scrollbar
-        // jumps as cards enter and leave — which is what makes `content-visibility` look
-        // broken.
-        //
-        // 26rem is 416px, which is a rendered card measured in Chrome (415px, uniform
-        // across 1,000 of them) and not arithmetic — the first guess was 20rem from a
-        // card measured before its thumbnail had loaded, and it under-reported the page
-        // height by 23%. The leading `auto` means the browser substitutes each card's
-        // real size once it has rendered one, so this figure only has to be close for the
-        // first paint rather than exact forever.
+      {drawn.map((part) => (
+        // `contain-intrinsic-size` with `content-visibility` still skips the paint of a drawn card that
+        // is just outside the window (the overscan); the window itself is what bounds the DOM.
         <li key={part.id} className={`[content-visibility:auto] ${intrinsic}`}>
           <Card
             part={part}
