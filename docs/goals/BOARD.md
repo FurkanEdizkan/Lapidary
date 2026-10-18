@@ -142,6 +142,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A23](A23.md) | Part page: stage overlay and filmstrip | 13 | web | A16, A21 | see [A23.md](A23.md) | — | merged `f9813ee` | `feat/part-stage` |
 | [A24](A24.md) | Dashboard, settings, people, profile, tags, shared | 13 | web | A21 | see [A24.md](A24.md) | — | merged `ffa5e36` | `feat/pages-pass` |
 | [A25](A25.md) | Redesign finish pass: screenshots, reviews, budget | 13 | web + docs | all | see [A25.md](A25.md) | — | merged `eac0123` | `feat/redesign-finish` |
+| [A26](A26.md) | The sign-in drawing keeps moving | 13 | web + docs | A25 | see [A26.md](A26.md) | — | claimed | `feat/living-lattice` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
