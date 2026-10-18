@@ -57,7 +57,7 @@ const WELL: Record<Layout, string> = {
 const NAME: Record<Layout, string> = {
   // Two lines, then an ellipsis: a slug of a name is long, and a card that grows a third line
   // for one part pushes its whole row out of step with the rest.
-  detail: 'line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
+  detail: 'line-clamp-2 min-h-[2.75em] text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   gallery: 'truncate text-[13px] leading-snug font-semibold text-[var(--color-bright)]',
   list: 'text-sm leading-snug font-semibold',
 }
@@ -231,6 +231,10 @@ export function Card({
           // "nobody has given this part a picture" is not one. It names the format instead —
           // a 46px list well cannot hold even that, and the row's name already says which
           // part this is, so there it is read rather than drawn.
+          //
+          // LATTICE SPOT (A21, waiting on A19): REDESIGN § "Taken from A17's audit" puts the settled, still lattice
+          // here in place of the word, `<Lattice still />` from `components/Lattice.tsx`. The word stays until A19
+          // merges; the footer's format chip already carries the format, so the word can go with it then.
           <span className={layout === 'list' ? 'sr-only' : 'text-xs text-[var(--color-muted)]'}>
             {strings.parts.noPicture(part.sourceFormat)}
           </span>
@@ -339,18 +343,21 @@ export function breakable(name: string): ReactNode[] {
 const PACKS = ['zip', '7z', 'rar']
 
 /**
- * The card's one line of figures: the part number, then the triangle count and its label.
+ * The card's one line of figures: the format chip, the part number, then the triangle count with its ≈ before it.
  *
  * A triangle count is tessellation-derived by construction, so a card showing one is
  * showing a mesh-derived figure whatever the wire's `approximate` says. CLAUDE.md
  * forbids such a figure appearing unlabelled, so the label is not a sibling conditional
- * that the count can drift away from: either the count and the label render together or
- * neither does, and the label also renders alone when the flag says some other figure on
- * the part is mesh-derived. No branch here can emit a count without a label.
+ * that the count can drift away from: either the count and its ≈ render together or
+ * neither does, and the label also renders alone — as the word, since a ≈ before nothing says nothing — when the flag
+ * says some other figure on the part is mesh-derived. No branch here can emit a count without a label.
  *
- * The label is a quiet lowercase word in the line rather than a boxed badge. It is still on
- * every card at rest, never behind a hover; forty boxed capitals down a grid were louder than
- * the parts' names.
+ * The ≈ is the mark the part page's figures carry (`strings.detail.approximate`), with its dotted Edge underline and a
+ * title that explains it; a screen reader hears the word. It is on every card at rest, never behind a hover.
+ *
+ * **The format chip** (A21) is a fact, not a control: a 4px Bench Grey label, mono Graphite, no edge. Uppercased in
+ * CSS rather than in the string, so the well's own format word (`strings.parts.noPicture`) stays the one exact match
+ * a reader or a test finds for it.
  */
 function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   // Narrowed with typeof rather than compared to null: the binding says `number | null`,
@@ -360,7 +367,8 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   const labelled = part.approximate || count !== null
   // A pack (A13) has no figures; its size is what a person deciding to download it wants.
   const pack = part.sourceFormat !== null && PACKS.includes(part.sourceFormat) ? part.sourceBytes : null
-  if (part.partNumber === null && !labelled && pack === null) {
+  const format = part.sourceFormat
+  if (format === null && part.partNumber === null && !labelled && pack === null) {
     return null
   }
   return (
@@ -369,20 +377,37 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
       // card, and eight pixels of it spent on air is eight pixels more of the part hidden.
       className={
         tight
-          ? 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-[var(--color-muted)]'
-          : 'tabular mt-auto flex flex-wrap items-baseline gap-x-1.5 pt-1 text-[11px] text-[var(--color-muted)]'
+          ? 'tabular mt-auto flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-[var(--color-muted)]'
+          : 'tabular mt-auto flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pt-1 text-[11px] text-[var(--color-muted)]'
       }
     >
+      {format === null ? null : (
+        <span className="rounded-[var(--radius-sm)] bg-[var(--color-raised)] px-1 py-px text-[10px] leading-tight uppercase">
+          {format}
+        </span>
+      )}
       {part.partNumber === null ? null : <span className="text-[var(--color-dim)]">{part.partNumber}</span>}
-      {part.partNumber === null || !labelled ? null : <span aria-hidden="true">·</span>}
       {pack === null ? null : <span>{strings.parts.pack(pack)}</span>}
-      {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
-      {!labelled ? null : (
-        <span
-          title={strings.parts.approximateDetail}
-          className="underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
-        >
-          {strings.parts.approximate}
+      {count === null ? (
+        !labelled ? null : (
+          <span
+            title={strings.parts.approximateDetail}
+            className="underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+          >
+            {strings.parts.approximate}
+          </span>
+        )
+      ) : (
+        <span>
+          <span
+            aria-hidden="true"
+            title={strings.parts.approximateDetail}
+            className="mr-0.5 underline decoration-[var(--color-edge)] decoration-dotted underline-offset-2"
+          >
+            {strings.detail.approximate}
+          </span>
+          <span className="sr-only">{strings.parts.approximate}</span>
+          {strings.parts.triangles(count)}
         </span>
       )}
     </p>

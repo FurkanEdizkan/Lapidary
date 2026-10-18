@@ -1013,7 +1013,9 @@ test("shows the triangle count only alongside the approximate label", async () =
   renderIndex();
   const card = await screen.findByRole("article", { name: MOTOR_MOUNT.name });
   expect(within(card).getByText("12,486 triangles")).toBeDefined();
-  const badge = within(card).getByText("approximate");
+  // Heard as the word, seen as the ≈ before the count (A21), whose title says what it means.
+  expect(within(card).getByText("approximate")).toBeDefined();
+  const badge = within(card).getByText("≈");
   expect(badge.getAttribute("title")).toBe(
     "At least one figure on this part is measured from tessellated geometry rather than from analytic CAD entities.",
   );
