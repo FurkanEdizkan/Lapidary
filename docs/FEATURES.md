@@ -280,7 +280,7 @@ none of it depends on anything Phase 2 onwards adds.
 | A 3MF’s own thumbnail as its picture, through the package’s relationship, never over one somebody chose (84 of the owner’s 89 3MFs; the other 5 exceed the triangle cap) | F1, built |
 | Keep the 3D view on screen as the picture of a part that has none | F1, built |
 | Bambu Studio and Orca 3MFs (Production extension `p:path` components) ingest | F1, built |
-| Import a model from its Printables, Thingiverse or MyMiniFactory page: its meshes, name, creator, licence, tags and picture | F3, built (Printables checked live; the other two await the owner's keys) |
+| Import a model from its Printables, Thingiverse or MyMiniFactory page: its meshes, name, creator, licence, tags and picture | F3, built (Printables checked live; MyMiniFactory's details and pictures checked live with an API key, A14 — its downloads need an OAuth token; Thingiverse awaits a key) |
 | A Settings page for each site's key: saved, shown by its last four characters only, and checked against the site | F3, built |
 | MakerWorld import | **[—]** its files sit behind a browser check a server cannot pass |
 | Attach product/source URL, vendor, SKU, price | 1 |
