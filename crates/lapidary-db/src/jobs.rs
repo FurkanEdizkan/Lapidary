@@ -158,10 +158,12 @@ impl PgJobs {
     /// them, and so does every scan job, which is how the examples know a library has history.
     pub async fn prune_finished(&self, library: LibraryId, keep: BatchId) -> Result<u64, DbError> {
         let gone = sqlx::query(
-            "DELETE FROM job j WHERE j.library_id = $1 AND j.batch_id <> $2 \
-               AND j.kind = 'ingest_file' AND j.state = 'done' \
-               AND NOT EXISTS (SELECT 1 FROM job o WHERE o.batch_id = j.batch_id \
-                               AND o.state IN ('pending', 'running'))",
+            // The batches still at work once, off `job_active_idx`, rather than per row: a correlated check per row
+            // read the whole batch for every one of its jobs, and at 20,000 rows outlived the scan job's lease.
+            "DELETE FROM job WHERE library_id = $1 AND batch_id <> $2 \
+               AND kind = 'ingest_file' AND state = 'done' \
+               AND batch_id NOT IN (SELECT batch_id FROM job WHERE library_id = $1 \
+                                    AND state IN ('pending', 'running'))",
         )
         .bind(library.as_uuid())
         .bind(keep.as_uuid())
