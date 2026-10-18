@@ -6,7 +6,7 @@ import type { LibraryId } from '../lib/types'
 import { Icon } from './Icon'
 import { JumpSearch } from './Search'
 import { Menu } from './Menu'
-import { Indicator, Rise } from '../lib/motion-react'
+import { Fade, Indicator, Presence, Rise, mechanical } from '../lib/motion-react'
 import { LOGIN_PATH, currentUser, forgetSession, signOut } from '../lib/session'
 
 /**
@@ -332,13 +332,18 @@ export function AppFrame({
   */
   const panel = !drawer ? null : (
     <>
-      {drawerOpen ? (
-        <div
-          aria-hidden="true"
-          onClick={() => setDrawerOpen(false)}
-          className="scrim-in fixed inset-0 z-[var(--z-drawer)] bg-black/60 md:hidden"
-        />
-      ) : null}
+      {/* The scrim fades in and out by presence over 120 ms (A22's dialogs do the same); the drawer slides by CSS. */}
+      <Presence>
+        {drawerOpen ? (
+          <Fade
+            key="drawer-scrim"
+            aria-hidden="true"
+            transition={mechanical('fast')}
+            onClick={() => setDrawerOpen(false)}
+            className="fixed inset-0 z-[var(--z-drawer)] bg-black/60 md:hidden"
+          />
+        ) : null}
+      </Presence>
       <div
         id="drawer"
         className={`${rail === undefined ? 'md:hidden' : 'w-56 shrink-0'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-[var(--z-drawer)] max-md:w-72 max-md:max-w-[85vw] max-md:overflow-y-auto max-md:overscroll-contain max-md:border-r max-md:border-[var(--color-border)] max-md:bg-[var(--color-bg)] max-md:p-4 ${
