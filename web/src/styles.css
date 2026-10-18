@@ -423,3 +423,56 @@ a {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+/*
+  The sign-in wall (A28): each column drifts its two identical halves past, half a column per cycle, so the loop has no
+  seam. Alternate columns run the other way and each at its own speed. Transform only, linear because it never starts
+  or stops on its own; only with motion allowed, since the reduced-motion rule above would make an infinite animation
+  flicker rather than stop. One tile in a few catches the accent now and then, as if a search had found it.
+*/
+@keyframes wall-drift {
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+@keyframes wall-found {
+  0%,
+  86%,
+  100% {
+    opacity: 0;
+  }
+  90%,
+  94% {
+    opacity: 1;
+  }
+}
+
+.wall {
+  mask-image: linear-gradient(to bottom, transparent, black 12%);
+}
+
+.wall-tile::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--color-accent);
+  border-radius: inherit;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wall-moving .wall-column {
+    animation: wall-drift calc(70s + var(--wall-column) * 13s) linear infinite;
+  }
+  .wall-moving .wall-column:nth-child(even) {
+    animation-direction: reverse;
+  }
+  .wall-moving .wall-found::after {
+    animation: wall-found calc(9s + var(--wall-column) * 2.3s) linear infinite;
+  }
+  .wall-paused .wall-column,
+  .wall-paused .wall-found::after {
+    animation-play-state: paused;
+  }
+}

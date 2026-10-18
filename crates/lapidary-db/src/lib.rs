@@ -15,6 +15,7 @@ mod site_keys;
 mod sources;
 mod tags;
 mod touches;
+mod wall;
 
 pub use accounts::{PgAccounts, PgSettings, UserRow};
 pub use custom_fields::{
@@ -39,6 +40,7 @@ pub use sources::{FolderUse, PgSources, SourceRow, covers};
 pub use sqlx::PgPool;
 pub use tags::PgTags;
 pub use touches::Touches;
+pub use wall::{PgWall, WallPicture};
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
 // its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
 // on sqlx at all, not only about not writing queries.

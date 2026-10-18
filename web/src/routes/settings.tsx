@@ -2,6 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
+  fetchWallSetting,
+  saveWallSetting,
   chooseModelsFolder,
   checkSiteKey,
   clearSiteKey,
@@ -78,9 +80,46 @@ export function SettingsPage() {
         </section>
         <ImportSettingsSection />
         <ServerSection />
+        <WallSection />
         <ModelsFolderSection />
       </section>
     </AppFrame>
+  )
+}
+
+/** The sign-in wall (A28): the admin turns the library's pictures on the sign-in page on or off for everybody. */
+function WallSection() {
+  const queryClient = useQueryClient()
+  const wall = useQuery({ queryKey: ['wall-setting'], queryFn: fetchWallSetting })
+  const admin = currentUser()?.isAdmin ?? true
+  const save = useMutation({
+    mutationFn: saveWallSetting,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['wall-setting'] }),
+  })
+  if (wall.data === undefined) return null
+  return (
+    <section className={SECTION} aria-labelledby="wall-heading">
+      <h3 id="wall-heading" className={SECTION_TITLE}>
+        {strings.settings.wallHeading}
+      </h3>
+      <p className={`mt-2 max-w-prose ${HINT}`}>{strings.settings.wallLead}</p>
+      <label className="mt-4 flex min-h-6 items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={save.isPending ? save.variables : wall.data.on}
+          disabled={!admin || save.isPending}
+          onChange={(event) => save.mutate(event.target.checked)}
+          className="size-4 accent-[var(--color-dim)]"
+        />
+        {strings.settings.wallSwitch}
+      </label>
+      {admin ? null : <p className={`mt-1 ${HINT}`}>{strings.settings.wallLocked}</p>}
+      {save.isError ? (
+        <p role="alert" className="mt-3 text-sm text-[var(--color-text)]">
+          {save.error.message}
+        </p>
+      ) : null}
+    </section>
   )
 }
 

@@ -133,7 +133,7 @@ async fn rebuild(db: PgPool, hash: &BlobHash) -> bool {
 /// byte-for-byte identical: a caller who can tell them apart can use this endpoint to
 /// confirm that particular bytes are stored, which is the capability the reachability
 /// check exists to withhold.
-fn not_found() -> Response {
+pub(crate) fn not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
         axum::Json(serde_json::json!({ "message": "No such file." })),
@@ -163,7 +163,7 @@ fn internal_error(err: &DbError) -> Response {
 /// glTF is the fallback, not WebP: every blob this route served before images existed is a
 /// rung, and an unrecognised blob is far more likely to be a new kind of geometry than a new
 /// kind of picture.
-fn content_type(bytes: &[u8]) -> &'static str {
+pub(crate) fn content_type(bytes: &[u8]) -> &'static str {
     // RIFF container with a WEBP fourcc — the WebP header, which is what `images::normalize`
     // writes and the only image format this application stores.
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {

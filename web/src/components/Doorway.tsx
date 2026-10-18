@@ -8,10 +8,21 @@ import { BrandMark } from './AppFrame'
  *
  * With an `aside` (A19) it splits: at `lg` the aside stands on the lamp in the wider left column with the mark, the
  * wordmark and the pitch at its foot, and the page's own content is centred on the right. Below `lg` the aside is a
- * short band above the content. `done` fills the mark's diamond: setup's last moment (A20).
+ * short band above the content. `done` fills the mark's diamond: setup's last moment (A20). A `backdrop` (A28, the
+ * sign-in wall) splits it the same way but fills the whole left column or band, under the mark.
  */
-export function Doorway({ children, aside, done = false }: { children: ReactNode; aside?: ReactNode; done?: boolean }) {
-  if (aside !== undefined) {
+export function Doorway({
+  children,
+  aside,
+  backdrop,
+  done = false,
+}: {
+  children: ReactNode
+  aside?: ReactNode
+  backdrop?: ReactNode
+  done?: boolean
+}) {
+  if (aside !== undefined || backdrop !== undefined) {
     return (
       <main className="grid min-h-dvh grid-rows-[auto_1fr] lg:grid-cols-[55fr_45fr] lg:grid-rows-1">
         <div className="stage-lamp relative flex h-36 flex-col overflow-hidden border-b border-[var(--color-border)] lg:h-auto lg:border-r lg:border-b-0">
@@ -19,10 +30,13 @@ export function Doorway({ children, aside, done = false }: { children: ReactNode
             Below `lg` the drawing is larger than its band and cropped by it, off to the right of the mark. Centred by
             flex, not a translate: a transformed ancestor would capture setup's intro, which centres on the viewport.
           */}
-          <div className="absolute inset-y-0 -right-14 flex w-80 items-center lg:static lg:min-h-0 lg:w-auto lg:flex-1 lg:justify-center lg:p-16">
-            {aside}
-          </div>
-          <div className="absolute bottom-0 left-0 flex flex-col gap-3 p-4 lg:static lg:p-12">
+          {backdrop}
+          {aside === undefined ? null : (
+            <div className="absolute inset-y-0 -right-14 flex w-80 items-center lg:static lg:min-h-0 lg:w-auto lg:flex-1 lg:justify-center lg:p-16">
+              {aside}
+            </div>
+          )}
+          <div className="absolute bottom-0 left-0 z-10 flex flex-col gap-3 p-4 lg:relative lg:mt-auto lg:p-12">
             <div className="flex items-center gap-[9px]">
               <BrandMark filled={done} />
               <span className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</span>
