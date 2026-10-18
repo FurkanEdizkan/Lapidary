@@ -51,8 +51,8 @@ export function SettingsPage() {
         <title>{strings.titles.settings}</title>
         <h2 className={HEADLINE}>{strings.settings.title}</h2>
         <p className={LEAD}>{strings.settings.lead}</p>
-        <section className={SECTION} aria-labelledby="settings-sites">
-          <h3 id="settings-sites" className={SECTION_TITLE}>
+        <section className={SECTION} aria-labelledby="sites-heading">
+          <h3 id="sites-heading" className={SECTION_TITLE}>
             {strings.settings.sitesHeading}
           </h3>
           {settings.isPending ? (
@@ -110,8 +110,8 @@ function ServerSection() {
           <AppSkeleton label={strings.settings.moving(wanted)} />
         </div>
       ) : null}
-      <section className={SECTION} aria-labelledby="settings-server">
-        <h3 id="settings-server" className={SECTION_TITLE}>
+      <section className={SECTION} aria-labelledby="server-heading">
+        <h3 id="server-heading" className={SECTION_TITLE}>
           {strings.settings.serverHeading}
         </h3>
         {!movable ? (
@@ -179,8 +179,8 @@ function ImportSettingsSection() {
     onSuccess: (saved) => queryClient.setQueryData(['import-settings'], saved),
   })
   return (
-    <section className={SECTION} aria-labelledby="settings-import">
-      <h3 id="settings-import" className={SECTION_TITLE}>
+    <section className={SECTION} aria-labelledby="import-heading">
+      <h3 id="import-heading" className={SECTION_TITLE}>
         {strings.settings.importHeading}
       </h3>
       <label className="mt-4 flex items-start gap-3 text-sm">
@@ -340,8 +340,8 @@ function ModelsFolderSection() {
           <AppSkeleton label={strings.settings.restarting(choose.variables)} />
         </div>
       ) : null}
-      <section className={SECTION} aria-labelledby="settings-folders">
-        <h3 id="settings-folders" className={SECTION_TITLE}>
+      <section className={SECTION} aria-labelledby="folders-heading">
+        <h3 id="folders-heading" className={SECTION_TITLE}>
           {strings.settings.foldersHeading}
         </h3>
         <dl className="mt-4 flex flex-col gap-1.5">

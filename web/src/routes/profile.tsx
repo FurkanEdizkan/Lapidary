@@ -3,13 +3,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { changePassword, fetchProfile, saveProfile } from '../lib/api'
 import { strings } from '../lib/strings'
-import { HEADLINE, LEAD, SECTION, SECTION_TITLE } from '../components/Page'
+import { HEADLINE, LEAD, QUIET, SECTION, SECTION_TITLE, STANDING } from '../components/Page'
 import { Field, INPUT } from '../components/Doorway'
 import { AppFrame } from '../components/AppFrame'
+import { currentUser } from '../lib/session'
 
 export const Route = createFileRoute('/profile')({
   component: ProfilePage,
 })
+
+/** `QUIET` at a form's size, so a quiet verb stands as tall as `STANDING` would in its place. */
+const QUIET_FORM = QUIET.replace('min-h-8', 'min-h-9').replace('text-xs', 'text-sm')
 
 /** This install's profile (M2): the name it calls its owner. Reached from the user menu. */
 export function ProfilePage() {
@@ -20,15 +24,20 @@ export function ProfilePage() {
         <title>{strings.titles.profile}</title>
         <h2 className={HEADLINE}>{strings.profile.title}</h2>
         <p className={LEAD}>{strings.profile.lead}</p>
-        {profile.isPending ? (
-          <p className="mt-6 text-[var(--color-muted)]">{strings.profile.loading}</p>
-        ) : profile.isError ? (
-          <p role="alert" className="mt-6 max-w-prose text-[var(--color-muted)]">
-            {strings.profile.failed}
-          </p>
-        ) : (
-          <NameForm key={profile.data.displayName ?? ''} initial={profile.data.displayName ?? ''} />
-        )}
+        <section className={SECTION} aria-labelledby="profile-name">
+          <h3 id="profile-name" className={SECTION_TITLE}>
+            {strings.profile.nameLabel}
+          </h3>
+          {profile.isPending ? (
+            <p className="mt-4 text-sm text-[var(--color-muted)]">{strings.profile.loading}</p>
+          ) : profile.isError ? (
+            <p role="alert" className="mt-4 max-w-[70ch] text-sm text-[var(--color-muted)]">
+              {strings.profile.failed}
+            </p>
+          ) : (
+            <NameForm key={profile.data.displayName ?? ''} initial={profile.data.displayName ?? ''} />
+          )}
+        </section>
         <PasswordForm />
       </section>
     </AppFrame>
@@ -38,34 +47,35 @@ export function ProfilePage() {
 function NameForm({ initial }: { initial: string }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState(initial)
+  // With no name of your own, the field shows what Lapidary calls you instead: your username (A17's audit).
+  const username = currentUser()?.username
+  const changed = name !== initial
   const save = useMutation({
     mutationFn: () => saveProfile(name),
     onSuccess: (saved) => queryClient.setQueryData(['profile'], saved),
   })
   return (
     <form
-      className="mt-6 flex max-w-md flex-col gap-2"
+      className="mt-4 flex max-w-md flex-col gap-3"
       onSubmit={(event) => {
         event.preventDefault()
         if (!save.isPending) save.mutate()
       }}
     >
-      <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
-        {strings.profile.nameLabel}
+      <Field label={strings.profile.nameLabel}>
         <input
           type="text"
           maxLength={80}
+          autoComplete="name"
           value={name}
+          placeholder={username}
           onChange={(event) => setName(event.target.value)}
-          className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)]"
+          className={INPUT}
         />
-      </label>
+      </Field>
       <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={save.isPending}
-          className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
-        >
+        {/* The page's one standing verb once there is a change to save; quiet, and still pressable, until then. */}
+        <button type="submit" disabled={save.isPending} className={changed ? STANDING : QUIET_FORM}>
           {strings.profile.save}
         </button>
         {save.isSuccess ? (
@@ -114,7 +124,7 @@ function PasswordForm() {
           <button
             type="submit"
             disabled={change.isPending || current === '' || password === ''}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className={QUIET_FORM}
           >
             {strings.profile.changePassword}
           </button>

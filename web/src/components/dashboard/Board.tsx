@@ -416,7 +416,7 @@ export function Board({
       <Presence>
         {settingsWidget === undefined ? null : (
         <WidgetSettings
-          key={`settings-${settingsWidget.key}`}
+          key={`configure-${settingsWidget.key}`}
           stored={settingsWidget}
           onClose={() => setSettingsFor(null)}
           onSave={(widget) => {
