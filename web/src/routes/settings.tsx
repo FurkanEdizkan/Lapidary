@@ -17,7 +17,7 @@ import {
 } from '../lib/api'
 import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
-import { HEADLINE, LEAD } from '../components/Page'
+import { FACT, HEADLINE, HINT, LEAD, QUIET, SECTION, SECTION_TITLE } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
 import { AppSkeleton } from '../components/Skeleton'
 import { FolderPicker } from '../components/FolderPicker'
@@ -28,8 +28,16 @@ export const Route = createFileRoute('/settings')({
   component: SettingsPage,
 })
 
-const BUTTON =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+/** A site row's Save once there is a key to save: `QUIET`'s size, standing (DESIGN.md § Buttons). */
+const READY =
+  'ease-mechanical flex min-h-8 flex-none items-center rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-bg)] px-3 text-xs font-semibold whitespace-nowrap text-[var(--color-bright)] duration-[var(--duration-fast)] hover:-translate-y-px'
+
+/** A field beside `QUIET` controls, at their 32px. */
+const FIELD =
+  'min-h-8 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1 text-sm text-[var(--color-text)]'
+
+/** A fact's name, over its value. */
+const KEY = 'text-xs text-[var(--color-muted)]'
 
 /**
  * The keys for the sites a model can be imported from (F3). The whole installation's, not one
@@ -43,29 +51,31 @@ export function SettingsPage() {
         <title>{strings.titles.settings}</title>
         <h2 className={HEADLINE}>{strings.settings.title}</h2>
         <p className={LEAD}>{strings.settings.lead}</p>
-        <h3 className="mt-8 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-          {strings.settings.sitesHeading}
-        </h3>
-        {settings.isPending ? (
-          <p className="mt-4 text-[var(--color-muted)]">{strings.settings.loading}</p>
-        ) : settings.isError ? (
-          <p role="alert" className="mt-4 max-w-prose text-[var(--color-muted)]">
-            {strings.settings.failed}
-          </p>
-        ) : (
-          <>
-            {settings.data.enabled ? null : (
-              <p role="status" className="mt-4 max-w-prose text-[var(--color-muted)]">
-                {strings.settings.switchedOff}
-              </p>
-            )}
-            <ul role="list" className="mt-3 flex flex-col border-t border-[var(--color-border)]">
-              {settings.data.sites.map((site) => (
-                <SiteRow key={site.site} site={site} enabled={settings.data.enabled} />
-              ))}
-            </ul>
-          </>
-        )}
+        <section className={SECTION} aria-labelledby="settings-sites">
+          <h3 id="settings-sites" className={SECTION_TITLE}>
+            {strings.settings.sitesHeading}
+          </h3>
+          {settings.isPending ? (
+            <p className="mt-4 text-[var(--color-muted)]">{strings.settings.loading}</p>
+          ) : settings.isError ? (
+            <p role="alert" className="mt-4 max-w-prose text-[var(--color-muted)]">
+              {strings.settings.failed}
+            </p>
+          ) : (
+            <>
+              {settings.data.enabled ? null : (
+                <p role="status" className="mt-4 max-w-prose text-[var(--color-muted)]">
+                  {strings.settings.switchedOff}
+                </p>
+              )}
+              <ul role="list" className="flex flex-col divide-y divide-[var(--color-border)]">
+                {settings.data.sites.map((site) => (
+                  <SiteRow key={site.site} site={site} enabled={settings.data.enabled} />
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
         <ImportSettingsSection />
         <ServerSection />
         <ModelsFolderSection />
@@ -91,6 +101,7 @@ function ServerSection() {
   })
   if (server.data === undefined) return null
   const locked = server.data.lockedBy
+  const movable = locked === null && admin
   const wanted = Number(port)
   return (
     <>
@@ -99,48 +110,62 @@ function ServerSection() {
           <AppSkeleton label={strings.settings.moving(wanted)} />
         </div>
       ) : null}
-      <h3 className="mt-10 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
-        {strings.settings.serverHeading}
-      </h3>
-      <form
-        className="mt-3 flex flex-wrap items-end gap-2"
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (Number.isInteger(wanted) && wanted > 0 && !move.isPending) move.mutate(wanted)
-        }}
-      >
-        <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
-          {strings.settings.port}
-          <input
-            type="number"
-            min={1024}
-            max={65535}
-            placeholder={String(server.data.port)}
-            value={port}
-            disabled={locked !== null || !admin}
-            onChange={(event) => setPort(event.target.value)}
-            className="w-32 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)] tabular"
-          />
-        </label>
-        {locked === null && admin ? (
-          <button type="submit" disabled={port === '' || move.isPending} className={BUTTON}>
-            {strings.settings.movePort}
-          </button>
+      <section className={SECTION} aria-labelledby="settings-server">
+        <h3 id="settings-server" className={SECTION_TITLE}>
+          {strings.settings.serverHeading}
+        </h3>
+        {!movable ? (
+          /*
+            Nothing here can change it, so it is a fact rather than a field: an Edge border promises you can type (A17's
+            audit found the locked port drawn as an input).
+          */
+          <dl className="mt-4 flex flex-col gap-1.5">
+            <dt className={KEY}>{strings.settings.port}</dt>
+            <dd className={FACT}>{server.data.port}</dd>
+          </dl>
+        ) : (
+          <form
+            className="mt-4 flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (Number.isInteger(wanted) && wanted > 0 && !move.isPending) move.mutate(wanted)
+            }}
+          >
+            <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+              {strings.settings.port}
+              <input
+                type="number"
+                min={1024}
+                max={65535}
+                placeholder={String(server.data.port)}
+                value={port}
+                onChange={(event) => setPort(event.target.value)}
+                className={`${FIELD} tabular w-32`}
+              />
+            </label>
+            <button type="submit" disabled={port === '' || move.isPending} className={port === '' ? QUIET : READY}>
+              {strings.settings.movePort}
+            </button>
+          </form>
+        )}
+        <p className={`${HINT} mt-2`}>
+          {locked !== null
+            ? strings.settings.portLocked(locked)
+            : admin
+              ? strings.settings.portHint
+              : strings.settings.portAdminsOnly}
+        </p>
+        {move.isError ? (
+          <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+            {move.error.message}
+          </p>
         ) : null}
-      </form>
-      <p className="mt-2 max-w-prose text-xs text-[var(--color-dim)]">
-        {locked !== null ? strings.settings.portLocked(locked) : admin ? strings.settings.portHint : strings.settings.portAdminsOnly}
-      </p>
-      {move.isError ? (
-        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
-          {move.error.message}
-        </p>
-      ) : null}
-      {lost === null ? null : (
-        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
-          {strings.settings.moveLost(lost)}
-        </p>
-      )}
+        {lost === null ? null : (
+          <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+            {strings.settings.moveLost(lost)}
+          </p>
+        )}
+      </section>
     </>
   )
 }
@@ -154,11 +179,11 @@ function ImportSettingsSection() {
     onSuccess: (saved) => queryClient.setQueryData(['import-settings'], saved),
   })
   return (
-    <>
-      <h3 className="mt-10 text-xs font-medium tracking-widest text-[var(--color-muted)] uppercase">
+    <section className={SECTION} aria-labelledby="settings-import">
+      <h3 id="settings-import" className={SECTION_TITLE}>
         {strings.settings.importHeading}
       </h3>
-      <label className="mt-3 flex items-start gap-3 text-sm">
+      <label className="mt-4 flex items-start gap-3 text-sm">
         <input
           type="checkbox"
           checked={current.data?.fetchDetails ?? false}
@@ -168,10 +193,10 @@ function ImportSettingsSection() {
         />
         <span className="flex flex-col gap-1">
           {strings.settings.fetchDetails}
-          <span className="text-xs text-[var(--color-dim)]">{strings.settings.fetchDetailsHint}</span>
+          <span className={HINT}>{strings.settings.fetchDetailsHint}</span>
         </span>
       </label>
-    </>
+    </section>
   )
 }
 
@@ -228,7 +253,7 @@ function SiteRow({ site, enabled }: { site: SiteSetting; enabled: boolean }) {
       ? strings.settings.checkFailed
       : null
   return (
-    <li className="flex flex-col gap-2 border-b border-[var(--color-border)] py-4">
+    <li className="flex flex-col gap-2 py-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-sm font-semibold text-[var(--color-bright)]">{site.name}</h4>
         <p className="text-xs text-[var(--color-muted)]">{site.needsKey ? status : strings.settings.noKeyNeeded}</p>
@@ -248,33 +273,33 @@ function SiteRow({ site, enabled }: { site: SiteSetting; enabled: boolean }) {
             value={key}
             onChange={(event) => setKey(event.target.value)}
             aria-label={strings.settings.keyLabel(site.name)}
-            className="min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 font-mono text-sm"
+            className={`${FIELD} min-w-0 flex-1 font-mono`}
           />
-          <button type="submit" disabled={!typed || save.isPending} className={BUTTON}>
+          <button type="submit" disabled={!typed || save.isPending} className={typed ? READY : QUIET}>
             {strings.settings.save}
           </button>
           <button
             type="button"
             disabled={!enabled || check.isPending || (!typed && site.hint === null)}
             onClick={() => check.mutate()}
-            className={BUTTON}
+            className={QUIET}
           >
             {checkLabel}
           </button>
           {site.hint === null ? null : (
-            <button type="button" disabled={remove.isPending} onClick={() => remove.mutate()} className={BUTTON}>
+            <button type="button" disabled={remove.isPending} onClick={() => remove.mutate()} className={QUIET}>
               {strings.settings.remove}
             </button>
           )}
         </form>
       ) : (
-        <div>
-          <button type="button" disabled={!enabled || check.isPending} onClick={() => check.mutate()} className={BUTTON}>
+        <div className="flex">
+          <button type="button" disabled={!enabled || check.isPending} onClick={() => check.mutate()} className={QUIET}>
             {checkLabel}
           </button>
         </div>
       )}
-      {help === undefined ? null : <p className="max-w-prose text-xs text-[var(--color-muted)]">{help}</p>}
+      {help === undefined ? null : <p className={HINT}>{help}</p>}
       {answer === null ? null : (
         <p role="status" className="max-w-prose text-sm text-[var(--color-muted)]">
           {answer.message}
@@ -315,23 +340,35 @@ function ModelsFolderSection() {
           <AppSkeleton label={strings.settings.restarting(choose.variables)} />
         </div>
       ) : null}
-      <div className="mt-6 flex flex-col gap-1.5">
-        <p className="text-xs text-[var(--color-muted)]">{strings.settings.modelsFolder}</p>
-        <p className="font-mono text-[13px] break-all">{data.path ?? strings.settings.modelsFolderUnknown}</p>
-        <p className="max-w-prose text-xs text-[var(--color-dim)]">
-          {locked !== null
-            ? strings.settings.modelsFolderLocked(locked)
-            : !data.canChoose
-              ? strings.settings.modelsFolderFixed
-              : admin
-                ? strings.settings.modelsFolderHint
-                : strings.settings.modelsFolderAdminsOnly}
-        </p>
-        {data.canChoose && locked === null && admin ? (
-          <button type="button" onClick={() => setPicking(true)} className={`${BUTTON} self-start`}>
-            {strings.folderPicker.choose}
-          </button>
-        ) : null}
+      <section className={SECTION} aria-labelledby="settings-folders">
+        <h3 id="settings-folders" className={SECTION_TITLE}>
+          {strings.settings.foldersHeading}
+        </h3>
+        <dl className="mt-4 flex flex-col gap-1.5">
+          <dt className={KEY}>{strings.settings.modelsFolder}</dt>
+          <dd className="flex flex-wrap items-center gap-2">
+            {/* A sentence when the path is not known: words are not figures (The Copyable Mono Rule). */}
+            {data.path === null ? (
+              <span className="text-sm text-[var(--color-text)]">{strings.settings.modelsFolderUnknown}</span>
+            ) : (
+              <span className={FACT}>{data.path}</span>
+            )}
+            {data.canChoose && locked === null && admin ? (
+              <button type="button" onClick={() => setPicking(true)} className={QUIET}>
+                {strings.folderPicker.choose}
+              </button>
+            ) : null}
+          </dd>
+          <dd className={HINT}>
+            {locked !== null
+              ? strings.settings.modelsFolderLocked(locked)
+              : !data.canChoose
+                ? strings.settings.modelsFolderFixed
+                : admin
+                  ? strings.settings.modelsFolderHint
+                  : strings.settings.modelsFolderAdminsOnly}
+          </dd>
+        </dl>
         <Presence>
           {picking ? (
             <FolderPicker
@@ -347,21 +384,27 @@ function ModelsFolderSection() {
           ) : null}
         </Presence>
         {choose.isError ? (
-          <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">
+          <p role="alert" className="mt-2 max-w-prose text-sm text-[var(--color-text)]">
             {choose.error.message}
           </p>
         ) : null}
         {lost ? (
-          <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">
+          <p role="alert" className="mt-2 max-w-prose text-sm text-[var(--color-text)]">
             {strings.settings.restartLost}
           </p>
         ) : null}
-      </div>
-      <div className="mt-6 flex flex-col gap-1.5">
-        <p className="text-xs text-[var(--color-muted)]">{strings.settings.store}</p>
-        <p className="font-mono text-[13px] break-all">{data.store ?? strings.settings.storeUnknown}</p>
-        <p className="max-w-prose text-xs text-[var(--color-dim)]">{strings.settings.storeHint}</p>
-      </div>
+        <dl className="mt-6 flex flex-col gap-1.5">
+          <dt className={KEY}>{strings.settings.store}</dt>
+          <dd>
+            {data.store === null ? (
+              <span className="text-sm text-[var(--color-text)]">{strings.settings.storeUnknown}</span>
+            ) : (
+              <span className={`${FACT} inline-block`}>{data.store}</span>
+            )}
+          </dd>
+          <dd className={HINT}>{strings.settings.storeHint}</dd>
+        </dl>
+      </section>
     </>
   )
 }

@@ -149,6 +149,7 @@ export const strings = {
     moving: (port: number) => `Moving Lapidary to port ${port}…`,
     moveLost: (port: number) =>
       `Lapidary moved to port ${port} but this page could not reach it. Open it on port ${port} yourself.`,
+    foldersHeading: 'Folders',
     modelsFolder: 'Models folder',
     modelsFolderHint:
       'Where your models are, and where uploads, imports and removed models go. Choosing another restarts Lapidary on it; models read from the current one must be removed from the library first.',
