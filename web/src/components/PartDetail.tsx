@@ -853,7 +853,7 @@ export function Preview({
   // Pending draws the lamp alone, so a part with a picture never shows the lattice for a moment first.
   const poster = images.isPending ? null : image === null ? (
     <div className="grid h-full w-full place-items-center">
-      <Lattice still className="size-[62%]" />
+      <Lattice still className="size-[70%]" />
     </div>
   ) : (
     // The whole picture (A16): a stored `cover` is the card's framing, and on a stage it cut a square picture to a band.

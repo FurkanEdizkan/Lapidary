@@ -51,8 +51,8 @@ const WELL: Record<Layout, string> = {
  * drawing is smaller and raised clear of it; the detail card's footer is below the well.
  */
 const LATTICE: Record<Layout, string> = {
-  detail: 'size-[76%]',
-  gallery: 'size-[56%] -translate-y-[16%]',
+  detail: 'size-[84%]',
+  gallery: 'size-[64%] -translate-y-[16%]',
   list: 'size-full',
 }
 

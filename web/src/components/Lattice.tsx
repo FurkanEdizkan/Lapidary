@@ -1,35 +1,44 @@
 import { useEffect, useRef, useState } from 'react'
-import { PITCH, lattice, latticeAt, type LatticeEdge } from '../lib/lattice'
+import { STEP, frame, lattice, rough, type LatticeEdge, type LatticeFace } from '../lib/lattice'
 import { cycle, drawIn, reduced, type Cycle } from '../lib/motion'
 import { strings } from '../lib/strings'
 import { Icon } from './Icon'
 
-/** One tooth pitch per cycle: the turn after which the gear looks the same, so the loop has no seam (A26). */
-const TURN_MS = 3000
-/** The marks travelling round the tooth profile and the bore: a short dash of the ring's length. */
-const MARK = 0.07
+/** One step of the brilliant's eightfold symmetry per cycle, turned and then held, so the loop has no seam (A27). */
+const TURN_MS = 3200
+/** The share of each cycle spent turning; the rest it holds, as a stone is turned and looked at. */
+const TURNING = 0.55
+/** Cycles the cut takes, from the rough stone to the brilliant, before the turning settles into its rhythm. */
+const CUT_CYCLES = 2
 
-/** Computed once: the geometry never changes, and two renders must draw the same part. */
-const GEAR = lattice()
-const GEAR_RINGS = latticeAt(0)
+/** Computed once: the geometry never changes, and two renders must draw the same stone. */
+const STONE = lattice()
+const ROUGH = rough()
+const FACETS = frame().faces
 
-/**
- * Settled strokes (DESIGN.md § Lattice): Edge for the outline, farther edges fainter so the part reads in depth, and
- * the Scribe Line for the face triangulation, so the outline reads first and the mesh is texture.
- */
-function tone({ depth, inner }: LatticeEdge): { stroke: string; strokeOpacity?: number } {
-  if (inner) return { stroke: 'var(--color-border)' }
-  return { stroke: 'var(--color-edge)', strokeOpacity: Math.round((1 - 0.5 * depth) * 100) / 100 }
-}
+/** Settled strokes (DESIGN.md § Lattice): Edge, with the lines of facets turned away faint, so the stone reads solid. */
+const opacity = ({ front }: LatticeEdge) => String(Math.round((0.2 + 0.75 * front) * 100) / 100)
+
+/** A facet is blue only while it glints or is being cut: Layout Blue on what moves, never at rest. */
+const shine = ({ glint, cutting }: LatticeFace) => String(Math.round(Math.max(0.5 * glint, 0.12 * cutting) * 100) / 100)
 
 /** The grey lines, built once and shared by every Lattice on the page: a still one costs one element tree. */
-const LINES = GEAR.edges.map((edge) => (
-  <path key={edge.d} d={edge.d} vectorEffect="non-scaling-stroke" {...tone(edge)} />
-))
+const lines = (edges: readonly LatticeEdge[]) =>
+  edges.map((edge) => (
+    <path
+      key={edge.d}
+      d={edge.d}
+      vectorEffect="non-scaling-stroke"
+      stroke="var(--color-edge)"
+      strokeOpacity={opacity(edge)}
+    />
+  ))
+const LINES = lines(STONE.edges)
+const ROUGH_LINES = lines(ROUGH.edges)
 
 /**
- * The drawn motif (A19): a gear's wireframe that draws itself once, line by line, with a short accent head at each
- * line's tip, then stays grey and still. Decorative, so hidden from assistive technology.
+ * The drawn motif (A19, A27): a brilliant's wireframe that draws itself once, line by line, with a short accent head
+ * at each line's tip, then stays grey and still. Decorative, so hidden from assistive technology.
  *
  * `still` renders the final frame at once and never animates: for standing in where there is no picture, many at a
  * time. Set part-way through a drawing (setup's Skip), it ends the drawing at its final frame, with no accent left.
@@ -48,14 +57,15 @@ export default function Lattice({
   /** First line to last settled, in ms: 2.4 s on sign-in, `--duration-intro` in setup's intro (A20). */
   total?: number
   /**
-   * Sign-in only (A26): once drawn, the gear keeps turning and three marks travel round it, with a Pause control,
-   * because it loops. Nowhere else does the lattice move after drawing.
+   * Sign-in only (A26, A27): it draws the rough stone, cuts it into the brilliant facet by facet, then keeps turning it
+   * a step at a time while glints run across its facets, with a Pause control because it loops. Nowhere else does the
+   * lattice move after drawing.
    */
   live?: boolean
 }) {
-  const lines = useRef<SVGGElement>(null)
+  const group = useRef<SVGGElement>(null)
   const heads = useRef<SVGGElement>(null)
-  const marks = useRef<SVGGElement>(null)
+  const faces = useRef<SVGGElement>(null)
   const [drawing, setDrawing] = useState(() => !still && !reduced())
   const moving = live && !still && !reduced()
   const [paused, setPaused] = useState(false)
@@ -63,29 +73,33 @@ export default function Lattice({
   const pausedRef = useRef(paused)
   pausedRef.current = paused
 
-  // After the drawing, the turn: every line re-projected each frame, written to the DOM directly so React never
-  // re-renders 350 paths sixty times a second.
+  // After the drawing, the cut and then the turn: every line and facet re-projected each frame, written to the DOM
+  // directly so React never re-renders two hundred paths sixty times a second.
   useEffect(() => {
-    if (!moving || drawing || lines.current === null) return
-    const paths = Array.from(lines.current.querySelectorAll<SVGPathElement>('path'))
-    const [front, hub, bore] = Array.from(marks.current?.querySelectorAll<SVGPathElement>('path') ?? [])
+    if (!moving || drawing || group.current === null) return
+    const paths = Array.from(group.current.querySelectorAll<SVGPathElement>('path'))
+    const facets = Array.from(faces.current?.querySelectorAll<SVGPathElement>('path') ?? [])
+    let cycles = 0
+    let last = 0
     const turn = cycle(TURN_MS, (progress) => {
-      const frame = latticeAt(progress * PITCH)
-      frame.edges.forEach((edge, i) => {
-        const path = paths[i]
-        if (path === undefined) return
-        path.setAttribute('d', edge.d)
-        const { strokeOpacity } = tone(edge)
-        if (strokeOpacity !== undefined) path.setAttribute('stroke-opacity', String(strokeOpacity))
+      if (progress < last) cycles++
+      last = progress
+      const t = Math.min(1, progress / TURNING)
+      // Each cycle turns one step and holds: a step looks the same as none, so cycles join without a seam, and the
+      // lights sweep and come back within it, so the glints run across the facets even while it holds.
+      const now = frame({
+        turn: STEP * t * t * (3 - 2 * t),
+        cut: Math.min(1, (cycles + progress) / CUT_CYCLES),
+        light: 0.6 * Math.sin(2 * Math.PI * progress),
       })
-      // Whole laps per tooth turned, so these loop seamlessly too: once round the teeth, twice round the hub's rim
-      // the other way, and once back round the bore.
-      front?.setAttribute('d', frame.front)
-      front?.setAttribute('stroke-dashoffset', String(-progress))
-      hub?.setAttribute('d', frame.hub)
-      hub?.setAttribute('stroke-dashoffset', String(2 * progress))
-      bore?.setAttribute('d', frame.bore)
-      bore?.setAttribute('stroke-dashoffset', String(progress))
+      now.edges.forEach((edge, i) => {
+        paths[i]?.setAttribute('d', edge.d)
+        paths[i]?.setAttribute('stroke-opacity', opacity(edge))
+      })
+      now.faces.forEach((face, i) => {
+        facets[i]?.setAttribute('d', face.d)
+        facets[i]?.setAttribute('fill-opacity', shine(face))
+      })
     })
     turning.current = turn
     // Nothing turns while the page is hidden; the reader's own Pause holds across that.
@@ -99,18 +113,18 @@ export default function Lattice({
   }, [moving, drawing])
 
   useEffect(() => {
-    if (still || lines.current === null) return
+    if (still || group.current === null) return
     const paths = (group: SVGGElement | null) =>
       group === null ? [] : Array.from(group.querySelectorAll<SVGGeometryElement>('path'))
     // Long enough to read as drawing (DESIGN.md § Lattice). Turning `still` on part-way reverts to the drawn frame.
-    return drawIn(paths(lines.current), () => setDrawing(false), total, paths(heads.current))
+    return drawIn(paths(group.current), () => setDrawing(false), total, paths(heads.current))
   }, [still, total])
 
   const drawingSvg = (
     <svg
       aria-hidden="true"
       focusable="false"
-      viewBox={GEAR.viewBox}
+      viewBox={STONE.viewBox}
       fill="none"
       strokeWidth={1}
       strokeLinecap="round"
@@ -122,26 +136,19 @@ export default function Lattice({
         strokes and the lines blank, so a Lattice told to stop draws its final frame on new paths instead; a turning one
         (A26) starts on new paths too, since a dash fitted to a line's drawn length gaps once the line changes length.
       */}
-      <g ref={lines} key={still ? 'still' : moving && !drawing ? 'turning' : 'drawing'}>
-        {LINES}
-      </g>
       {moving && !drawing ? (
-        <g ref={marks} stroke="var(--color-accent)" strokeWidth={1.5} data-marks="">
-          {[GEAR_RINGS.front, GEAR_RINGS.hub, GEAR_RINGS.bore].map((d) => (
-            <path
-              key={d}
-              d={d}
-              pathLength={1}
-              strokeDasharray={`${MARK} ${1 - MARK}`}
-              vectorEffect="non-scaling-stroke"
-              className="transition-none"
-            />
+        <g ref={faces} fill="var(--color-accent)" stroke="none" data-facets="">
+          {FACETS.map((face) => (
+            <path key={face.d} d={face.d} fillOpacity={0} className="transition-none" />
           ))}
         </g>
       ) : null}
+      <g ref={group} key={still ? 'still' : moving && !drawing ? 'turning' : 'drawing'}>
+        {moving ? ROUGH_LINES : LINES}
+      </g>
       {drawing && !still ? (
         <g ref={heads} stroke="var(--color-accent)" data-draw-head="">
-          {GEAR.edges.map(({ d }) => (
+          {(moving ? ROUGH : STONE).edges.map(({ d }) => (
             <path key={d} d={d} vectorEffect="non-scaling-stroke" className="transition-none" />
           ))}
         </g>
