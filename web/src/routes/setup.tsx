@@ -287,7 +287,6 @@ function Wizard({
   const [problem, setProblem] = useState<string | null>(null)
 
   const finish = useMutation({
-    onMutate: () => onFinishing(true),
     mutationFn: () =>
       runSetup({
         code,
@@ -297,6 +296,8 @@ function Wizard({
         importLinks: status.importLinksForcedOff ? null : importLinks,
       }),
     onSuccess: async () => {
+      // The account exists: the done moment, while whatever follows runs. It holds nothing up.
+      onFinishing(true)
       const to = Number(port)
       let moved = false
       if (port !== here && Number.isInteger(to) && to >= 1024) {
@@ -326,7 +327,6 @@ function Wizard({
       window.location.assign('/')
     },
     onError: (error) => {
-      onFinishing(false)
       // Every refusal the server can give is about the first step's fields.
       if (error instanceof Refused) go(1)
     },
