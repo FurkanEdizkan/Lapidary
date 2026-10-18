@@ -126,7 +126,7 @@ export const strings = {
     keyHelp: {
       thingiverse: 'An app token: create an app at thingiverse.com/apps/create and copy its token.',
       myminifactory:
-        'Your account’s access token (OAuth). An API key reads models but cannot download their files; the token can, including what your account has bought.',
+        'Your API key (myminifactory.com/settings/developer) or your account’s access token (OAuth). Either gives a model’s pictures, tags, licence and creator; only the token downloads files, including what your account has bought.',
     } as Record<string, string>,
     saved: (hint: string) => `A key ending ${hint} is saved.`,
     noneSaved: 'No key saved.',
