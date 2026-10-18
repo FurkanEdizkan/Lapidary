@@ -34,7 +34,7 @@ export function tokens(): Tokens {
     fast: durationMs(root.getPropertyValue('--duration-fast'), FALLBACK.fast),
     base: durationMs(root.getPropertyValue('--duration-base'), FALLBACK.base),
     slow: durationMs(root.getPropertyValue('--duration-slow'), FALLBACK.slow),
-    // The front door's authored moments only (A17): the intro into setup and the lattice's scenes.
+    // The front door's authored moments only (A17): the intro into setup.
     scene: durationMs(root.getPropertyValue('--duration-scene'), FALLBACK.scene),
     intro: durationMs(root.getPropertyValue('--duration-intro'), FALLBACK.intro),
     ease: root.getPropertyValue('--ease-mechanical').trim() || FALLBACK.ease,

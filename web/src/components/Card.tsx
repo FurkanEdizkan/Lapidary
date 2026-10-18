@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { fetchPartImages } from '../lib/api'
 import { Icon } from './Icon'
-import Lattice from './Lattice'
+import { EmptyFrame } from './EmptyFrame'
 import { type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import { PART_DRAG_TYPE, partDragPayload } from './FolderTree'
@@ -47,16 +47,16 @@ const WELL: Record<Layout, string> = {
 }
 
 /**
- * The still lattice's size per layout. The gallery's name sits over the lower third of its well, so there the
- * drawing is smaller and raised clear of it; the detail card's footer is below the well.
+ * The empty frame's size per layout. The gallery's name sits over the lower third of its well, so there the frame is
+ * smaller and raised clear of it; the detail card's footer is below the well.
  */
-const LATTICE: Record<Layout, string> = {
-  detail: 'size-[84%]',
-  gallery: 'size-[64%] -translate-y-[16%]',
-  list: 'size-full',
+const FRAME: Record<Layout, string> = {
+  detail: 'w-[72%]',
+  gallery: 'w-[56%] -translate-y-[16%]',
+  list: 'w-full rounded-[var(--radius-sm)]',
 }
 
-/** A well with no picture: the lamp's pool under the still lattice, as on a stage (DESIGN.md § Lattice). */
+/** A well with no picture: the lamp's pool under an empty frame, as on a stage (DESIGN.md § Empty frame). */
 const BARE_WELL: Record<Layout, string> = {
   detail: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
   gallery: 'stage-lamp relative flex aspect-square items-center justify-center overflow-hidden',
@@ -249,11 +249,11 @@ export function Card({
       <div ref={well} className={src === null ? BARE_WELL[layout] : WELL[layout]}>
         {src === null ? (
           // Never an <img> with an empty src: a broken-image glyph reads as a failure, and
-          // "nobody has given this part a picture" is not one. The still lattice stands in (A21, DESIGN.md §
-          // Lattice): the settled frame of the sign-in drawing over the lamp, one shared path tree, never moving.
+          // "nobody has given this part a picture" is not one. An empty frame stands in (A29, DESIGN.md § Empty
+          // frame): the sign-in wall's empty tile over the lamp, never moving.
           // The format is the footer's chip to the eye; the word here is what a reader hears, once.
           <>
-            <Lattice still className={LATTICE[layout]} />
+            <EmptyFrame className={FRAME[layout]} />
             <span className="sr-only">{strings.parts.noPicture(part.sourceFormat)}</span>
           </>
         ) : (

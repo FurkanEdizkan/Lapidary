@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { BrandMark } from '../components/AppFrame'
 import { Doorway, Field, INPUT } from '../components/Doorway'
 import { Icon } from '../components/Icon'
@@ -8,7 +8,7 @@ import { FACT, HEADLINE, HINT, LEAD, SECTION_TITLE, STANDING } from '../componen
 import { LOGIN_PATH, Refused, fetchSetupStatus, runSetup } from '../lib/session'
 import { chooseModelsFolder, fetchModelsFolder, followPort, followRestart, movePort } from '../lib/api'
 import { FolderPicker } from '../components/FolderPicker'
-import { Fade, Indicator, Presence, Rise, SETTLE, Step } from '../lib/motion-react'
+import { Fade, Indicator, Presence, Rise, Step } from '../lib/motion-react'
 import { reduced, tokens } from '../lib/motion-tokens'
 import { strings } from '../lib/strings'
 import type { SetupStatus } from '../lib/types'
@@ -36,23 +36,13 @@ function Fact({ path, unknown }: { path: string | null | undefined; unknown: str
 }
 
 /**
- * Lazy, so anime.js and the drawing load with the doorway and never with the grid (A19). A function as well, so the
- * intro's clock can wait for it: the intro starts when there is something to draw.
- */
-const loadLattice = () => import('../components/Lattice')
-const Lattice = lazy(loadLattice)
-
-/**
  * The intro plays once per page load (DESIGN.md § Stepper). Set when it ends rather than when it starts, so a mount
  * that is thrown away (StrictMode's first) does not use it up.
  */
 let introPlayed = false
 
-/** At the centre drawing; travelling to the left column while the wizard rises; over. */
+/** The mark at the centre; fading as the wizard rises; over. */
 type Phase = 'centre' | 'travel' | 'end'
-
-/** A skipped intro lands where it was going without travelling. */
-const INSTANT = { duration: 0 }
 
 /** Where the wizard is, and which way it last moved, so Back plays the step change in reverse. */
 type At = { step: number; direction: 1 | -1 }
@@ -62,8 +52,8 @@ type At = { step: number; direction: 1 | -1 }
  * worth deciding before anything is imported. Nothing is saved until Finish, so Back loses nothing;
  * a wrong setup code is the server's to say, and sends the person back to the step that has it.
  *
- * A20 puts it in the Doorway's split, after a short intro: the Lattice draws at the centre of the screen, then moves
- * into the left column as the wizard rises. A key, a click or Skip ends it at its end state; under reduced motion it
+ * A20 puts it in the Doorway's split, after a short intro: the mark at the centre of the screen, which fades as the
+ * wizard rises (since A29 nothing draws or travels). A key, a click or Skip ends it at its end state; under reduced motion it
  * never plays.
  */
 export function SetupPage() {
@@ -78,16 +68,11 @@ export function SetupPage() {
   // The clock: centre for `--duration-scene`, then the travel, all inside `--duration-intro`.
   useEffect(() => {
     if (!intro) return
-    let live = true
     const timers: number[] = []
-    void loadLattice().then(() => {
-      if (!live) return
-      const t = tokens()
-      timers.push(window.setTimeout(() => setPhase((now) => (now === 'centre' ? 'travel' : now)), t.scene))
-      timers.push(window.setTimeout(() => setPhase('end'), t.intro))
-    })
+    const t = tokens()
+    timers.push(window.setTimeout(() => setPhase((now) => (now === 'centre' ? 'travel' : now)), t.scene))
+    timers.push(window.setTimeout(() => setPhase('end'), t.intro))
     return () => {
-      live = false
       timers.forEach((timer) => window.clearTimeout(timer))
     }
   }, [intro])
@@ -124,40 +109,18 @@ export function SetupPage() {
   return (
     <Doorway
       done={done}
-      aside={
-        <div className="flex w-full max-w-md flex-col gap-12">
-          {/* At the centre of the screen during the intro, in the column after: one element, so it never redraws. */}
-          <div
-            className={
-              centre
-                ? 'pointer-events-none fixed inset-0 z-50 flex flex-col items-center justify-center gap-10 p-8'
-                : 'contents'
-            }
-          >
-            <Indicator
-              id="setup-lattice"
-              transition={skipped ? INSTANT : SETTLE}
-              className={centre ? 'w-[min(26rem,76vw)]' : 'w-full'}
-            >
-              <Suspense fallback={null}>
-                <Lattice className="w-full" still={!intro || skipped || done} total={tokens().intro} />
-              </Suspense>
-            </Indicator>
-            {centre ? (
-              <Fade>
-                <BrandMark />
-              </Fade>
-            ) : null}
-          </div>
-          {wizard && !centre ? arrive(<Stepper step={at.step} />) : null}
-        </div>
-      }
+      aside={<div className="w-full max-w-md">{wizard && !centre ? arrive(<Stepper step={at.step} />) : null}</div>}
     >
       <title>{strings.titles.setup}</title>
       <Presence>
         {centre ? (
           // Opaque from the first frame; it only fades on the way out.
           <Fade key="intro" initial={false} className="fixed inset-0 z-40 bg-[var(--color-bg)]">
+            <div className="flex h-full items-center justify-center">
+              <span className="scale-[2]">
+                <BrandMark />
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => {

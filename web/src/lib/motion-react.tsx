@@ -6,7 +6,7 @@ import { bezier, reduced, tokens } from './motion-tokens'
  * The one place Motion (motion.dev's `motion` package) is imported, beside `motion-features.ts` (A18).
  *
  * Motion does what anime.js does not do well in React: things leaving (`Presence`), layout moving (`layout`), and one
- * element travelling between two places (`layoutId`). anime.js keeps timelines and SVG drawing (`motion.ts`). Both
+ * element travelling between two places (`layoutId`). anime.js keeps timelines and staggers (`motion.ts`). Both
  * read the same tokens, so a duration or the curve has one definition, in `styles.css`.
  *
  * Feature code uses the primitives below, never `m.*` directly, for one reason that is easy to forget:

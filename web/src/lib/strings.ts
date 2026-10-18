@@ -308,12 +308,9 @@ export const strings = {
     loading: 'Loading…',
   },
   /** Signing in (A1). */
-  /** The frame before signing in (A19): the one line under the wordmark beside the drawing. */
+  /** The frame before signing in (A19): the one line under the wordmark beside the wall. */
   doorway: {
     pitch: 'A visual index for your 3D part library.',
-    /** The sign-in drawing keeps turning (A26), so it can be stopped: WCAG 2.2.2. */
-    pause: 'Pause the drawing',
-    play: 'Play the drawing',
     /** The sign-in wall drifts for ever (A28), so it can be stopped too. */
     pauseWall: 'Pause the wall',
     playWall: 'Play the wall',

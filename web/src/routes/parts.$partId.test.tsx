@@ -927,7 +927,7 @@ test('choosing a picture in the filmstrip puts it on the stage, and the arrow ke
 })
 
 /**
- * A23: the part with no picture still has a stage: the lattice on the lamp and its format, with what View would say
+ * A23: the part with no picture still has a stage: an empty frame on the lamp and its format, with what View would say
  * on it. jsdom has no WebGL, so here that is the sentence saying there is no view; `PartDetail.test.tsx` presses View.
  */
 test('a part with no picture shows its format on the stage, with the view control on it', async () => {
@@ -938,6 +938,6 @@ test('a part with no picture shows its format on the stage, with the view contro
   const stage = said.closest('figure') as HTMLElement
   expect(stage.className).toContain('stage-lamp')
   await waitFor(() => expect(within(stage).getByText('STL')).toBeTruthy())
-  expect(stage.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+  expect(stage.querySelector('[data-empty-frame]')).not.toBeNull()
   expect(screen.queryByAltText(strings.parts.pictureAlt(PART.name))).toBeNull()
 })

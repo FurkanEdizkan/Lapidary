@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { strings } from '../../lib/strings'
 import { breakable, pictureStyle } from '../Card'
-import Lattice from '../Lattice'
+import { EmptyFrame } from '../EmptyFrame'
 import { StorageTotals } from '../Storage'
 import type {
   FacetKind,
@@ -76,9 +76,9 @@ export function PartsBody({ parts }: { parts: readonly PartCard[] }) {
               part.image === null ? 'stage-lamp' : 'bg-[var(--color-raised)] p-[2px]'
             }`}
           >
-            {/* The part's own picture, or the still lattice a card shows: never a blank that reads as a failed load. */}
+            {/* The part's own picture, or the empty frame a card shows: never a blank that reads as a failed load. */}
             {part.image === null ? (
-              <Lattice still className="size-[88%]" />
+              <EmptyFrame className="w-[70%] rounded-[var(--radius-sm)]" />
             ) : (
               <img
                 src={part.image.src}
