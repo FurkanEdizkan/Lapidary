@@ -12,12 +12,22 @@ import type { SessionUser, SetupRequest, SetupStatus, SignIn } from './types'
 export const SETUP_PATH = '/setup'
 export const LOGIN_PATH = '/login'
 
-/** A refusal the server sends with a sentence for a person. */
-export class Refused extends Error {}
+/**
+ * A refusal the server sends with a sentence for a person, and its `code` when it sent one, so a page can put the
+ * sentence under the field it is about.
+ */
+export class Refused extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null = null,
+  ) {
+    super(message)
+  }
+}
 
 async function refusal(response: Response, fallback: string): Promise<Refused> {
-  const body = (await response.json().catch(() => null)) as { message?: string } | null
-  return new Refused(body?.message ?? fallback)
+  const body = (await response.json().catch(() => null)) as { message?: string; code?: string } | null
+  return new Refused(body?.message ?? fallback, body?.code ?? null)
 }
 
 /** `GET /api/session`: the person, or why there is none. */

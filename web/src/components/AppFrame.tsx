@@ -15,13 +15,17 @@ import { LOGIN_PATH, currentUser, forgetSession, signOut } from '../lib/session'
  * and an SVG file would be a second request and a second place for the brand to be defined.
  * 1.5px and not 1px — at 19px a hairline outline disappears against the bar.
  */
-export function BrandMark() {
+export function BrandMark({ filled = false }: { filled?: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className="grid size-[19px] flex-none rotate-45 place-items-center rounded-[3px] border-[1.5px] border-[var(--color-accent)]"
+      className="relative grid size-[19px] flex-none rotate-45 place-items-center rounded-[3px] border-[1.5px] border-[var(--color-accent)]"
     >
       <span className="size-[6px] bg-[var(--color-accent)]" />
+      {/* Setup's done moment (A20): the diamond fills, by scale and opacity, while the server is followed. */}
+      <span
+        className={`ease-mechanical absolute inset-0 rounded-[1px] bg-[var(--color-accent)] duration-[var(--duration-slow)] ${filled ? 'opacity-100' : 'opacity-0 [transform:scale(0.3)]'}`}
+      />
     </span>
   )
 }
