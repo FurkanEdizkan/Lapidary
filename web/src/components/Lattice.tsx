@@ -62,7 +62,13 @@ export default function Lattice({
       strokeLinejoin="round"
       className={className === undefined ? 'transition-none' : `transition-none ${className}`}
     >
-      <g ref={lines}>{LINES}</g>
+      {/*
+        Fresh nodes once still: reverting a drawing part-way (or after it ended) left anime's dash state on the
+        strokes and the lines blank, so a Lattice told to stop draws its final frame on new paths instead.
+      */}
+      <g ref={lines} key={still ? 'still' : 'drawing'}>
+        {LINES}
+      </g>
       {drawing && !still ? (
         <g ref={heads} stroke="var(--color-accent)" data-draw-head="">
           {GEAR.edges.map(({ d }) => (

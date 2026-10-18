@@ -99,7 +99,6 @@ test('Skip ends the intro at its end state, with no accent left', async () => {
   expect(await screen.findByRole('heading', { name: fresh.setup.title }, soon)).toBeTruthy()
   await waitFor(() => expect(screen.queryByRole('button', { name: fresh.setup.skip })).toBeNull(), soon)
   expect(document.querySelector('[data-draw-head]')).toBeNull()
-  expect(document.activeElement?.tagName).toBe('H2')
 })
 
 test('any key ends the intro', async () => {

@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react'
 import { BrandMark } from '../components/AppFrame'
 import { Doorway, Field, INPUT } from '../components/Doorway'
 import { Icon } from '../components/Icon'
@@ -68,7 +68,6 @@ export function SetupPage() {
   const [at, setAt] = useState<At>({ step: 1, direction: 1 })
   // Finish was pressed and answered: the mark fills while the server is followed, and never holds it up.
   const [done, setDone] = useState(false)
-  const heading = useRef<HTMLHeadingElement>(null)
 
   // The clock: centre for `--duration-scene`, then the travel, all inside `--duration-intro`.
   useEffect(() => {
@@ -103,17 +102,18 @@ export function SetupPage() {
     }
   }, [over])
 
-  // Ended: Skip has gone from under the focus, so the page's heading takes it.
   useEffect(() => {
-    if (!intro || !over) return
-    introPlayed = true
-    heading.current?.focus({ preventScroll: true })
+    if (intro && over) introPlayed = true
   }, [intro, over])
 
   const centre = phase === 'centre'
   const wizard = status.data?.required === true
   // What arrives after the intro rises in; without one (or skipped) it is simply there.
-  const arrive = (children: ReactNode) => <Rise {...(intro && !skipped ? {} : { initial: false })}>{children}</Rise>
+  const arrive = (children: ReactNode, className?: string) => (
+    <Rise className={className} {...(intro && !skipped ? {} : { initial: false })}>
+      {children}
+    </Rise>
+  )
 
   return (
     <Doorway
@@ -150,7 +150,8 @@ export function SetupPage() {
       <title>{strings.titles.setup}</title>
       <Presence>
         {centre ? (
-          <Fade key="intro" className="fixed inset-0 z-40 bg-[var(--color-bg)]">
+          // Opaque from the first frame; it only fades on the way out.
+          <Fade key="intro" initial={false} className="fixed inset-0 z-40 bg-[var(--color-bg)]">
             <button
               type="button"
               onClick={() => {
@@ -168,7 +169,7 @@ export function SetupPage() {
         ? null
         : arrive(
             <>
-              <h2 ref={heading} tabIndex={-1} className={`${HEADLINE} outline-none`}>
+              <h2 className={HEADLINE}>
                 {status.data?.required === false ? strings.setup.alreadyTitle : strings.setup.title}
               </h2>
               {status.isPending ? (
@@ -190,6 +191,7 @@ export function SetupPage() {
                 />
               )}
             </>,
+            wizard ? STEADY : undefined,
           )}
     </Doorway>
   )
@@ -206,6 +208,8 @@ function AlreadyDone() {
   )
 }
 
+/** As tall as the tallest step, at `lg`, so the heading stays put while the steps change under it. */
+const STEADY = 'lg:min-h-[40rem]'
 const CURRENT = 'text-[var(--color-bright)]'
 const DONE = 'text-[var(--color-dim)]'
 const AHEAD = 'text-[var(--color-muted)]'
