@@ -1150,6 +1150,11 @@ export function Detail({
     </>
   )
   // A pack (A13) has no figures: what is inside it takes Geometry's place.
+  // Whether any figure here was read off the mesh. The triangle count is marked exactly when they are, so its ≈ always
+  // has the key beside it, and a part from before the pivot whose figures are all analytic shows neither.
+  const meshFigures = [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2, part.massG].some(
+    (figure) => figure?.approximate === true,
+  )
   const geometry =
     // Present, not merely non-null: a server from before A13 sends no `pack` at all.
     part.pack ? (
@@ -1162,9 +1167,7 @@ export function Detail({
           // `massG` among them: a STEP part's volume is analytic and carries no mark, so a page
           // showing an analytic volume and an approximate mass would print the ≈ with nothing to
           // explain it. A mass is always approximate — see `strings.detail.massSource`.
-          [part.bboxMm, part.volumeMm3, part.surfaceAreaMm2, part.massG].some(
-            (figure) => figure?.approximate === true,
-          ) ? (
+          meshFigures ? (
             <>
               <span aria-hidden="true" className="mr-1">
                 {strings.detail.approximate}
@@ -1176,14 +1179,13 @@ export function Detail({
       >
         <Row label={strings.detail.triangles} figure>
           {/*
-            Read from the mesh, so it carries the mark its neighbours do, as on a card. A part from before the pivot whose
-            box is analytic keeps its exact triangle count unmarked, so the key is never shown with nothing to explain.
+            Read from the mesh, so it carries the mark its neighbours do, as on a card (`meshFigures`).
           */}
           {part.triangleCount === null ? (
             strings.detail.unknown
           ) : (
             <Figure
-              figure={{ value: part.triangleCount, approximate: part.bboxMm?.approximate ?? true }}
+              figure={{ value: part.triangleCount, approximate: meshFigures }}
               render={strings.detail.trianglesValue}
             />
           )}

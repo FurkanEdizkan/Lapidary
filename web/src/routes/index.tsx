@@ -70,7 +70,7 @@ import { LibraryMenu, Toolbar } from '../components/Toolbar'
 import { SearchBox } from '../components/Search'
 import { AppFrame } from '../components/AppFrame'
 import { FirstRun } from '../components/FirstRun'
-import { HINT, LEAD, QUIET, SCOPE } from '../components/Page'
+import { HINT, LEAD, QUIET, SCOPE, STANDING } from '../components/Page'
 import { DropOverlay, ScanProgress, UploadButton, jobsSettled, progressLine } from '../components/Upload'
 import { ImportLinkDialog } from '../components/ImportLink'
 import { ImportDialog } from '../components/ImportDialog'
@@ -1257,7 +1257,7 @@ function EmptyLibrary({
         <button
           type="button"
           onClick={filtered ? onWiden : onClearSearch}
-          className={`${QUIET} mt-4 w-fit`}
+          className={`${STANDING} mt-4 w-fit`}
         >
           {filtered ? strings.search.widen : strings.search.clear}
         </button>

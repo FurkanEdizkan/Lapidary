@@ -157,6 +157,15 @@ test('a tessellated figure says approximate in words, on screen and to a screen 
   expect(within(volume).queryByText(strings.detail.approximateSpoken.trim())).toBeNull()
 })
 
+test('the triangle count carries the ≈ its mesh-read neighbours do, and not beside analytic ones', async () => {
+  // CLAUDE.md: a triangle count is read off the mesh like the box, the volume and the area, so it is labelled (A25).
+  stub(PART)
+  renderPage()
+  const triangles = await row(strings.detail.triangles)
+  expect(within(triangles).getByText(strings.detail.approximate)).toBeDefined()
+  expect(await screen.findByText(strings.detail.approximateKey)).toBeDefined()
+})
+
 test('a part whose figures are all analytic shows no approximate key', async () => {
   // The key explains a mark. With no mark on the page it would be a claim about nothing.
   stub({
@@ -169,6 +178,7 @@ test('a part whose figures are all analytic shows no approximate key', async () 
 
   await row(strings.detail.surfaceArea)
   expect(screen.queryByText(strings.detail.approximateKey)).toBeNull()
+  expect(within(await row(strings.detail.triangles)).queryByText(strings.detail.approximate)).toBeNull()
 })
 
 test('a mass carries the approximate key even where every measured figure is analytic', async () => {
