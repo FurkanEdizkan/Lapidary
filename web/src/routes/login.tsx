@@ -26,7 +26,7 @@ export function LoginPage() {
     <Doorway
       aside={
         <Suspense fallback={null}>
-          <Lattice className="w-full max-w-2xl" />
+          <Lattice live className="w-full max-w-2xl" />
         </Suspense>
       }
     >

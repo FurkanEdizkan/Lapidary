@@ -2,7 +2,7 @@
  * Icons, drawn by Phosphor rather than by hand.
  *
  * Vendored from `@phosphor-icons/core` 2.1.1, regular weight (MIT, Copyright (c) 2023
- * Phosphor Icons), path data unchanged (`close` is `x`, `caretDown` is `caret-down`, `search` is `magnifying-glass`, `upload` is `upload-simple`, `more` is `dots-three`, `user` is `user`, `folder`, `folderPlus` is `folder-plus`, `arrowUp` is `arrow-up`, `check`). Vendored and not installed: the React package
+ * Phosphor Icons), path data unchanged (`close` is `x`, `caretDown` is `caret-down`, `search` is `magnifying-glass`, `upload` is `upload-simple`, `more` is `dots-three`, `user` is `user`, `folder`, `folderPlus` is `folder-plus`, `arrowUp` is `arrow-up`, `check`, `pause`, `play`). Vendored and not installed: the React package
  * carries some 9,000 glyphs to use a handful, and an air-gapped build should not need a
  * registry for an `×`. Add a glyph by copying its `assets/regular/<name>.svg` path here.
  *
@@ -10,6 +10,9 @@
  * label, so a screen reader hears "Close" and never "image".
  */
 const GLYPHS = {
+  pause:
+    'M200,32H160a16,16,0,0,0-16,16V208a16,16,0,0,0,16,16h40a16,16,0,0,0,16-16V48A16,16,0,0,0,200,32Zm0,176H160V48h40ZM96,32H56A16,16,0,0,0,40,48V208a16,16,0,0,0,16,16H96a16,16,0,0,0,16-16V48A16,16,0,0,0,96,32Zm0,176H56V48H96Z',
+  play: 'M232.4,114.49,88.32,26.35a16,16,0,0,0-16.2-.3A15.86,15.86,0,0,0,64,39.87V216.13A15.94,15.94,0,0,0,80,232a16.07,16.07,0,0,0,8.36-2.35L232.4,141.51a15.81,15.81,0,0,0,0-27ZM80,215.94V40l143.83,88Z',
   check:
     'M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z',
   folder:

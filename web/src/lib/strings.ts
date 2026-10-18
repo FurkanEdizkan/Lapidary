@@ -302,6 +302,9 @@ export const strings = {
   /** The frame before signing in (A19): the one line under the wordmark beside the drawing. */
   doorway: {
     pitch: 'A visual index for your 3D part library.',
+    /** The sign-in drawing keeps turning (A26), so it can be stopped: WCAG 2.2.2. */
+    pause: 'Pause the drawing',
+    play: 'Play the drawing',
   },
   login: {
     title: 'Sign in',

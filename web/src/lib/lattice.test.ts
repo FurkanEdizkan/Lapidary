@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { lattice } from './lattice'
+import { PITCH, lattice, latticeAt } from './lattice'
 
 /** The two endpoints of an edge's `M x y L x y`. */
 function ends(d: string): [string, string] {
@@ -41,4 +41,31 @@ test('every point and every depth is inside the drawing', () => {
 
 test('two calls draw the same gear', () => {
   expect(lattice()).toEqual(lattice())
+})
+
+test('a turning gear keeps its frame and its edges, and a whole pitch looks like none', () => {
+  const { viewBox, edges } = lattice()
+  const [, , width, height] = viewBox.split(' ').map(Number) as [number, number, number, number]
+  for (const turn of [0.05, 0.2, PITCH / 2]) {
+    const turned = latticeAt(turn).edges
+    expect(turned.length).toBe(edges.length)
+    for (const { d } of turned) {
+      for (const end of ends(d)) {
+        const [x, y] = end.split(' ').map(Number) as [number, number]
+        expect(x).toBeGreaterThanOrEqual(0)
+        expect(x).toBeLessThanOrEqual(width)
+        expect(y).toBeGreaterThanOrEqual(0)
+        expect(y).toBeLessThanOrEqual(height)
+      }
+    }
+  }
+  // Turned by a pitch, every line lands on a line of the unturned gear: the loop has no seam.
+  const unturned = new Set(edges.map(({ d }) => ends(d).sort().join('|')))
+  const near = (a: string, b: string) =>
+    a.split(' ').every((value, i) => Math.abs(Number(value) - Number(b.split(' ')[i])) <= 0.2)
+  const keys = [...unturned].map((key) => key.split('|'))
+  for (const { d } of latticeAt(PITCH).edges) {
+    const [a, b] = ends(d).sort()
+    expect(keys.some(([c, e]) => (near(a!, c!) && near(b!, e!)) || (near(a!, e!) && near(b!, c!))), d).toBe(true)
+  }
 })

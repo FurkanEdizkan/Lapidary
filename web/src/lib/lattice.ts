@@ -6,6 +6,10 @@
  * so. The edges come out in the order they should draw: the front tooth profile first (the silhouette a reader
  * recognises), then the teeth's depth and the back profile, then the hub and the bore as rings, and last the
  * triangulated faces that make it a mesh rather than an outline.
+ *
+ * `latticeAt(turn)` draws the same gear turned about its axle (A26: sign-in keeps it turning). Its frame is fixed for
+ * every turn, the bounds of a whole tooth pitch, so a turning gear never shifts or rescales; turning by `PITCH` looks
+ * exactly like not turning, which is what lets the loop run without a seam.
  */
 
 /** `depth` is 0 nearest the reader and 1 farthest; `inner` is the face triangulation rather than the outline. */
@@ -52,10 +56,14 @@ function profileAngles(): { angle: number; radius: number }[] {
   return out
 }
 
-function project([x, y, z]: Point): { x: number; y: number; depth: number } {
+/** One tooth pitch: the turn after which the gear looks the same. */
+export const PITCH = (2 * Math.PI) / TEETH
+
+function project([x, y, z]: Point, turn = 0): { x: number; y: number; depth: number } {
   // Spin about the axle (z), tip about x, turn about y.
-  const x1 = x * Math.cos(SPIN) - y * Math.sin(SPIN)
-  const y1 = x * Math.sin(SPIN) + y * Math.cos(SPIN)
+  const spin = SPIN + turn
+  const x1 = x * Math.cos(spin) - y * Math.sin(spin)
+  const y1 = x * Math.sin(spin) + y * Math.cos(spin)
   const y2 = y1 * Math.cos(TILT) - z * Math.sin(TILT)
   const z2 = y1 * Math.sin(TILT) + z * Math.cos(TILT)
   const x3 = x1 * Math.cos(TURN) + z2 * Math.sin(TURN)
@@ -65,7 +73,9 @@ function project([x, y, z]: Point): { x: number; y: number; depth: number } {
   return { x: x3 * scale, y: -y2 * scale, depth: -z3 }
 }
 
-export function lattice(): Lattice {
+type Model = { points: Point[]; pairs: [number, number, boolean][]; front: number[]; hub: number[]; bore: number[] }
+
+function model(): Model {
   const points: Point[] = []
   const add = (point: Point) => points.push(point) - 1
 
@@ -115,29 +125,52 @@ export function lattice(): Lattice {
     edge(hubTop[i]!, bore[(i + 1) % hubs]!)
   }
 
-  const projected = points.map(project)
-  const xs = projected.map((p) => p.x)
-  const ys = projected.map((p) => p.y)
-  const depths = projected.map((p) => p.depth)
-  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
-  const [near, far] = [Math.min(...depths), Math.max(...depths)]
+  return { points, pairs, front, hub: hubTop, bore }
+}
+
+const GEAR = model()
+
+/** Bounds over a whole pitch of turning, so every frame of the loop fits the same viewBox at the same scale. */
+const FRAME = (() => {
+  const samples = 24
+  let [minX, maxX, minY, maxY, near, far] = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]
+  for (let k = 0; k < samples; k++) {
+    for (const point of GEAR.points) {
+      const p = project(point, (k / samples) * PITCH)
+      ;[minX, maxX, minY, maxY] = [Math.min(minX, p.x), Math.max(maxX, p.x), Math.min(minY, p.y), Math.max(maxY, p.y)]
+      ;[near, far] = [Math.min(near, p.depth), Math.max(far, p.depth)]
+    }
+  }
   // As wide as SIZE and as tall as the part needs, so a frame can place the drawing by its own bounds.
   const scale = (SIZE - 2 * MARGIN) / (maxX - minX)
-  const height = Math.ceil((maxY - minY) * scale + 2 * MARGIN)
-  const offsetX = MARGIN
-  const offsetY = MARGIN
-  const round = (value: number) => Math.round(value * 10) / 10
+  return { minX, minY, near, far, scale, height: Math.ceil((maxY - minY) * scale + 2 * MARGIN) }
+})()
+
+const round = (value: number) => Math.round(value * 10) / 10
+
+/** The gear turned by `turn` radians about its axle: each edge's line and depth, in `lattice()`'s order. */
+export function latticeAt(turn: number): { edges: LatticeEdge[]; front: string; hub: string; bore: string } {
+  const projected = GEAR.points.map((point) => project(point, turn))
   const at = (i: number) => {
     const p = projected[i]!
-    return `${round(offsetX + (p.x - minX) * scale)} ${round(offsetY + (p.y - minY) * scale)}`
+    return `${round(MARGIN + (p.x - FRAME.minX) * FRAME.scale)} ${round(MARGIN + (p.y - FRAME.minY) * FRAME.scale)}`
   }
-
+  const ring = (indices: readonly number[]) => `M ${indices.map(at).join(' L ')} Z`
   return {
-    viewBox: `0 0 ${SIZE} ${height}`,
-    edges: pairs.map(([a, b, inner]) => ({
+    edges: GEAR.pairs.map(([a, b, inner]) => ({
       d: `M ${at(a)} L ${at(b)}`,
-      depth: Math.round((((projected[a]!.depth + projected[b]!.depth) / 2 - near) / (far - near || 1)) * 100) / 100,
+      depth:
+        Math.round(
+          (((projected[a]!.depth + projected[b]!.depth) / 2 - FRAME.near) / (FRAME.far - FRAME.near || 1)) * 100,
+        ) / 100,
       inner,
     })),
+    front: ring(GEAR.front),
+    hub: ring(GEAR.hub),
+    bore: ring(GEAR.bore),
   }
+}
+
+export function lattice(): Lattice {
+  return { viewBox: `0 0 ${SIZE} ${FRAME.height}`, edges: latticeAt(0).edges }
 }

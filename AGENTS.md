@@ -91,7 +91,8 @@ area — these encode decisions that are expensive to reverse.
   unsupported AP schema. Re-export from your CAD tool and retry." Not "parse failed (3)."
 - Frontend: dark only, no light mode. Motion is mechanical — 120/180/280ms,
   `cubic-bezier(0.2, 0, 0, 1)`, transform and opacity only (and SVG `stroke-dashoffset`).
-  Springs for layout only; nothing loops. Respect `prefers-reduced-motion`.
+  Springs for layout only; nothing loops but the sign-in drawing, which has a Pause. Respect
+  `prefers-reduced-motion`.
 - Two motion engines, each fenced: anime.js only in `web/src/lib/motion.ts`; `motion`
   (motion.dev's MIT package, pinned exactly) only in `web/src/lib/motion-react.tsx` and
   `motion-features.ts`. The durations, curve and reduced-motion rules apply to both, and

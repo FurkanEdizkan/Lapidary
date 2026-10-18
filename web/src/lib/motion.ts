@@ -152,3 +152,38 @@ export function drawIn(
     fade.revert()
   }
 }
+
+/** A running cycle, and how to hold it: WCAG 2.2.2 wants anything that loops to be pausable. */
+export type Cycle = { pause: () => void; play: () => void; cancel: () => void }
+
+const STILL_CYCLE: Cycle = { pause: noop, play: noop, cancel: noop }
+
+/**
+ * A number running from 0 to 1 and round again, for ever, at an even pace: the sign-in drawing's turn (A26).
+ *
+ * The one thing in the product that loops, which is why it hands back a pause: its caller must show a control for it
+ * and stop it while the page is hidden. Under reduced motion nothing runs and `onFrame` is never called, so the
+ * drawing stays as it was drawn.
+ */
+export function cycle(periodMs: number, onFrame: (progress: number) => void): Cycle {
+  if (reduced()) return STILL_CYCLE
+  const clock = { progress: 0 }
+  const animation = animate(clock, {
+    progress: [0, 1],
+    duration: periodMs,
+    ease: 'linear',
+    loop: true,
+    onUpdate: () => onFrame(clock.progress),
+  })
+  return {
+    pause: () => {
+      animation.pause()
+    },
+    play: () => {
+      animation.play()
+    },
+    cancel: () => {
+      animation.cancel()
+    },
+  }
+}
