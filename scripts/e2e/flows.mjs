@@ -211,6 +211,13 @@ const gridReady = `document.querySelectorAll(${JSON.stringify(S.card)}).length >
 const cards = (page) => page.evaluate(`document.querySelectorAll(${JSON.stringify(S.card)}).length`)
 const cardsSettled = (page, accept = (n) => n > 0) =>
   page.settle(() => cards(page), accept, { timeout: 25_000 })
+// How many parts the grid has loaded, from its count line. Since A30 the grid draws only the rows in view, so
+// the DOM holds a window of cards and counting it is not how many are loaded.
+const loaded = (page) =>
+  page.evaluate(
+    `(() => { const m = (document.querySelector(${JSON.stringify(S.countLine)})?.textContent ?? '').replace(/,/g, '').match(/\\d+/); return m ? Number(m[0]) : 0 })()`,
+  )
+const loadedSettled = (page, accept = (n) => n > 0) => page.settle(() => loaded(page), accept, { timeout: 25_000 })
 const names = (page) =>
   page.evaluate(
     `[...document.querySelectorAll(${JSON.stringify(S.card)})].map((a) => (document.getElementById(a.getAttribute('aria-labelledby'))?.textContent ?? '').trim())`,
@@ -287,8 +294,11 @@ const FLOWS = [
     widths: [1440, 390],
     async run(page, ctx) {
       await page.go(grid(ctx.sweep.id), gridReady)
-      const n = await cardsSettled(page, (v) => v >= 50)
-      expect(n === 50, `the default page size is 50 and the grid rendered ${n} cards`)
+      // Whole pages of the default 50: the grid asks for the next page two screens ahead (A30), so it may hold two.
+      const n = await loadedSettled(page, (v) => v >= 50)
+      expect(n % 50 === 0, `the default page size is 50 and the grid loaded ${n} parts`)
+      const drawn = await cards(page)
+      expect(drawn > 0 && drawn <= n, `the grid drew ${drawn} cards of ${n} loaded`)
       const shown = await names(page)
       const nameless = shown.filter((s) => s.length === 0)
       expect(nameless.length === 0, `${nameless.length} cards rendered with no name`)
@@ -296,7 +306,7 @@ const FLOWS = [
       const count = await text(page, S.countLine)
       expect(count !== null, `no count line matched ${S.countLine}`)
       expect(/\bparts?\b/.test(count), `the count line reads ${JSON.stringify(count)}`)
-      return `${n} cards, ${JSON.stringify(count)}, first ${JSON.stringify(shown[0])}`
+      return `${n} loaded, ${drawn} drawn, ${JSON.stringify(count)}, first ${JSON.stringify(shown[0])}`
     },
   },
   {
@@ -319,7 +329,7 @@ const FLOWS = [
         () =>
           page.evaluate(`(() => {
             const img = document.querySelector(${JSON.stringify(S.cardPicture)})
-            return img === null ? null : { alt: img.alt, inline: img.src.startsWith('data:'), bytes: img.src.length }
+            return img === null ? null : { alt: img.alt, src: new URL(img.src).pathname, loaded: img.complete && img.naturalWidth > 0 }
           })()`),
         (r) => r !== null,
         { timeout: 20_000 },
@@ -329,17 +339,25 @@ const FLOWS = [
         pictured.alt.includes('bracket-lp-1042-03'),
         `the pictured card is ${JSON.stringify(pictured.alt)}, not the bracket the seed photographed`,
       )
-      // Inline, because the seeded WebP is under `images.rs`'s 64 KB `INLINE_LIMIT` and the grid query
-      // carries those bytes on the row. A larger one would be a hash and one immutable `<img>` load —
-      // still not an API request, which is the property below.
-      expect(pictured.inline, `the bracket's picture is not inline: ${pictured.bytes} chars of src`)
+      // An address, never inline bytes (A30): the seeded WebP is under the 64 KB line, so it is served from its
+      // row by its id; a larger one is `/api/blob/{hash}`. Either is one immutable `<img>` load.
+      expect(
+        /^\/api\/parts\/[0-9a-f-]+\/images\/[0-9a-f-]+$/.test(pictured.src),
+        `the bracket's picture is ${JSON.stringify(pictured.src)}, not its image's address`,
+      )
+      const shownPicture = await page.settle(
+        () => page.evaluate(`(() => { const i = document.querySelector(${JSON.stringify(S.cardPicture)}); return i !== null && i.complete && i.naturalWidth > 0 })()`),
+        (ok) => ok,
+        { timeout: 10_000 },
+      )
+      expect(shownPicture, `the bracket's picture at ${pictured.src} did not load`)
 
       // Now the whole grid, and the one-request property.
       const net = await watchRequests(page)
       await page.go(grid(ctx.sweep.id), gridReady)
-      const n = await cardsSettled(page, (v) => v >= 50)
-      // `content-visibility: auto` on every <li>, so an off-screen card is not laid out. Counting what
-      // is in the DOM is therefore the right question and `checkVisibility` is not.
+      await loadedSettled(page, (v) => v >= 50)
+      // The cards drawn (A30: the rows in view), each of which must show something.
+      const n = await cardsSettled(page)
       const got = await page.evaluate(`(() => {
         const all = [...document.querySelectorAll(${JSON.stringify(S.card)})]
         const shown = (a) => {
@@ -376,17 +394,19 @@ const FLOWS = [
       // *bounded by the number of cards showing a picture* instead, which is the real rule: at most
       // one per pictured card, and none at all for a card showing its format.
       const urls = net.urls()
-      const perPart = urls.filter((u) => /\/api\/(parts|revisions)\//.test(u))
+      // A picture's own address (A30) is an `<img>` load like a blob's, bounded the same way below.
+      const isPicture = (u) => u.includes('/api/blob/') || /\/api\/parts\/[0-9a-f-]+\/images\/[0-9a-f-]+$/.test(u)
+      const perPart = urls.filter((u) => /\/api\/(parts|revisions)\//.test(u) && !isPicture(u))
       expect(
         perPart.length === 0,
         `${perPart.length} of ${urls.length} requests address a part or a revision, so something fetched per card: ${JSON.stringify(perPart.slice(0, 3))}`,
       )
-      const blobs = urls.filter((u) => u.includes('/api/blob/'))
+      const blobs = urls.filter(isPicture)
       expect(
         blobs.length <= got.picture,
         `${blobs.length} blob loads for ${got.picture} card(s) showing a picture — a card without one must load nothing: ${JSON.stringify(blobs.slice(0, 3))}`,
       )
-      const api = urls.filter((u) => u.includes('/api/') && !u.includes('/api/blob/'))
+      const api = urls.filter((u) => u.includes('/api/') && !isPicture(u))
       expect(
         api.length < got.cards,
         `${api.length} api requests for ${got.cards} cards — that is per-card, whatever it is addressed by: ${JSON.stringify(api.slice(0, 4))}`,
@@ -519,7 +539,7 @@ const FLOWS = [
     name: 'sort',
     async run(page, ctx) {
       await page.go(grid(ctx.sweep.id), gridReady)
-      await cardsSettled(page, (n) => n >= 50)
+      await loadedSettled(page, (n) => n >= 50)
       // The order lives in localStorage and a react-query key, never in the URL — so the assertion is
       // on the card order, which is the thing the person actually sees change.
       const options = await page.evaluate(`(() => {
@@ -533,7 +553,8 @@ const FLOWS = [
       // back empty, and `moved` counted 50 differences against nothing — so the flow passed while testing
       // nothing at all. A false pass is the one outcome this rig may not produce.
       const before = await names(page)
-      expect(before.length >= 50, `only ${before.length} cards to reorder`)
+      // The cards drawn: the rows in view (A30), which is what a person sees reorder.
+      expect(before.length >= 12, `only ${before.length} cards to reorder`)
       const set = await page.evaluate(`(() => {
         const s = ${viewSelect(T.order)}
         Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(pick.value)})
@@ -561,8 +582,8 @@ const FLOWS = [
     name: 'page-size',
     async run(page, ctx) {
       await page.go(grid(ctx.sweep.id), gridReady)
-      const fifty = await cardsSettled(page, (n) => n >= 50)
-      expect(fifty === 50, `the default is 50 per page; the grid shows ${fifty}`)
+      const fifty = await loadedSettled(page, (n) => n >= 50)
+      expect(fifty % 50 === 0, `the default is 50 per page; the grid loaded ${fifty}`)
       const set = await page.evaluate(`(() => {
         const s = ${viewSelect(T.cardsPerPage)}
         if (!s) return null
@@ -577,8 +598,8 @@ const FLOWS = [
         `the four page sizes are 50/100/250/500; the control offers ${set.has.join(', ')}`,
       )
       // Changing it changes the query key, so the grid resets to page one at the new size.
-      const larger = await page.settle(() => cards(page), (n) => n === 250, { timeout: 40_000 })
-      expect(larger === 250, `asking for 250 a page gave ${larger} cards`)
+      const larger = await page.settle(() => loaded(page), (n) => n >= 250 && n % 250 === 0, { timeout: 40_000 })
+      expect(larger >= 250 && larger % 250 === 0, `asking for 250 a page loaded ${larger} parts`)
       return `50 -> ${larger} cards; sizes ${set.has.join('/')}`
     },
   },
@@ -589,7 +610,7 @@ const FLOWS = [
       // button that only exists while another page remains — so the button is the deterministic half
       // and the sentinel is the half that needs the tab frontmost (cdp.mjs calls bringToFront).
       await page.go(grid(ctx.sweep.id), gridReady)
-      const first = await cardsSettled(page, (n) => n >= 50)
+      const first = await loadedSettled(page, (n) => n >= 50)
       const firstNames = await names(page)
       const soFar = await text(page, S.countLine)
       expect(/so far/.test(soFar ?? ''), `with more pages to come the count should say "so far"; it says ${JSON.stringify(soFar)}`)
@@ -600,7 +621,7 @@ const FLOWS = [
         return true
       })()`)
       expect(clicked, `no "${T.loadMore}" button in #parts, and ${first} cards is not the whole library`)
-      const grew = await page.settle(() => cards(page), (n) => n > first, { timeout: 30_000 })
+      const grew = await page.settle(() => loaded(page), (n) => n > first, { timeout: 30_000 })
       expect(grew > first, `"${T.loadMore}" loaded nothing beyond ${first} cards`)
       // Keyset paged on the last id, so no part can be skipped or repeated by one arriving mid-scroll.
       const all = await names(page)
