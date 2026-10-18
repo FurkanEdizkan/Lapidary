@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { strings } from '../lib/strings'
-import { Dialog } from './Dialog'
+import { DIALOG_FOOT, DIALOG_QUIET, Dialog } from './Dialog'
+import { LEAD, STANDING } from './Page'
 
 /**
  * The address of a model's page, for an import (F3). The server's refusal — an unsupported site, a
@@ -27,7 +28,7 @@ export function ImportLinkDialog({
           if (trimmed !== '' && !busy) onImport(trimmed)
         }}
       >
-        <p className="mt-3 max-w-prose text-sm text-[var(--color-muted)]">{strings.importLink.lead}</p>
+        <p className={LEAD}>{strings.importLink.lead}</p>
         <input
           type="url"
           inputMode="url"
@@ -35,25 +36,23 @@ export function ImportLinkDialog({
           onChange={(event) => setUrl(event.target.value)}
           aria-label={strings.importLink.label}
           autoFocus
-          className="mt-3 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm"
+          autoComplete="url"
+          spellCheck={false}
+          className="mt-4 w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)]"
         />
         {note === null ? null : (
-          <p role="alert" className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">
+          <p role="alert" className="mt-2 max-w-[70ch] text-sm text-[var(--color-text)]">
             {note}
           </p>
         )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px"
-          >
+        <div className={DIALOG_FOOT}>
+          <button type="button" onClick={onCancel} className={DIALOG_QUIET}>
             {strings.folders.cancel}
           </button>
           <button
             type="submit"
             disabled={trimmed === '' || busy}
-            className="ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50"
+            className={trimmed === '' || busy ? DIALOG_QUIET : STANDING}
           >
             {strings.importLink.confirm}
           </button>

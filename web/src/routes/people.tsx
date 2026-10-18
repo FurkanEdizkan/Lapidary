@@ -7,6 +7,7 @@ import { Field, INPUT } from '../components/Doorway'
 import { HEADLINE, LEAD, SECTION, SECTION_TITLE, STANDING } from '../components/Page'
 import { createPerson, deletePerson, fetchPeople, resetPassword } from '../lib/api'
 import { currentUser } from '../lib/session'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { Person } from '../lib/types'
 
@@ -134,16 +135,19 @@ function PersonRow({
           ) : null}
         </form>
       ) : null}
-      {removing ? (
-        <ConfirmDelete
-          title={strings.people.removeTitle(name)}
-          body={strings.people.removeBody(name)}
-          busy={remove.isPending}
-          failure={remove.isError ? remove.error.message : null}
-          onConfirm={() => remove.mutate()}
-          onCancel={() => setRemoving(false)}
-        />
-      ) : null}
+      <Presence>
+        {removing ? (
+          <ConfirmDelete
+            key="remove"
+            title={strings.people.removeTitle(name)}
+            body={strings.people.removeBody(name)}
+            busy={remove.isPending}
+            failure={remove.isError ? remove.error.message : null}
+            onConfirm={() => remove.mutate()}
+            onCancel={() => setRemoving(false)}
+          />
+        ) : null}
+      </Presence>
     </li>
   )
 }

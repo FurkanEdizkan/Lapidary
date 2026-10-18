@@ -1,14 +1,13 @@
-import { Dialog } from './Dialog'
+import { DIALOG_FOOT, DIALOG_QUIET, Dialog } from './Dialog'
+import { LEAD, STANDING } from './Page'
 import { strings } from '../lib/strings'
-
-const BUTTON =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
 
 /**
  * The one confirmation in front of deleting parts, from the part page and from the grid's
  * selection alike. Delete is final (owner, 2026-10-17), so the body says what goes and what
  * stays: the part's rows go, the model file on disk does not. Cancel is autofocused because it
- * is the safe answer, as `FolderTree`'s delete dialog does.
+ * is the safe answer, as `FolderTree`'s delete dialog does. Delete is the dialog's verb, so it stands; Cancel is
+ * quiet, and focus starting on it is what keeps a stray Enter safe.
  */
 export function ConfirmDelete({
   title,
@@ -28,17 +27,17 @@ export function ConfirmDelete({
 }) {
   return (
     <Dialog title={title} onClose={onCancel}>
-      <p className="mt-2 text-sm text-[var(--color-muted)]">{body}</p>
+      <p className={LEAD}>{body}</p>
       {failure === null ? null : (
-        <p role="alert" className="mt-2 text-sm text-[var(--color-muted)]">
+        <p role="alert" className="mt-3 max-w-[70ch] text-sm text-[var(--color-text)]">
           {failure}
         </p>
       )}
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" autoFocus onClick={onCancel} className={BUTTON}>
+      <div className={DIALOG_FOOT}>
+        <button type="button" autoFocus onClick={onCancel} className={DIALOG_QUIET}>
           {strings.folders.cancel}
         </button>
-        <button type="button" disabled={busy} onClick={onConfirm} className={BUTTON}>
+        <button type="button" disabled={busy} onClick={onConfirm} className={busy ? DIALOG_QUIET : STANDING}>
           {busy ? strings.removal.removing : strings.removal.confirm}
         </button>
       </div>

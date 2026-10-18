@@ -1,5 +1,5 @@
-import { AnimatePresence, LazyMotion, MotionConfig, m, type HTMLMotionProps, type Transition } from 'motion/react'
-import type { ReactNode } from 'react'
+import { AnimatePresence, LazyMotion, MotionConfig, m, useIsPresent, type HTMLMotionProps, type Transition } from 'motion/react'
+import type { ReactNode, Ref } from 'react'
 import { bezier, reduced, tokens } from './motion-tokens'
 
 /**
@@ -16,10 +16,13 @@ import { bezier, reduced, tokens } from './motion-tokens'
 
 const SMEAR_FREE = 'transition-none'
 
-/** The one curve, at a token's length, as Motion takes it. */
+/**
+ * The one curve, at a token's length, as Motion takes it. Zero under reduced motion: a primitive's own `transition`
+ * outranks `MotionRoot`'s, so an exit at `fast` would otherwise still fade for 120 ms (A22).
+ */
 export function mechanical(duration: 'fast' | 'base' | 'slow' | 'scene' | 'intro' = 'base'): Transition {
   const t = tokens()
-  return { duration: t[duration] / 1000, ease: bezier(t) }
+  return { duration: reduced() ? 0 : t[duration] / 1000, ease: bezier(t) }
 }
 
 /** Layout and shared-element moves: critically damped, so nothing overshoots (A17's doctrine). */
@@ -30,10 +33,9 @@ export const SETTLE: Transition = { type: 'spring', visualDuration: 0.28, bounce
  * so every transition is given zero duration as well.
  */
 export function MotionRoot({ children }: { children: ReactNode }) {
-  const still = reduced()
   return (
     <LazyMotion features={() => import('./motion-features').then((module) => module.default)} strict>
-      <MotionConfig reducedMotion="user" transition={still ? { duration: 0 } : mechanical('base')}>
+      <MotionConfig reducedMotion="user" transition={mechanical('base')}>
         {children}
       </MotionConfig>
     </LazyMotion>
@@ -42,6 +44,9 @@ export function MotionRoot({ children }: { children: ReactNode }) {
 
 /** Children that may leave: each needs a stable `key`. */
 export const Presence = AnimatePresence
+
+/** False while this component is leaving inside a `Presence`, true otherwise (and always outside one). */
+export const usePresent = useIsPresent
 
 type Primitive = Omit<HTMLMotionProps<'div'>, 'className'> & { className?: string }
 
@@ -100,4 +105,20 @@ export function Step({ className, direction, ...props }: Primitive & { direction
 /** A marker that travels between places sharing its `id`: the current place, the current step. */
 export function Indicator({ id, className, ...props }: Primitive & { id: string }) {
   return <m.div layoutId={id} transition={SETTLE} className={classes(className)} {...props} />
+}
+
+/**
+ * Something floating over the page — a dialog's box (A22): up 8px from 0.98 in over `base`, back out over `fast`.
+ * Scaled from its centre, so it grows where it will sit rather than from a corner.
+ */
+export function Panel({ className, ...props }: Primitive & { ref?: Ref<HTMLDivElement> }) {
+  return (
+    <m.div
+      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1, transition: mechanical('base') }}
+      exit={{ opacity: 0, y: 8, scale: 0.98, transition: mechanical('fast') }}
+      className={classes(className)}
+      {...props}
+    />
+  )
 }

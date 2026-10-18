@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { fetchDensities, fetchFacets, removeDensity, setDensity, type FieldWritten } from '../lib/api'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { LibraryId } from '../lib/types'
 import { Dialog, closeMenu } from './Dialog'
@@ -37,7 +38,9 @@ export function DensitiesMenuItem({ library }: { library: LibraryId }) {
       >
         {strings.densities.menu}
       </button>
-      {open ? <DensitiesDialog library={library} onClose={() => setOpen(false)} /> : null}
+      <Presence>
+        {open ? <DensitiesDialog key="densities" library={library} onClose={() => setOpen(false)} /> : null}
+      </Presence>
     </>
   )
 }

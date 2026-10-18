@@ -2,15 +2,15 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { useEffect, useRef, useState } from 'react'
 import { fetchHostFolders, makeHostFolder } from '../lib/api'
 import { strings } from '../lib/strings'
-import { Dialog } from './Dialog'
+import { DIALOG_FOOT, DIALOG_QUIET, Dialog } from './Dialog'
 import { Icon } from './Icon'
+import { STANDING } from './Page'
 
-const BUTTON =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+/** The path bar's own controls: borderless, because they sit in a row of them and the row is the boundary. */
 const QUIET =
   'ease-mechanical rounded-[var(--radius-ctl)] px-2 py-1 text-sm text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] disabled:opacity-50'
 const FIELD =
-  'min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-transparent px-2 py-1.5 font-mono text-[13px]'
+  'min-w-0 flex-1 rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 font-mono text-[13px] text-[var(--color-text)]'
 const ROW =
   'flex w-full items-center gap-2 border-b border-[var(--color-border)] px-3 py-1.5 text-left text-sm last:border-b-0'
 
@@ -59,6 +59,7 @@ export function FolderPicker({
     },
   })
 
+  const usable = data?.choosable === true && !listing.isPlaceholderData
   const root = data?.root ?? '/'
   const base = root.replace(/\/$/, '')
   const below = data ? data.path.slice(base.length).split('/').filter(Boolean) : []
@@ -88,7 +89,7 @@ export function FolderPicker({
           spellCheck={false}
           className={FIELD}
         />
-        <button type="submit" disabled={typed === null} className={BUTTON}>
+        <button type="submit" disabled={typed === null} className={DIALOG_QUIET}>
           {strings.folderPicker.go}
         </button>
       </form>
@@ -146,7 +147,7 @@ export function FolderPicker({
         </button>
       </div>
 
-      <div className="mt-1 h-[min(45vh,22rem)] overflow-y-auto rounded-[var(--radius-ctl)] border border-[var(--color-edge)]">
+      <div className="mt-1 h-[min(45vh,22rem)] overflow-y-auto overscroll-contain rounded-[var(--radius-ctl)] border border-[var(--color-edge)]">
         {naming !== null ? (
           <form
             className={`${ROW} bg-[var(--color-raised)]`}
@@ -173,7 +174,7 @@ export function FolderPicker({
               }}
               className={FIELD}
             />
-            <button type="submit" disabled={naming.trim() === '' || make.isPending} className={BUTTON}>
+            <button type="submit" disabled={naming.trim() === '' || make.isPending} className={DIALOG_QUIET}>
               {make.isPending ? strings.folderPicker.making : strings.folderPicker.make}
             </button>
             <button
@@ -227,15 +228,15 @@ export function FolderPicker({
           {data.problem}
         </p>
       ) : null}
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" onClick={onCancel} className={QUIET}>
+      <div className={DIALOG_FOOT}>
+        <button type="button" onClick={onCancel} className={DIALOG_QUIET}>
           {strings.folderPicker.cancel}
         </button>
         <button
           type="button"
-          disabled={!data?.choosable || listing.isPlaceholderData}
+          disabled={!usable}
           onClick={() => data && onChoose(data.path)}
-          className={BUTTON}
+          className={usable ? STANDING : DIALOG_QUIET}
         >
           {strings.folderPicker.use}
         </button>

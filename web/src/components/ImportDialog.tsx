@@ -10,14 +10,16 @@ import {
 } from '../lib/api'
 import { strings } from '../lib/strings'
 import type { LibraryId } from '../lib/types'
-import { Dialog } from './Dialog'
+import { DIALOG_FOOT, DIALOG_QUIET, DIALOG_SECTION, Dialog } from './Dialog'
+import { LEAD, SECTION_TITLE, STANDING } from './Page'
 
-const BUTTON =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+/** Words that act — a crumb, Remove, another way in: Graphite, underlined under the pointer. */
 const QUIET =
   'ease-mechanical text-sm text-[var(--color-muted)] underline-offset-2 duration-[var(--duration-fast)] hover:text-[var(--color-text)] hover:underline'
 /** Between two folders of the path; not copy, so not in `strings.ts`. */
 const SEPARATOR = '/'
+/** A field's label over it: sentence case, Graphite. */
+const FIELD_LABEL = 'flex flex-col gap-1 text-xs text-[var(--color-muted)]'
 const ROW = 'flex min-h-8 items-center gap-2 border-b border-[var(--color-border)] px-2 last:border-b-0'
 
 /**
@@ -97,7 +99,7 @@ export function ImportDialog({
 
   return (
     <Dialog title={strings.addModels.title} onClose={onClose}>
-      <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.addModels.lead}</p>
+      <p className={LEAD}>{strings.addModels.lead}</p>
 
       <nav aria-label={strings.addModels.top} className="mt-4 flex flex-wrap items-center gap-1 text-sm">
         <button type="button" onClick={() => setPath('')} className={QUIET}>
@@ -115,7 +117,7 @@ export function ImportDialog({
         ))}
       </nav>
 
-      <div className="mt-2 max-h-[40vh] overflow-y-auto rounded-[var(--radius-ctl)] border border-[var(--color-edge)]">
+      <div className="mt-2 max-h-[40vh] overflow-y-auto overscroll-contain rounded-[var(--radius-ctl)] border border-[var(--color-edge)]">
         {listing.isPending ? (
           <p className="p-3 text-sm text-[var(--color-muted)]">{strings.addModels.loading}</p>
         ) : listing.isError ? (
@@ -162,32 +164,45 @@ export function ImportDialog({
       ) : null}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        <label className={FIELD_LABEL}>
           {strings.addModels.pageLabel}
           <input
             type="url"
             inputMode="url"
             value={pageUrl}
             onChange={(event) => setPageUrl(event.target.value)}
+            autoComplete="url"
+            spellCheck={false}
             className="rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] px-2 py-1.5 text-sm text-[var(--color-text)]"
           />
-          <span className="text-[11px] text-[var(--color-dim)]">{strings.addModels.pageHint}</span>
+          <span className="text-[11px] text-[var(--color-muted)]">{strings.addModels.pageHint}</span>
         </label>
-        <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+        {/*
+          No raw native widget (DESIGN.md § Dialogs): the input is visually hidden and keeps its label, and the
+          button-shaped span is the label's own text, so a click on it opens the chooser and the input's focus
+          ring is drawn on the span.
+        */}
+        <label className={FIELD_LABEL}>
           {strings.addModels.picturesLabel}
           <input
             type="file"
             accept="image/*"
             multiple
             onChange={(event) => setPictures(Array.from(event.target.files ?? []))}
-            className="text-sm text-[var(--color-text)]"
+            className="peer sr-only"
           />
-          {pictures.length === 0 ? null : (
-            <span className="text-[11px] text-[var(--color-dim)]">{strings.addModels.picturesChosen(pictures.length)}</span>
-          )}
+          <span
+            aria-hidden="true"
+            className={`${DIALOG_QUIET} cursor-pointer self-start py-1.5 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--color-accent)]`}
+          >
+            {strings.importPictures.choose}
+          </span>
+          <span className="text-[11px] text-[var(--color-muted)]">
+            {pictures.length === 0 ? strings.importPictures.none : strings.addModels.picturesChosen(pictures.length)}
+          </span>
         </label>
       </div>
-      <label className="mt-3 flex items-center gap-2 text-sm">
+      <label className="mt-3 flex min-h-6 items-center gap-2 text-sm">
         <input
           type="checkbox"
           checked={fetching}
@@ -204,31 +219,25 @@ export function ImportDialog({
         </p>
       )}
 
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <button
-          type="button"
-          disabled={add.isPending}
-          onClick={() => add.mutate([path])}
-          className={BUTTON}
-        >
+      <div className={DIALOG_FOOT}>
+        <button type="button" disabled={add.isPending} onClick={() => add.mutate([path])} className={DIALOG_QUIET}>
           {path === '' ? strings.addModels.whole : strings.addModels.addThis}
         </button>
         <button
           type="button"
           disabled={add.isPending || picked.length === 0}
           onClick={() => add.mutate(picked)}
-          className={`${BUTTON} font-semibold text-[var(--color-bright)]`}
+          // Standing only once it can act: "Add 3 selected", never "Add 0 selected" (DESIGN.md § Dialogs).
+          className={add.isPending || picked.length === 0 ? DIALOG_QUIET : STANDING}
         >
           {add.isPending ? strings.addModels.adding : strings.addModels.add(picked.length)}
         </button>
       </div>
 
-      <section className="mt-6 border-t border-[var(--color-border)] pt-3">
-        <h3 className="text-xs font-medium tracking-wider text-[var(--color-muted)] uppercase">
-          {strings.addModels.inLibrary}
-        </h3>
+      <section className={DIALOG_SECTION}>
+        <h3 className={SECTION_TITLE}>{strings.addModels.inLibrary}</h3>
         {sources.data === undefined || sources.data.length === 0 ? (
-          <p className="mt-2 text-sm text-[var(--color-dim)]">{strings.addModels.nothingAdded}</p>
+          <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.addModels.nothingAdded}</p>
         ) : (
           <ul role="list" className="mt-2">
             {sources.data.map((source) => (
@@ -251,7 +260,7 @@ export function ImportDialog({
         )}
       </section>
 
-      <p className="mt-4 flex flex-wrap items-center gap-3 text-sm text-[var(--color-dim)]">
+      <p className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--color-muted)]">
         {strings.addModels.otherWays}
         <button type="button" onClick={onUpload} className={QUIET}>
           {strings.addModels.upload}

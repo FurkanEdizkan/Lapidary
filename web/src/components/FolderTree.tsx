@@ -10,6 +10,7 @@ import {
   type FolderWriteRefusal,
   type MoveRefusalReason,
 } from '../lib/api'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { FolderId, FolderNode, LibraryId, PartId } from '../lib/types'
 
@@ -373,55 +374,67 @@ export function FolderTree({
         />
       )}
       <RowNote note={deleteOutcome} />
-      {duplicate === null ? null : (
-        <DuplicateDialog
-          name={duplicate.part.name}
-          busy={move.isPending}
-          onConfirm={confirm}
-          onCancel={dismiss}
-        />
-      )}
-      {!creating ? null : (
-        <NameDialog
-          title={strings.folders.createTitle(
-            folders.data?.find((folder) => folder.id === selected)?.name ?? null,
-          )}
-          confirm={strings.folders.createConfirm}
-          initial=""
-          busy={add.isPending}
-          note={writeRefusal ?? (add.isError ? strings.folders.createFailed : null)}
-          onConfirm={(name) => add.mutate(name)}
-          onCancel={() => {
-            setCreating(false)
-            setWriteRefusal(null)
-          }}
-        />
-      )}
-      {renaming === null ? null : (
-        <NameDialog
-          title={strings.folders.renameTitle(renaming.name)}
-          confirm={strings.folders.renameConfirm}
-          initial={renaming.name}
-          hint={strings.folders.renameKeepsDirectory}
-          busy={rename.isPending}
-          note={writeRefusal ?? (rename.isError ? strings.folders.renameFailed : null)}
-          onConfirm={(name) => rename.mutate({ folder: renaming, name })}
-          onCancel={() => {
-            setRenaming(null)
-            setWriteRefusal(null)
-          }}
-        />
-      )}
-      {pendingDelete === null ? null : (
-        <DeleteDialog
-          folder={pendingDelete}
-          subcategories={subcategoryCount(folders.data ?? [], pendingDelete.id)}
-          busy={remove.isPending}
-          note={remove.isError ? strings.folders.deleteFailed : null}
-          onConfirm={() => remove.mutate(pendingDelete)}
-          onCancel={() => setPendingDelete(null)}
-        />
-      )}
+      <Presence>
+        {duplicate === null ? null : (
+          <DuplicateDialog
+            key="duplicate"
+            name={duplicate.part.name}
+            busy={move.isPending}
+            onConfirm={confirm}
+            onCancel={dismiss}
+          />
+        )}
+      </Presence>
+      <Presence>
+        {!creating ? null : (
+          <NameDialog
+            key="create"
+            title={strings.folders.createTitle(
+              folders.data?.find((folder) => folder.id === selected)?.name ?? null,
+            )}
+            confirm={strings.folders.createConfirm}
+            initial=""
+            busy={add.isPending}
+            note={writeRefusal ?? (add.isError ? strings.folders.createFailed : null)}
+            onConfirm={(name) => add.mutate(name)}
+            onCancel={() => {
+              setCreating(false)
+              setWriteRefusal(null)
+            }}
+          />
+        )}
+      </Presence>
+      <Presence>
+        {renaming === null ? null : (
+          <NameDialog
+            key="rename"
+            title={strings.folders.renameTitle(renaming.name)}
+            confirm={strings.folders.renameConfirm}
+            initial={renaming.name}
+            hint={strings.folders.renameKeepsDirectory}
+            busy={rename.isPending}
+            note={writeRefusal ?? (rename.isError ? strings.folders.renameFailed : null)}
+            onConfirm={(name) => rename.mutate({ folder: renaming, name })}
+            onCancel={() => {
+              setRenaming(null)
+              setWriteRefusal(null)
+            }}
+          />
+        )}
+      </Presence>
+      <Presence>
+        {pendingDelete === null ? null : (
+          <DeleteDialog
+            key="delete"
+            folder={pendingDelete}
+            subcategories={subcategoryCount(folders.data ?? [], pendingDelete.id)}
+            busy={remove.isPending}
+            note={remove.isError ? strings.folders.deleteFailed : null}
+            onConfirm={() => remove.mutate(pendingDelete)}
+            onCancel={() => setPendingDelete(null)}
+          />
+        )}
+      </Presence>
     </nav>
   )
 }

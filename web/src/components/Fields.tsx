@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { createField, fetchFields, removeField, updateField, type FieldWritten } from '../lib/api'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { CustomField, FieldFacet, FieldKind, LibraryId } from '../lib/types'
 import { Dialog, closeMenu } from './Dialog'
@@ -58,7 +59,9 @@ export function FieldsMenuItem({ library }: { library: LibraryId }) {
       >
         {strings.fields.menu}
       </button>
-      {open ? <FieldsDialog library={library} onClose={() => setOpen(false)} /> : null}
+      <Presence>
+        {open ? <FieldsDialog key="fields" library={library} onClose={() => setOpen(false)} /> : null}
+      </Presence>
     </>
   )
 }

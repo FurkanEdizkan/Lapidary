@@ -4,10 +4,11 @@ import { fetchPeople, fetchShares, saveShares } from '../lib/api'
 import { currentUser } from '../lib/session'
 import { strings } from '../lib/strings'
 import type { PartId, UserId } from '../lib/types'
-import { Dialog } from './Dialog'
+import { DIALOG_FOOT, DIALOG_QUIET, DIALOG_SECTION, Dialog } from './Dialog'
+import { LEAD, SECTION_TITLE, STANDING } from './Page'
 
-const BUTTON =
-  'ease-mechanical rounded-[var(--radius-ctl)] border border-[var(--color-edge)] px-3 py-1.5 text-sm duration-[var(--duration-fast)] hover:-translate-y-px disabled:opacity-50'
+/** A checkbox and its words as one hit target, at least 24px tall (SC 2.5.8). */
+const CHECK = 'flex min-h-6 items-center gap-2 text-sm'
 
 /**
  * Who sees a model (A4): everybody on this install, chosen people, or nobody but its owner. A share is
@@ -46,8 +47,8 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
 
   return (
     <Dialog title={strings.sharing.title(parts.length)} onClose={onClose}>
-      <p className="mt-2 max-w-prose text-sm text-[var(--color-muted)]">{strings.sharing.lead}</p>
-      <label className="mt-4 flex items-center gap-2 text-sm">
+      <p className={LEAD}>{strings.sharing.lead}</p>
+      <label className={`mt-4 ${CHECK}`}>
         <input
           type="checkbox"
           checked={isEveryone}
@@ -56,48 +57,49 @@ export function ShareDialog({ parts, onClose }: { parts: PartId[]; onClose: () =
         />
         {strings.sharing.everyone}
       </label>
-      <fieldset className="mt-4">
-        <legend className="text-xs font-medium tracking-wider text-[var(--color-muted)] uppercase">
-          {strings.sharing.people}
-        </legend>
-        {people.isPending ? (
-          <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
-        ) : others.length === 0 ? (
-          <p className="mt-2 text-sm text-[var(--color-dim)]">{strings.sharing.nobodyElse}</p>
-        ) : (
-          <ul role="list" className="mt-2 flex flex-col gap-1">
-            {others.map((person) => (
-              <li key={person.id}>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={isEveryone || picked.includes(person.id)}
-                    disabled={isEveryone}
-                    onChange={() => toggle(person.id)}
-                    className="size-4 accent-[var(--color-accent)]"
-                  />
-                  {person.displayName ?? person.username}
-                  <span className="text-xs text-[var(--color-dim)]">{person.username}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-        )}
-      </fieldset>
+      {/* A legend will not sit inside a fieldset's border-top, so the rule is a wrapper's. */}
+      <div className={DIALOG_SECTION}>
+        <fieldset>
+          <legend className={SECTION_TITLE}>{strings.sharing.people}</legend>
+          {people.isPending ? (
+            <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.sharing.loading}</p>
+          ) : others.length === 0 ? (
+            <p className="mt-2 text-sm text-[var(--color-dim)]">{strings.sharing.nobodyElse}</p>
+          ) : (
+            <ul role="list" className="mt-2 flex flex-col gap-1">
+              {others.map((person) => (
+                <li key={person.id}>
+                  <label className={CHECK}>
+                    <input
+                      type="checkbox"
+                      checked={isEveryone || picked.includes(person.id)}
+                      disabled={isEveryone}
+                      onChange={() => toggle(person.id)}
+                      className="size-4 accent-[var(--color-accent)]"
+                    />
+                    {person.displayName ?? person.username}
+                    <span className="tabular text-[11px] text-[var(--color-muted)]">{person.username}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+        </fieldset>
+      </div>
       {save.isError ? (
         <p role="alert" className="mt-3 text-sm text-[var(--color-text)]">
           {save.error.message}
         </p>
       ) : null}
-      <div className="mt-6 flex justify-end gap-2">
-        <button type="button" onClick={onClose} className={BUTTON}>
+      <div className={DIALOG_FOOT}>
+        <button type="button" onClick={onClose} className={DIALOG_QUIET}>
           {strings.folders.cancel}
         </button>
         <button
           type="button"
           disabled={save.isPending}
           onClick={() => save.mutate()}
-          className={`${BUTTON} font-semibold text-[var(--color-bright)]`}
+          className={save.isPending ? DIALOG_QUIET : STANDING}
         >
           {save.isPending ? strings.sharing.saving : strings.sharing.save}
         </button>
