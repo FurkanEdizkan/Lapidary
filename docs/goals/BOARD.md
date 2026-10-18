@@ -136,7 +136,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A17](A17.md) | Redesign direction: audit, DESIGN.md, motion doctrine | 13 | docs | — | see [A17.md](A17.md) | — | merged `9c373c3` | `docs/redesign-direction` |
 | [A18](A18.md) | Motion foundation: `motion` pinned beside anime.js | 13 | web | A17 | see [A18.md](A18.md) | — | merged `c544d6d` | `feat/motion-foundation` |
 | [A19](A19.md) | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [A19.md](A19.md) | — | merged `13bb83d` | `feat/sign-in-lattice` |
-| [A20](A20.md) | Setup: intro, stepper wizard, done moment | 13 | web | A19 | see [A20.md](A20.md) | — | claimed | `feat/setup-stepper` |
+| [A20](A20.md) | Setup: intro, stepper wizard, done moment | 13 | web | A19 | see [A20.md](A20.md) | — | merged `b8b37de` | `feat/setup-stepper` |
 | [A21](A21.md) | App shell, grid cards, route enter | 13 | web | A18 | see [A21.md](A21.md) | — | merged `d17330b` | `feat/shell-and-cards` |
 | [A22](A22.md) | Dialogs with presence | 13 | web | A18 | see [A22.md](A22.md) | — | merged `53f935b` | `feat/dialog-presence` |
 | [A23](A23.md) | Part page: stage overlay and filmstrip | 13 | web | A16, A21 | see [A23.md](A23.md) | — | claimed | `feat/part-stage` |
