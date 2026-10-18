@@ -1446,6 +1446,12 @@ function CopyLink({ part, name, className }: { part: PartId; name: string; class
  * or an index that couldn't be read, says why there is no list.
  */
 function PackSection({ pack }: { pack: PackContents }) {
+  // A release usually wraps everything in one folder named after itself: said once, above the list.
+  const firsts = new Set(pack.entries.map((entry) => entry.path.split('/')[0]))
+  const [top] = firsts
+  const shared =
+    firsts.size === 1 && top !== undefined && pack.entries.every((entry) => entry.path.includes('/')) ? top : null
+  const shown = (path: string) => (shared === null ? path : path.slice(shared.length + 1))
   return (
     <Section
       title={strings.detail.pack.title}
@@ -1455,13 +1461,16 @@ function PackSection({ pack }: { pack: PackContents }) {
         <p className="max-w-prose text-sm text-[var(--color-muted)]">{pack.unread}</p>
       ) : (
         <>
+          {shared === null ? null : (
+            <p className="mb-1 text-xs break-all text-[var(--color-muted)]">{strings.detail.pack.inside(shared)}</p>
+          )}
           <ul role="list" className="max-h-80 overflow-y-auto rounded-[var(--radius-ctl)] border border-[var(--color-border)] text-sm">
             {pack.entries.map((entry) => (
               <li
                 key={entry.path}
                 className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] px-3 py-1.5 last:border-b-0"
               >
-                <span className="min-w-0 break-all">{entry.path}</span>
+                <span className="min-w-0 break-all">{shown(entry.path)}</span>
                 <span className="tabular shrink-0 text-xs text-[var(--color-muted)]">
                   {strings.detail.pack.size(entry.size)}
                 </span>

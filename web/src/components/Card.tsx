@@ -338,6 +338,9 @@ export function breakable(name: string): ReactNode[] {
   return name.split(/(?<=[-_.])/).flatMap((piece, index) => (index === 0 ? [piece] : [<wbr key={index} />, piece]))
 }
 
+/** The pack formats (A13), as `lapidary-core`'s `PACK_EXTENSIONS`. */
+const PACKS = ['zip', '7z', 'rar']
+
 /**
  * The card's one line of figures: the part number, then the triangle count and its label.
  *
@@ -358,7 +361,9 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
   // arrives here as undefined and would reach .toLocaleString() as one.
   const count = typeof part.triangleCount === 'number' ? part.triangleCount : null
   const labelled = part.approximate || count !== null
-  if (part.partNumber === null && !labelled) {
+  // A pack (A13) has no figures; its size is what a person deciding to download it wants.
+  const pack = part.sourceFormat !== null && PACKS.includes(part.sourceFormat) ? part.sourceBytes : null
+  if (part.partNumber === null && !labelled && pack === null) {
     return null
   }
   return (
@@ -373,6 +378,7 @@ function Figures({ part, tight = false }: { part: PartCard; tight?: boolean }) {
     >
       {part.partNumber === null ? null : <span className="text-[var(--color-dim)]">{part.partNumber}</span>}
       {part.partNumber === null || !labelled ? null : <span aria-hidden="true">·</span>}
+      {pack === null ? null : <span>{strings.parts.pack(pack)}</span>}
       {count === null ? null : <span>{strings.parts.triangles(count)}</span>}
       {!labelled ? null : (
         <span

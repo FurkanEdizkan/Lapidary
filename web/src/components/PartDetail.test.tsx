@@ -227,6 +227,16 @@ test('a pack lists what is inside it and offers no view and no export', async ()
   expect(screen.queryByRole('button', { name: strings.viewer.view })).toBeNull()
   expect(screen.queryByText(strings.download.forSlicer)).toBeNull()
   cleanup()
+  // A release wrapped in one folder says the folder once.
+  const wrapped = castigator.pack!.entries.map((e) => ({ ...e, path: `TCAA3002 Castigator/${e.path}` }))
+  render(
+    <QueryClientProvider client={client}>
+      <Detail part={{ ...castigator, pack: { entries: wrapped, total: 2, unread: null } }} />
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText(strings.detail.pack.inside('TCAA3002 Castigator'))).toBeTruthy()
+  expect(screen.getByText('Supported/castigator-body.stl')).toBeTruthy()
+  cleanup()
   // A RAR says why there is no list.
   const unread = 'RAR archives aren’t opened, so what is inside isn’t listed.'
   render(

@@ -3699,8 +3699,9 @@ fn to_part_row(row: GridRow) -> Result<PartRow, DbError> {
                 part_number,
                 source_path,
                 triangle_count,
-                // Every figure on a mesh part is tessellated, so any is all.
-                approximate: true,
+                // Every figure on a mesh part is tessellated, so any is all. A pack (A13) has none, and
+                // calling nothing approximate would be a claim about figures that do not exist.
+                approximate: triangle_count.is_some(),
                 source_hash,
                 source_bytes: bytes("file.size_bytes", source_bytes)?,
                 stored_bytes: bytes("file.stored_bytes", stored_bytes)?,
