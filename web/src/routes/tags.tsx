@@ -67,7 +67,7 @@ export function TagsPage({ library, order }: { library: LibraryId; order?: 'name
       is a directory and fills the window, which is the `/duplicates` finding applied before it could
       happen again.
     */
-    <AppFrame library={library} skipTo={{ href: '#tags', label: strings.tagIndex.heading }}>
+    <AppFrame current="tags" library={library} skipTo={{ href: '#tags', label: strings.tagIndex.heading }}>
       {/* Rendered, not assigned: React 19 hoists it, so the route that owns the page owns its title. */}
       <title>{strings.tagIndex.title}</title>
       <div id="tags" tabIndex={-1} className="min-w-0 flex-1">

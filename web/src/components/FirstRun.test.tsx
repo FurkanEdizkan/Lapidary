@@ -3,10 +3,16 @@ import { expect, test, vi } from 'vitest'
 import { FirstRun } from './FirstRun'
 import { strings } from '../lib/strings'
 
-test('an empty library offers Upload, and the button opens the picker', () => {
+test('an empty library offers Import first and Upload second, and each opens its own way in', () => {
   const onUpload = vi.fn()
-  render(<FirstRun onUpload={onUpload} />)
+  const onImport = vi.fn()
+  render(<FirstRun onImport={onImport} onUpload={onUpload} />)
   const section = screen.getByRole('region', { name: strings.emptyLibrary.title })
+  const [first, second] = screen.getAllByRole('button')
+  expect(first?.textContent).toBe(strings.addModels.button)
+  expect(second?.textContent).toBe(strings.toolbar.uploadFolder)
+  fireEvent.click(screen.getByRole('button', { name: strings.addModels.button }))
+  expect(onImport).toHaveBeenCalledTimes(1)
   fireEvent.click(screen.getByRole('button', { name: strings.toolbar.uploadFolder }))
   expect(onUpload).toHaveBeenCalledTimes(1)
   expect(section.textContent).toContain(strings.emptyLibrary.dropHint)
@@ -27,7 +33,7 @@ test('an empty library offers Upload, and the button opens the picker', () => {
 test('an empty library loads no renderer and fetches nothing', async () => {
   const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
   vi.stubGlobal('fetch', fetchMock)
-  const { container } = render(<FirstRun onUpload={() => {}} />)
+  const { container } = render(<FirstRun onImport={() => {}} onUpload={() => {}} />)
   await act(async () => {
     await vi.dynamicImportSettled()
   })

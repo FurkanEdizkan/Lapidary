@@ -71,7 +71,7 @@ export function JumpSearch() {
         onChange={(event) => setTyped(event.target.value)}
         aria-label={strings.search.label}
         aria-keyshortcuts={SEARCH_SHORTCUT}
-        placeholder={strings.search.placeholder}
+        placeholder={strings.search.jumpPlaceholder}
         className="w-full rounded-[var(--radius-ctl)] border border-[var(--color-edge)] bg-[var(--color-raised)] py-2 pr-3 pl-[30px] text-[13px] focus:border-[var(--color-accent)]"
       />
     </form>

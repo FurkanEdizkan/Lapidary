@@ -377,6 +377,9 @@ export const strings = {
     /** The narrow-screen button that slides the places, and a grid's categories and filters, in over the page. */
     openDrawer: 'Menu',
     closeDrawer: 'Close menu',
+    /** Under `md` the header's search folds to an icon that opens it across the row (A21). */
+    openSearch: 'Search',
+    closeSearch: 'Close search',
   },
   toolbar: {
     view: 'View',
@@ -1512,6 +1515,8 @@ export const strings = {
      * nothing for two of the four things it names.
      */
     placeholder: 'Search by name, part number or file path',
+    /** The header's search on a page that is not the grid: Enter takes the query there (A17's audit). */
+    jumpPlaceholder: 'Search parts — Enter opens them in the grid',
     /**
      * The chip that appears when a search runs inside a selected category.
      *

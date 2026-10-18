@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DEFAULT_LIBRARY_ID } from '../lib/api'
 import { strings } from '../lib/strings'
@@ -6,6 +6,7 @@ import type { LibraryId } from '../lib/types'
 import { Icon } from './Icon'
 import { JumpSearch } from './Search'
 import { Menu } from './Menu'
+import { Indicator, Rise } from '../lib/motion-react'
 import { LOGIN_PATH, currentUser, forgetSession, signOut } from '../lib/session'
 
 /**
@@ -25,7 +26,32 @@ export function BrandMark() {
   )
 }
 
-export type Place = 'parts' | 'dashboard' | 'sharedWithMe' | 'siteSettings' | 'profile' | 'people'
+/**
+ * Where a page is. The first six are the pages a place names; `part` and `tags` are pages inside Parts (a part's
+ * own page, the tag index), which mark Parts without being it, so Parts stays a link there (A21).
+ */
+export type Place = 'parts' | 'dashboard' | 'sharedWithMe' | 'siteSettings' | 'profile' | 'people' | 'part' | 'tags'
+
+/** Which mark the header shows for a page: one of the three places, or the account button for its pages. */
+type Marked = 'parts' | 'dashboard' | 'sharedWithMe' | 'account'
+
+function markedFor(current: Place | undefined): Marked | undefined {
+  switch (current) {
+    case 'parts':
+    case 'part':
+    case 'tags':
+      return 'parts'
+    case 'dashboard':
+    case 'sharedWithMe':
+      return current
+    case 'siteSettings':
+    case 'profile':
+    case 'people':
+      return 'account'
+    case undefined:
+      return undefined
+  }
+}
 
 /**
  * Out of the JSX on purpose: `no-bare-strings` reads any attribute literal that contains a strings.ts
@@ -36,72 +62,92 @@ const PROFILE_PATH = '/profile'
 const PEOPLE_PATH = '/people'
 const SHARED_PATH = '/shared'
 
+// The places by name, out of the JSX for the reason the paths above are.
+const PARTS = 'parts'
+const DASHBOARD = 'dashboard'
+const SHARED = 'sharedWithMe'
+const ACCOUNT = 'account'
+
+/** The one id the places marker travels by, between pages as well as within one (DESIGN.md § Header). */
+const MARKER = 'place-marker'
+
 const HOME =
   'ease-mechanical flex flex-none items-center gap-[9px] rounded-[var(--radius-ctl)] duration-[var(--duration-fast)] hover:opacity-80'
 
+// Text weight and the marker carry the current place; the Bench Grey tray they replace is gone (A17).
 const PLACE =
-  'ease-mechanical flex min-h-7 items-center rounded-[5px] px-3 text-xs duration-[var(--duration-fast)]'
-// The border grey as a fill: the header is `surface` and the nav's well is `raised`, so a
-// `surface` pill, which marked the place on the old page-ground toolbar, vanished into the bar.
-const HERE = `${PLACE} bg-[var(--color-border)] font-semibold text-[var(--color-bright)]`
+  'ease-mechanical flex h-full items-center px-3 text-xs duration-[var(--duration-fast)]'
+const HERE = `${PLACE} font-semibold text-[var(--color-bright)]`
 const THERE = `${PLACE} text-[var(--color-muted)] hover:text-[var(--color-text)]`
+// Stacked in the drawer, which has no marker of its own: a second element holding the marker's id would fight the
+// header's for it. A 2px Quicklime rule at the row's start says the same thing, still.
+const ROW = 'ease-mechanical flex min-h-9 items-center border-l-2 px-3 text-sm duration-[var(--duration-fast)]'
+const ROW_HERE = `${ROW} border-[var(--color-bright)] font-semibold text-[var(--color-bright)]`
+const ROW_THERE = `${ROW} border-transparent text-[var(--color-muted)] hover:text-[var(--color-text)]`
+
+/** The 2px Quicklime line under the current place, at the header's foot. */
+function Marker({ inset = 'inset-x-3' }: { inset?: 'inset-x-3' | 'inset-x-1' }) {
+  return <Indicator id={MARKER} move="base" aria-hidden="true" data-place-marker className={`absolute bottom-0 h-0.5 bg-[var(--color-bright)] ${inset}`} />
+}
 
 /**
- * Where you are, among the application's places: the grid and the dashboard. Profile and Settings
- * are the user menu's, at the header's right (M2).
+ * Where you are, among the application's places: the grid, the dashboard and what was shared with you. Profile,
+ * Settings and People are the account menu's, at the header's right (M2).
  *
  * `current` is a prop rather than read from the router: the place is a fact the page knows,
  * and each page's tests mount it under a synthetic route tree where route matching would
- * answer nothing. The current place is marked and not linked — a link to `/` from `/` would
- * drop the category and the search you are in the middle of.
+ * answer nothing. The page you are on is marked and not linked — a link to `/` from `/` would
+ * drop the category and the search you are in the middle of. A page inside Parts marks Parts and keeps it a link.
  */
 function Places({ current, library, stacked = false }: { current?: Place; library?: LibraryId; stacked?: boolean }) {
   const search = library === undefined || library === DEFAULT_LIBRARY_ID ? undefined : { library }
-  const inParts = current === 'parts'
-  const inDashboard = current === 'dashboard'
-  const inShared = current === 'sharedWithMe'
+  const marked = markedFor(current)
+  const here = stacked ? ROW_HERE : HERE
+  const there = stacked ? ROW_THERE : THERE
+  const place = (
+    name: 'parts' | 'dashboard' | 'sharedWithMe',
+    label: string,
+    link: (className: string) => ReactNode,
+  ) => (
+    <div className={stacked ? 'flex' : 'relative flex h-full'}>
+      {current === name ? (
+        <span aria-current="page" className={here}>
+          {label}
+        </span>
+      ) : (
+        link(marked === name ? here : there)
+      )}
+      {!stacked && marked === name ? <Marker /> : null}
+    </div>
+  )
   return (
     <nav
       aria-label={strings.frame.places}
-      className={`flex flex-none gap-0.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-raised)] p-[3px] ${
-        stacked ? 'flex-col' : 'items-center'
-      }`}
+      className={stacked ? 'flex flex-col gap-0.5' : 'flex h-full flex-none items-stretch'}
     >
-      {inParts ? (
-        <span aria-current="page" className={HERE}>
-          {strings.frame.parts}
-        </span>
-      ) : (
+      {place(PARTS, strings.frame.parts, (className) => (
         // Exact: the router marks a matching link `aria-current` itself, and `/` prefixes every path.
-        <Link to="/" search={search} activeOptions={{ exact: true }} className={THERE}>
+        <Link to="/" search={search} activeOptions={{ exact: true }} className={className}>
           {strings.frame.parts}
         </Link>
-      )}
+      ))}
       {/*
         Second, not first: `/` is the grid and the grid is what this application is for. The
         dashboard is the overview beside it, and it carries the library for the same reason
         Parts does — leaving it and coming back keeps the library you were in, which
         is the library the Add form offers first.
       */}
-      {inDashboard ? (
-        <span aria-current="page" className={HERE}>
-          {strings.dashboard.title}
-        </span>
-      ) : (
-        <Link to="/dashboard" search={search} className={THERE}>
+      {place(DASHBOARD, strings.dashboard.title, (className) => (
+        <Link to="/dashboard" search={search} className={className}>
           {strings.dashboard.title}
         </Link>
-      )}
+      ))}
       {/* What other people shared with you (A4): theirs to change, yours to look at and download. */}
-      {inShared ? (
-        <span aria-current="page" className={HERE}>
-          {strings.sharing.place}
-        </span>
-      ) : (
-        <Link to={SHARED_PATH} className={THERE}>
+      {place(SHARED, strings.sharing.place, (className) => (
+        <Link to={SHARED_PATH} className={className}>
           {strings.sharing.place}
         </Link>
-      )}
+      ))}
     </nav>
   )
 }
@@ -119,7 +165,10 @@ function UserMenu({ current }: { current?: Place }) {
   const inPeople = current === 'people'
   // The admin's accounts page (A4), for an admin only.
   const admin = currentUser()?.isAdmin ?? false
+  const marked = markedFor(current) === ACCOUNT
   return (
+    // The account button is the place for its own pages: on Profile, Settings or People the marker sits under it.
+    <div className="relative flex h-full items-center px-1">
     <Menu id="user-menu" label={strings.user.menu} icon="user">
       {inProfile ? (
         <span aria-current="page" className={`${MENU_ITEM} font-semibold`}>
@@ -160,8 +209,31 @@ function UserMenu({ current }: { current?: Place }) {
         {strings.user.signOut}
       </button>
     </Menu>
+    {marked ? <Marker inset="inset-x-1" /> : null}
+    </div>
   )
 }
+
+/**
+ * A page arriving: up 8px and in over 180 ms, enter only (DESIGN.md § Motion, "Routes").
+ *
+ * Here around the content, not in `__root.tsx` around the `Outlet` where REDESIGN put it, because every page renders
+ * its own header: a `Rise` around the outlet would fade the whole header in on every navigation, hiding the places
+ * marker's move, and for those 180 ms its transform would make the drawer, the scrim and the skip link fixed to the
+ * wrapper instead of to the viewport. Keyed on the pathname the router has resolved, not the one it is loading, so the
+ * leaving page is never re-keyed and replayed while the gate runs. No exit, so two pages never share the DOM.
+ */
+function PageEnter({ className, children }: { className?: string; children: ReactNode }) {
+  const pathname = useRouterState({ select: (state) => (state.resolvedLocation ?? state.location).pathname })
+  return (
+    <Rise key={pathname} className={className}>
+      {children}
+    </Rise>
+  )
+}
+
+/** The width at and over which the header is one row with everything in it: Tailwind's `md`. */
+const WIDE = '(min-width: 48rem)'
 
 /**
  * The page every route renders into: a skip link, one header, and the content.
@@ -171,9 +243,9 @@ function UserMenu({ current }: { current?: Place }) {
  * watches, and the library menu acts on the library in its URL. A header in the root would
  * have to reach down for all of that; a header each page fills in is a slot.
  *
- * **One row on a wide screen, two on a narrow one.** Mark, places, search, then the page's
- * actions. Under `md` the search takes a row of its own, because a search field squeezed to
- * the width left over by four controls is a field nobody can read back.
+ * **One 56px row at every width** (A21). Mark, places, search, then the page's tools and actions and the account.
+ * Under `md` the places and the page's `tools` (Library, Import) move into the drawer, search folds to an icon that
+ * opens it across the row, and Upload keeps only its icon: three header rows were 140px of an 844px phone.
  *
  * `rail` is the categories-and-filters column. On a wide screen it sits beside the content;
  * under `md` it becomes a drawer. The drawer is CSS over always-rendered content, never a
@@ -185,6 +257,7 @@ export function AppFrame({
   library,
   skipTo,
   search,
+  tools,
   actions,
   rail,
   nav = true,
@@ -197,6 +270,9 @@ export function AppFrame({
   skipTo?: { href: string; label: string }
   /** The page's own search. Absent is a search that takes you to the grid; `null` is none. */
   search?: ReactNode
+  /** Quiet, now-and-then controls: in the header on a wide screen, in the drawer under `md`. */
+  tools?: ReactNode
+  /** The page's own standing control, which stays in the header at every width. */
   actions?: ReactNode
   rail?: ReactNode
   /** Off for a page that cannot trust the router, which is the crash page. */
@@ -204,10 +280,14 @@ export function AppFrame({
   children: ReactNode
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
   const drawerButton = useRef<HTMLButtonElement>(null)
   const closeDrawer = useRef<HTMLButtonElement>(null)
-  // Under `md` the places and the rail both live in the drawer, so a page with either has one.
-  const drawer = nav || rail !== undefined
+  const searchButton = useRef<HTMLButtonElement>(null)
+  const searchRow = useRef<HTMLDivElement>(null)
+  // Under `md` the places, the tools and the rail all live in the drawer, so a page with any of them has one.
+  const drawer = nav || rail !== undefined || tools !== undefined
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -218,15 +298,37 @@ export function AppFrame({
       setDrawerOpen(false)
       drawerButton.current?.focus()
     }
+    // Widened past `md` with the drawer open: there is no drawer there, and the tools it holds belong in the header.
+    const wide = typeof window.matchMedia === 'function' ? window.matchMedia(WIDE) : null
+    const onWide = (event: MediaQueryListEvent) => {
+      if (event.matches) setDrawerOpen(false)
+    }
     document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
+    wide?.addEventListener?.('change', onWide)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      wide?.removeEventListener?.('change', onWide)
+    }
   }, [drawerOpen])
+
+  useEffect(() => {
+    if (!searchOpen) return
+    searchRow.current?.querySelector('input')?.focus()
+  }, [searchOpen])
+
+  // The header gains its hairline once something has scrolled under it, and sits flush on the ground at the top.
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 0)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   /*
     The rail beside the content on a wide screen; under `md`, a drawer over it holding the
-    places as well. A page without a rail has no column, so its panel exists only as the drawer.
-    The places are rendered into it only while it is open: a second copy of the nav in the
-    document would be a second landmark with the same name.
+    places and the tools as well. A page without a rail has no column, so its panel exists only as the drawer.
+    The places and the tools are rendered into it only while it is open: a second copy of the nav in the
+    document would be a second landmark with the same name, and a second Library menu a second `library-menu` id.
   */
   const panel = !drawer ? null : (
     <>
@@ -239,7 +341,7 @@ export function AppFrame({
       ) : null}
       <div
         id="drawer"
-        className={`${rail === undefined ? 'md:hidden' : 'w-56 shrink-0'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-[var(--z-drawer)] max-md:w-72 max-md:max-w-[85vw] max-md:overflow-y-auto max-md:border-r max-md:border-[var(--color-border)] max-md:bg-[var(--color-bg)] max-md:p-4 ${
+        className={`${rail === undefined ? 'md:hidden' : 'w-56 shrink-0'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-[var(--z-drawer)] max-md:w-72 max-md:max-w-[85vw] max-md:overflow-y-auto max-md:overscroll-contain max-md:border-r max-md:border-[var(--color-border)] max-md:bg-[var(--color-bg)] max-md:p-4 ${
           drawerOpen ? '' : 'max-md:invisible max-md:-translate-x-full'
         }`}
       >
@@ -260,13 +362,17 @@ export function AppFrame({
             <Places current={current} library={library} stacked />
           </div>
         ) : null}
+        {drawerOpen && tools !== undefined ? (
+          <div className="mb-5 flex flex-col gap-2 border-t border-[var(--color-border)] pt-4 md:hidden">{tools}</div>
+        ) : null}
         {rail}
       </div>
     </>
   )
 
+  const searchShown = search !== null
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-dvh flex-col">
       {skipTo === undefined ? null : (
         /*
           The first tab stop on the page, and off-screen until it is one. SC 2.4.1, Level A.
@@ -281,11 +387,19 @@ export function AppFrame({
         </a>
       )}
       {/*
-        On `--color-surface`, a step above the page, which is what separates it without the
-        rule underneath doing the work alone. Sticky, so search and Upload are one reach away
-        from anywhere down a long grid.
+        Machined Slate, a step above the page, and sticky, so search and Upload are one reach away from anywhere down
+        a long grid. The Scribe Line arrives once the page scrolls under it; the border is always there, transparent
+        at the top, so the row never moves by a pixel when it appears.
+
+        **No blur behind it**, though DESIGN.md asks for one (decided in A21, for the owner): blur shows only through
+        a translucent ground, and over a white picture Edge falls under 3:1 at any alpha below 100% (2.78:1 at 97%),
+        and Graphite under 4.5:1 below 96%. Upload's boundary and the places' labels sit on this ground.
       */}
-      <header className="sticky top-0 z-[var(--z-header)] flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-[13px] py-[9px]">
+      <header
+        className={`sticky top-0 z-[var(--z-header)] flex h-14 flex-none items-center gap-3 border-b bg-[var(--color-surface)] px-[13px] ${
+          scrolled ? 'border-[var(--color-border)]' : 'border-transparent'
+        }`}
+      >
         {!drawer ? null : (
           <button
             ref={drawerButton}
@@ -294,7 +408,7 @@ export function AppFrame({
             aria-controls="drawer"
             aria-label={strings.frame.openDrawer}
             onClick={() => setDrawerOpen(true)}
-            className="ease-mechanical -ml-1 flex size-8 items-center justify-center rounded-[var(--radius-ctl)] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] md:hidden"
+            className="ease-mechanical -ml-1 flex size-8 flex-none items-center justify-center rounded-[var(--radius-ctl)] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] md:hidden"
           >
             <Icon name="list" />
           </button>
@@ -315,25 +429,61 @@ export function AppFrame({
         ) : (
           <a href="/" className={HOME}>
             <BrandMark />
-            {/*
-              Letterspaced and uppercased in CSS, not in `strings.ts`: the application's name is
-              "Lapidary", and a screen reader should say that rather than spell it.
-            */}
             <h1 className="text-xs leading-none font-bold tracking-[0.16em] uppercase">{strings.appName}</h1>
           </a>
         )}
         {nav ? (
-          <div className="max-md:hidden">
+          <div className="h-full max-md:hidden">
             <Places current={current} library={library} />
           </div>
         ) : null}
-        {search === null ? null : (
-          <div className="flex min-w-0 flex-1 max-md:order-last max-md:basis-full md:max-w-[36rem]">
+        {!searchShown ? null : (
+          /*
+            Always in the document, folded by CSS under `md` rather than unmounted: the `/` shortcut and every query
+            that finds the field by its name have to find it whatever the width. Opened, it covers the row.
+          */
+          <div
+            ref={searchRow}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape' || !searchOpen) return
+              setSearchOpen(false)
+              searchButton.current?.focus()
+            }}
+            className={`flex min-w-0 flex-1 items-center gap-2 md:max-w-[36rem] ${
+              searchOpen
+                ? 'max-md:absolute max-md:inset-0 max-md:z-10 max-md:bg-[var(--color-surface)] max-md:px-[13px]'
+                : 'max-md:hidden'
+            }`}
+          >
             {search ?? <JumpSearch />}
+            <button
+              type="button"
+              aria-label={strings.frame.closeSearch}
+              onClick={() => {
+                setSearchOpen(false)
+                searchButton.current?.focus()
+              }}
+              className="ease-mechanical flex size-8 flex-none items-center justify-center rounded-[var(--radius-ctl)] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] md:hidden"
+            >
+              <Icon name="close" />
+            </button>
           </div>
         )}
-        {actions === undefined && !nav ? null : (
-          <div className="ml-auto flex flex-none items-center gap-2">
+        {actions === undefined && tools === undefined && !nav && !searchShown ? null : (
+          <div className="ml-auto flex h-full flex-none items-center gap-2">
+            {!searchShown ? null : (
+              <button
+                ref={searchButton}
+                type="button"
+                aria-label={strings.frame.openSearch}
+                aria-expanded={searchOpen}
+                onClick={() => setSearchOpen(true)}
+                className="ease-mechanical flex size-8 flex-none items-center justify-center rounded-[var(--radius-ctl)] text-[var(--color-muted)] duration-[var(--duration-fast)] hover:text-[var(--color-text)] md:hidden"
+              >
+                <Icon name="search" />
+              </button>
+            )}
+            {tools === undefined || drawerOpen ? null : <div className="flex items-center gap-2 max-md:hidden">{tools}</div>}
             {actions}
             {nav ? <UserMenu current={current} /> : null}
           </div>
@@ -343,12 +493,12 @@ export function AppFrame({
         {rail === undefined ? (
           <>
             {panel}
-            {children}
+            {nav ? <PageEnter>{children}</PageEnter> : children}
           </>
         ) : (
           <div className="flex items-start gap-6">
             {panel}
-            {children}
+            {nav ? <PageEnter className="flex min-w-0 flex-1 items-start gap-6">{children}</PageEnter> : children}
           </div>
         )}
       </main>

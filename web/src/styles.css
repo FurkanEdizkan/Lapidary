@@ -219,6 +219,25 @@
   }
 }
 
+/*
+  Headings break into lines of even length rather than leaving one word alone on the last (A17's audit), and a tap on
+  a control is a tap, not the first half of a double-tap zoom.
+*/
+@layer base {
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  a,
+  button,
+  input,
+  label,
+  summary {
+    touch-action: manipulation;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -304,6 +323,8 @@
     top: anchor(bottom);
     right: anchor(right);
     margin: 6px 0 0;
+    /* A menu whose button sits at a screen's left edge (the drawer's Library) opens rightward instead of off-screen. */
+    position-try-fallbacks: flip-inline;
   }
 }
 

@@ -102,9 +102,21 @@ export function Step({ className, direction, ...props }: Primitive & { direction
   )
 }
 
-/** A marker that travels between places sharing its `id`: the current place, the current step. */
-export function Indicator({ id, className, ...props }: Primitive & { id: string }) {
-  return <m.div layoutId={id} transition={SETTLE} className={classes(className)} {...props} />
+/**
+ * A marker that travels between places sharing its `id`: the current place, the current step.
+ *
+ * `move` is how it travels: the layout spring by default (the stepper's rail), or `base`, 180 ms on the curve, for
+ * the header's places marker (DESIGN.md § Header). Under reduced motion it jumps, whichever it is: a transition given
+ * here would otherwise outrank `MotionRoot`'s zero.
+ */
+export function Indicator({
+  id,
+  className,
+  move = 'settle',
+  ...props
+}: Primitive & { id: string; move?: 'settle' | 'base' }) {
+  const transition = reduced() ? { duration: 0 } : move === 'base' ? mechanical('base') : SETTLE
+  return <m.div layoutId={id} transition={transition} className={classes(className)} {...props} />
 }
 
 /**
