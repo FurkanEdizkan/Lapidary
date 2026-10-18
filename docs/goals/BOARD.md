@@ -138,7 +138,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A19](A19.md) | Sign-in: split layout and the drawn lattice | 13 | web | A18 | see [A19.md](A19.md) | — | claimed | `feat/sign-in-lattice` |
 | A20 | Setup: intro, stepper wizard, done moment | 13 | web | A19 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A21 | App shell, grid cards, route enter | 13 | web | A18 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
-| A22 | Dialogs with presence | 13 | web | A18 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
+| [A22](A22.md) | Dialogs with presence | 13 | web | A18 | see [A22.md](A22.md) | — | claimed | `feat/dialog-presence` |
 | A23 | Part page: stage overlay and filmstrip | 13 | web | A16, A21 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A24 | Dashboard, settings, people, profile, tags, shared | 13 | web | A21 | see [REDESIGN.md](REDESIGN.md) | — | open | — |
 | A25 | Redesign finish pass: screenshots, reviews, budget | 13 | web + docs | all | see [REDESIGN.md](REDESIGN.md) | — | open | — |
