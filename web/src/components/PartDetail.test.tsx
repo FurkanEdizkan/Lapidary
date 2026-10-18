@@ -285,7 +285,9 @@ test('tags are added and removed where the part is recordable, and only listed e
   }
   const page = (recordable: boolean) => pageFor(tagged, recordable)
   render(page(true))
-  // `RouterProvider` has nothing mounted on its first render, so the panel arrives a tick later.
+  // `RouterProvider` has nothing mounted on its first render, so the panel arrives a tick later. The form stands
+  // closed behind its quiet Add (A23).
+  fireEvent.click(await screen.findByRole('button', { name: strings.tags.open }))
   await screen.findByLabelText(strings.tags.field)
 
   fireEvent.change(screen.getByLabelText(strings.tags.field), { target: { value: 'spare' } })
@@ -318,6 +320,7 @@ test('tags are added and removed where the part is recordable, and only listed e
   )
   expect(screen.queryByRole('button', { name: strings.tags.remove('welding jig') })).toBeNull()
   expect(screen.queryByLabelText(strings.tags.field)).toBeNull()
+  expect(screen.queryByRole('button', { name: strings.tags.open })).toBeNull()
   vi.unstubAllGlobals()
 })
 
@@ -343,6 +346,8 @@ test('materials are edited like tags, and a list nobody typed says it is the fil
   )
 
   expect(screen.getByText(strings.materials.fromFile)).toBeTruthy()
+  expect(screen.queryByLabelText(strings.materials.field)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: strings.materials.open }))
   fireEvent.change(screen.getByLabelText(strings.materials.field), { target: { value: 'EN AW-6082 T6' } })
   fireEvent.click(screen.getByRole('button', { name: strings.materials.add }))
   await waitFor(() =>

@@ -883,3 +883,51 @@ test('the part page shows its first picture whole, even one framed to fill a car
   const thumb = await screen.findByAltText(strings.images.alt(PART.name, 0))
   expect(thumb.style.objectFit).toBe('cover')
 })
+
+/** A23: the filmstrip puts the chosen picture on the stage, by pointer or by the arrow keys. */
+test('choosing a picture in the filmstrip puts it on the stage, and the arrow keys walk the strip', async () => {
+  const picture = (n: number) => ({
+    id: `01a07c10-0000-7000-8000-00000000010${n}`,
+    src: `data:image/webp;base64,UklGRg${n}==`,
+    origin: 'uploaded',
+    sourceUrl: null,
+    fit: 'cover',
+    focusX: 0.5,
+    focusY: 0.5,
+  })
+  stub(PART, [picture(1), picture(2), picture(3)])
+  renderPage()
+
+  const stage = async () => (await screen.findByAltText(strings.parts.pictureAlt(PART.name))).getAttribute('src')
+  expect(await stage()).toBe(picture(1).src)
+  const first = await screen.findByRole('button', { name: strings.images.alt(PART.name, 0) })
+  expect(first.getAttribute('aria-current')).toBe('true')
+
+  fireEvent.click(screen.getByRole('button', { name: strings.images.alt(PART.name, 2) }))
+  await waitFor(async () => expect(await stage()).toBe(picture(3).src))
+
+  const third = screen.getByRole('button', { name: strings.images.alt(PART.name, 2) })
+  fireEvent.keyDown(third, { key: 'ArrowLeft' })
+  await waitFor(async () => expect(await stage()).toBe(picture(2).src))
+  const second = screen.getByRole('button', { name: strings.images.alt(PART.name, 1) })
+  expect(second.getAttribute('aria-current')).toBe('true')
+  expect(document.activeElement).toBe(second)
+  // The card's framing follows the chosen picture.
+  expect(screen.getByRole('button', { name: strings.images.focusLabel(strings.images.alt(PART.name, 1)) })).toBeTruthy()
+})
+
+/**
+ * A23: the part with no picture still has a stage: the lattice on the lamp and its format, with what View would say
+ * on it. jsdom has no WebGL, so here that is the sentence saying there is no view; `PartDetail.test.tsx` presses View.
+ */
+test('a part with no picture shows its format on the stage, with the view control on it', async () => {
+  stub({ ...PART, sourceFormat: 'stl' })
+  renderPage()
+
+  const said = await screen.findByText(strings.viewer.noWebGL)
+  const stage = said.closest('figure') as HTMLElement
+  expect(stage.className).toContain('stage-lamp')
+  await waitFor(() => expect(within(stage).getByText('STL')).toBeTruthy())
+  expect(stage.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+  expect(screen.queryByAltText(strings.parts.pictureAlt(PART.name))).toBeNull()
+})

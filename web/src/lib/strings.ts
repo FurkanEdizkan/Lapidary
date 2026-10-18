@@ -747,6 +747,12 @@ export const strings = {
     empty: 'That drop contained no files.',
   },
   detail: {
+    /**
+     * The quiet opener in a section's label row (A23): the add-forms stand closed so the column reads as the part,
+     * not as a form. Its accessible name is the section's own `open`, which begins with this word (WCAG 2.5.3).
+     */
+    add: 'Add',
+    cancel: 'Cancel',
     /** A pack (A13): an archive kept as one item, never unpacked. */
     pack: {
       title: 'Inside this pack',
@@ -1650,6 +1656,8 @@ export const strings = {
      */
     reframeFailed: 'Could not change the framing. Try again.',
     /** What clicking the picture does, for a screen reader that cannot see the crop. */
+    /** Beside the framing control under the filmstrip (A23): it frames the picture's crop on a card, not the stage. */
+    framing: 'On a card',
     focusLabel: (label: string) =>
       `${label} — click or use the arrow keys to choose what stays in frame`,
   },
@@ -1658,6 +1666,7 @@ export const strings = {
     title: 'Tags',
     field: 'New tag',
     add: 'Add tag',
+    open: 'Add a tag',
     saving: 'Saving…',
     /** The remove button's whole name, so a screen reader hears which tag goes. */
     remove: (tag: string) => `Remove tag ${tag}`,
@@ -1669,6 +1678,7 @@ export const strings = {
     title: 'Materials',
     field: 'New material',
     add: 'Add material',
+    open: 'Add a material',
     saving: 'Saving…',
     /** The remove button's whole name, so a screen reader hears which material goes. */
     remove: (material: string) => `Remove material ${material}`,
@@ -1747,6 +1757,8 @@ export const strings = {
   sources: {
     /** "Fetch details" (A2): fill the part from its model's page, downloading nothing. */
     fetch: 'Fetch details',
+    /** The fetch form's own button, once it is open. */
+    fetchNow: 'Fetch',
     /** A page's description, kept on its source row (A15); long ones open on request. */
     showAll: 'Show all',
     showLess: 'Show less',
@@ -1765,7 +1777,7 @@ export const strings = {
      * must never say about a part whose licence it could not load.
      */
     failed: 'Could not load where this came from.',
-    add: 'Record a source',
+    add: 'Add a source',
     save: 'Save',
     saving: 'Saving…',
     cancel: 'Cancel',

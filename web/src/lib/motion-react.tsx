@@ -67,6 +67,22 @@ export function Fade({ className, ...props }: Primitive) {
   )
 }
 
+/**
+ * One picture giving way to the next on a stage (A23): both out and in over `base`, 180 ms, so the two layers cross
+ * rather than the old one vanishing first. Each layer must be absolutely placed over the other.
+ */
+export function Crossfade({ className, ...props }: Primitive) {
+  return (
+    <m.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1, transition: mechanical('base') }}
+      exit={{ opacity: 0, transition: mechanical('base') }}
+      className={classes(className)}
+      {...props}
+    />
+  )
+}
+
 /** Arriving: up 8px and in. What a page or a panel does when it first appears. */
 export function Rise({ className, ...props }: Primitive) {
   return (
