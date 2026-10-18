@@ -840,8 +840,9 @@ test('moving a picture later sends the whole gallery in its new order', async ()
     focusX: 0.5,
     focusY: 0.5,
   })
-  const gallery = [picture(1, 'snapshot'), picture(2, 'url_supplied')]
-  stub(PART, gallery)
+  const snapshot = picture(1, 'snapshot')
+  const photograph = picture(2, 'url_supplied')
+  stub(PART, [snapshot, photograph])
   const sent: unknown[] = []
   const answer = (globalThis.fetch as unknown as (url: string, init?: RequestInit) => Promise<unknown>).bind(globalThis)
   vi.stubGlobal(
@@ -858,6 +859,6 @@ test('moving a picture later sends the whole gallery in its new order', async ()
 
   const label = strings.images.alt(PART.name, 0)
   fireEvent.click(await screen.findByRole('button', { name: strings.images.moveLater(label) }))
-  await waitFor(() => expect(sent).toEqual([{ ids: [gallery[1].id, gallery[0].id] }]))
+  await waitFor(() => expect(sent).toEqual([{ ids: [photograph.id, snapshot.id] }]))
   expect(screen.getByRole('button', { name: strings.images.moveEarlier(label) })).toHaveProperty('disabled', true)
 })
