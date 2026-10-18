@@ -15,6 +15,7 @@ import {
   saveImportSettings,
   saveSiteKey,
 } from '../lib/api'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import { HEADLINE, LEAD } from '../components/Page'
 import { AppFrame } from '../components/AppFrame'
@@ -331,17 +332,20 @@ function ModelsFolderSection() {
             {strings.folderPicker.choose}
           </button>
         ) : null}
-        {picking ? (
-          <FolderPicker
-            title={strings.folderPicker.modelsTitle}
-            start={data.path}
-            onChoose={(path) => {
-              setPicking(false)
-              choose.mutate(path)
-            }}
-            onCancel={() => setPicking(false)}
-          />
-        ) : null}
+        <Presence>
+          {picking ? (
+            <FolderPicker
+              key="picker"
+              title={strings.folderPicker.modelsTitle}
+              start={data.path}
+              onChoose={(path) => {
+                setPicking(false)
+                choose.mutate(path)
+              }}
+              onCancel={() => setPicking(false)}
+            />
+          ) : null}
+        </Presence>
         {choose.isError ? (
           <p role="alert" className="max-w-prose text-sm text-[var(--color-text)]">
             {choose.error.message}

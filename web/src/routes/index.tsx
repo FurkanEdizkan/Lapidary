@@ -40,6 +40,7 @@ import {
   type PageSize,
   type Sort,
 } from '../lib/preferences'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import { eachAtMost } from '../lib/bulk'
 import { importBundle, uploadFiles } from '../lib/upload'
@@ -1017,36 +1018,42 @@ export function Index({
         {uploadNote === null ? null : (
           <p className="mb-4 text-sm text-[var(--color-muted)]">{uploadNote}</p>
         )}
-        {!adding ? null : (
-          <ImportDialog
-            library={library}
-            onClose={() => setAdding(false)}
-            onScan={() => scanNow.mutate()}
-            onUpload={() => {
-              setAdding(false)
-              filePicker.current?.click()
-            }}
-            onUploadFolder={() => {
-              setAdding(false)
-              picker.current?.click()
-            }}
-            onFromLink={() => {
-              setAdding(false)
-              setLinking(true)
-            }}
-          />
-        )}
-        {!linking ? null : (
-          <ImportLinkDialog
-            busy={fromLink.isPending}
-            note={linkNote}
-            onImport={(url) => fromLink.mutate(url)}
-            onCancel={() => {
-              setLinking(false)
-              setLinkNote(null)
-            }}
-          />
-        )}
+        <Presence>
+          {!adding ? null : (
+            <ImportDialog
+              key="import"
+              library={library}
+              onClose={() => setAdding(false)}
+              onScan={() => scanNow.mutate()}
+              onUpload={() => {
+                setAdding(false)
+                filePicker.current?.click()
+              }}
+              onUploadFolder={() => {
+                setAdding(false)
+                picker.current?.click()
+              }}
+              onFromLink={() => {
+                setAdding(false)
+                setLinking(true)
+              }}
+            />
+          )}
+        </Presence>
+        <Presence>
+          {!linking ? null : (
+            <ImportLinkDialog
+              key="link"
+              busy={fromLink.isPending}
+              note={linkNote}
+              onImport={(url) => fromLink.mutate(url)}
+              onCancel={() => {
+                setLinking(false)
+                setLinkNote(null)
+              }}
+            />
+          )}
+        </Presence>
         {activeBatch === undefined ? null : (
           <ScanProgress
             status={scan.data}
@@ -1103,13 +1110,16 @@ export function Index({
                 onClose={() => setStagedId(null)}
               />
             )}
-            {moving === null ? null : (
-              <MovePartDialog
-                part={{ id: moving.id, name: moving.name }}
-                library={moving.library}
-                onClose={() => setMoving(null)}
-              />
-            )}
+            <Presence>
+              {moving === null ? null : (
+                <MovePartDialog
+                  key="move"
+                  part={{ id: moving.id, name: moving.name }}
+                  library={moving.library}
+                  onClose={() => setMoving(null)}
+                />
+              )}
+            </Presence>
             {selecting ? (
               <SelectionBar
                 count={selected.size}
@@ -1122,31 +1132,39 @@ export function Index({
                 onClear={() => setSelected(new Set())}
               />
             ) : null}
-            {sharingSelection ? (
-              <ShareDialog parts={[...selected]} onClose={() => setSharingSelection(false)} />
-            ) : null}
-            {confirmingDelete ? (
-              <ConfirmDelete
-                title={strings.removal.confirmTitleMany(selected.size)}
-                body={strings.removal.confirmBodyMany(selected.size)}
-                onConfirm={() => {
-                  setConfirmingDelete(false)
-                  void removeSelected()
-                }}
-                onCancel={() => setConfirmingDelete(false)}
-              />
-            ) : null}
-            {picking ? (
-              <PickCategoryDialog
-                title={strings.selection.moveTitle(selected.size)}
-                library={library}
-                onPick={(folder) => {
-                  setPicking(false)
-                  void moveSelected(folder)
-                }}
-                onClose={() => setPicking(false)}
-              />
-            ) : null}
+            <Presence>
+              {sharingSelection ? (
+                <ShareDialog key="share" parts={[...selected]} onClose={() => setSharingSelection(false)} />
+              ) : null}
+            </Presence>
+            <Presence>
+              {confirmingDelete ? (
+                <ConfirmDelete
+                  key="delete"
+                  title={strings.removal.confirmTitleMany(selected.size)}
+                  body={strings.removal.confirmBodyMany(selected.size)}
+                  onConfirm={() => {
+                    setConfirmingDelete(false)
+                    void removeSelected()
+                  }}
+                  onCancel={() => setConfirmingDelete(false)}
+                />
+              ) : null}
+            </Presence>
+            <Presence>
+              {picking ? (
+                <PickCategoryDialog
+                  key="pick"
+                  title={strings.selection.moveTitle(selected.size)}
+                  library={library}
+                  onPick={(folder) => {
+                    setPicking(false)
+                    void moveSelected(folder)
+                  }}
+                  onClose={() => setPicking(false)}
+                />
+              ) : null}
+            </Presence>
             <Grid
               parts={loaded}
               density={density}

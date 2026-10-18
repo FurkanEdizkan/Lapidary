@@ -16,6 +16,7 @@ import { closeMenu } from '../components/Dialog'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { ShareDialog } from '../components/ShareDialog'
 import { PartSkeleton } from '../components/Skeleton'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import { AppFrame } from '../components/AppFrame'
 import type { Approximate, PartDetail } from '../lib/types'
@@ -182,23 +183,35 @@ function PartActions({ part }: { part: PartDetail }) {
           </button>
         </div>
       </Menu>
-      {confirming ? (
-        <ConfirmDelete
-          title={strings.removal.confirmTitle(part.name)}
-          body={strings.removal.confirmBody(part.name)}
-          busy={remove.isPending}
-          failure={remove.isError ? strings.removal.removeFailed : null}
-          onConfirm={() => remove.mutate()}
-          onCancel={() => {
-            remove.reset()
-            setConfirming(false)
-          }}
-        />
-      ) : null}
-      {moving ? (
-        <MovePartDialog part={{ id: part.id, name: part.name }} library={part.library} onClose={() => setMoving(false)} />
-      ) : null}
-      {sharing ? <ShareDialog parts={[part.id]} onClose={() => setSharing(false)} /> : null}
+      <Presence>
+        {confirming ? (
+          <ConfirmDelete
+            key="delete"
+            title={strings.removal.confirmTitle(part.name)}
+            body={strings.removal.confirmBody(part.name)}
+            busy={remove.isPending}
+            failure={remove.isError ? strings.removal.removeFailed : null}
+            onConfirm={() => remove.mutate()}
+            onCancel={() => {
+              remove.reset()
+              setConfirming(false)
+            }}
+          />
+        ) : null}
+      </Presence>
+      <Presence>
+        {moving ? (
+          <MovePartDialog
+            key="move"
+            part={{ id: part.id, name: part.name }}
+            library={part.library}
+            onClose={() => setMoving(false)}
+          />
+        ) : null}
+      </Presence>
+      <Presence>
+        {sharing ? <ShareDialog key="share" parts={[part.id]} onClose={() => setSharing(false)} /> : null}
+      </Presence>
     </>
   )
 }

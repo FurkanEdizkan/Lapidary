@@ -6,6 +6,7 @@ import { HEADLINE, LEAD, SECTION_TITLE, STANDING } from '../components/Page'
 import { LOGIN_PATH, Refused, fetchSetupStatus, runSetup } from '../lib/session'
 import { chooseModelsFolder, fetchModelsFolder, followPort, followRestart, movePort } from '../lib/api'
 import { FolderPicker } from '../components/FolderPicker'
+import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
 import type { SetupStatus } from '../lib/types'
 
@@ -349,7 +350,11 @@ function Choose({
       <button type="button" onClick={onOpen} className={`${QUIET} self-start border border-[var(--color-edge)]`}>
         {strings.folderPicker.choose}
       </button>
-      {open ? <FolderPicker title={title} start={start} code={code} onChoose={onChoose} onCancel={onCancel} /> : null}
+      <Presence>
+        {open ? (
+          <FolderPicker key="picker" title={title} start={start} code={code} onChoose={onChoose} onCancel={onCancel} />
+        ) : null}
+      </Presence>
     </>
   )
 }
