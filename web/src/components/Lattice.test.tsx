@@ -9,12 +9,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** Anything stroked in the accent: the draw head, which must never be there at rest (DESIGN.md § Lattice). */
+/** Anything in the accent: the draw head or a glint, which must never be there at rest (DESIGN.md § Lattice). */
 function accent(container: HTMLElement): Element[] {
-  return Array.from(container.querySelectorAll('[stroke]')).filter((el) => el.getAttribute('stroke')?.includes('accent'))
+  return Array.from(container.querySelectorAll('[stroke], [fill]')).filter((el) =>
+    `${el.getAttribute('stroke')} ${el.getAttribute('fill')}`.includes('accent'),
+  )
 }
 
-test('under reduced motion the gear is simply drawn, every edge grey, and decorative', () => {
+test('under reduced motion the brilliant is simply drawn, every edge grey, and decorative', () => {
   // The test renderer has no matchMedia, which `reduced()` reads as reduced motion.
   const { container } = render(<Lattice />)
   const svg = container.querySelector('svg')!
@@ -41,7 +43,7 @@ test('the draw head exists only on a lattice that is about to draw', () => {
   expect(firstFrame(<Lattice />, false)).not.toContain('var(--color-accent)')
 })
 
-/** A26: sign-in's drawing keeps turning once drawn, so it carries a Pause (WCAG 2.2.2); nothing else does. */
+/** A26, A27: sign-in's drawing keeps turning once drawn, so it carries a Pause (WCAG 2.2.2); nothing else does. */
 test('a live drawing can be paused and played, and only a live one offers to', async () => {
   vi.stubGlobal(
     'matchMedia',

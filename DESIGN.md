@@ -479,8 +479,9 @@ how a rule gets carried out.
   turning, so it carries a visible Pause, stops while the page is hidden, and is still under
   reduced motion. It is the front door's one loop and nothing inside the app may borrow it.
 - **Only `transform`, `opacity` and SVG `stroke-dashoffset` are animated** — `translate`, `scale`
-  and `rotate` are transform. The Lattice is rotated through its SVG `transform` attribute, never
-  by animating `d`, `points` or a coordinate. Nothing animates `width`, `height`, `top`, `left`,
+  and `rotate` are transform. The one exception is the sign-in drawing (A26, A27): it turns in three
+  dimensions, which no 2D transform can say, so `cycle` rewrites its lines' `d` and its facets'
+  `fill-opacity` each frame, straight to the SVG. Nothing animates `width`, `height`, `top`, `left`,
   `filter`, colour or `box-shadow`; a hover's border brightening is a colour change with no
   transition at all, under the 1px lift that does move.
 - **Reduced motion is the end state**, never a slower or shorter version. CSS transitions drop to
@@ -588,25 +589,31 @@ The drawn motif: a part laid out as a fine triangle mesh, the way geometry looks
 It is the only decoration in the product, which is why it is allowed only where there is nothing
 else to show.
 
-- **What it is.** An SVG of a low-poly part — a spur gear or a bracket — produced by a pure,
-  deterministic `lattice()` in `web/src/lib/lattice.ts` (A19), unit-tested for its edge count, no
-  duplicate edges, every point inside the viewBox, and the same output every time. It is drawn
+- **What it is.** An SVG of a round brilliant — the stone a lapidary cuts, and the shape the brand's
+  diamond already names (A27, owner 2026-10-18: "something unique, not just a simple gear"; it was a
+  spur gear from A19 to A26). Its 73 facets (table, stars, bezels, upper and lower girdles, the
+  girdle, pavilion mains) are a wireframe in a three-quarter view with hidden lines, produced by a
+  pure, deterministic `lattice()` in `web/src/lib/lattice.ts`, unit-tested for its facet and edge
+  counts, no duplicate edges, every point of every frame inside the viewBox, a seamless step, and
+  the same output every time. It is drawn
   by `web/src/components/Lattice.tsx`, `aria-hidden`, because it says nothing a reader needs.
-- **Strokes.** 1px (`vector-effect: non-scaling-stroke`), round joins. Settled, the edges are
-  **Edge** (`#65656d`) for the silhouette and **Scribe Line** (`#26262b`) for the interior
-  triangulation, so the outline reads first and the mesh is texture. No fill except the lamp under
-  it. No second hue.
+- **Strokes.** 1px (`vector-effect: non-scaling-stroke`), round joins, all **Edge** (`#65656d`):
+  lines between facets that face the reader at 95%, lines on the far side at 20%, so the stone reads
+  solid and the far side is texture. No fill at rest except the lamp under it. No second hue.
 - **The draw head.** While an edge is drawing, its leading end — the last few percent of its
   length — is Layout Blue, the marking dye moving across the bench. The head exists only while the
   stroke is moving; each edge settles to its grey the moment it is complete.
 - **It draws in 2.4 s on sign-in**, so it reads as drawing rather than a sweep (owner's call,
   2026-10-18); setup's intro (A20) keeps inside `--duration-intro` and then stays still.
 - **On sign-in it keeps moving** (A26, owner 2026-10-18: "it should not stop after one cycle").
-  Once drawn, the gear turns about its axle, one tooth pitch every 3 s — which looks the same as
-  a full turn, so the loop has no seam — and three short Layout Blue marks travel round the tooth
-  profile, the hub's rim (the other way, twice as fast) and the bore, the marking dye still moving
-  across the bench. Blue is on only
-  what moves, so the rule holds. A quiet **Pause the drawing** control sits at the drawing's foot
+  It draws a rough stone — the same facets in the wrong places, a lumpy pebble a little larger —
+  and then cuts it (A27): over two cycles each vertex moves to its place, girdle first and culet
+  last, and the facets being cut tint Layout Blue. Then, for ever, it turns one eighth (the stone's
+  symmetry, so a step looks like none and the loop has no seam) in a little under 1.8 s, holds, and
+  turns again, every 3.2 s, while three studio lights sweep a little and back, so glints — a facet
+  that mirrors a light into the eye, filled Layout Blue at up to 50% — run across the crown even
+  while it holds. The girdle is matte and never glints. Blue is on only what moves, so the rule
+  holds. A quiet **Pause the drawing** control sits at the drawing's foot
   (WCAG 2.2.2), the turn stops while the tab is hidden, and the lines are written straight to the
   SVG each frame by anime.js's `cycle` (`lib/motion.ts`), never through React.
 - **Everywhere else it never loops**, never drifts, never redraws on hover or on focus.
@@ -616,7 +623,8 @@ else to show.
   is shorter than the drawing, which is cropped by it on purpose (A19), so setup's intro lands into a
   crop as well.
 - **Still, it stands in for a missing picture** (A17's audit, taken by the lead): on a card and on
-  the part page's stage, `<Lattice still />` is the settled final frame — one shared path tree, no
+  the part page's stage, `<Lattice still />` is the settled final frame — the cut brilliant, no
+  glint, one shared path tree, no
   `drawIn`, no blue — over the lamp, with the format. Most parts have no picture, and forty
   identical "STL" squares said nothing. It never moves there. The list row, the quick look and the
   dashboard's recently-added widget use the same still frame. It loads with the grid's chunk (which
