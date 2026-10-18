@@ -20,36 +20,21 @@
      rewritten to what the build does, and the stale accent hex and tile-border Don't are
      corrected. Where a rule changed, the section says so.
 
-     2026-10-03, THE PIVOT — READ THIS BEFORE ANYTHING BELOW IT. Lapidary is a visual
-     library: pictures and search, and a 3D view only when somebody presses **view**. The
-     render pipeline and the CAD kernel are gone (`docs/ROADMAP.md` § "The pivot" has the
-     shas), and this document has not had its full pass yet. Six things it names no longer
-     exist, and every rule that rests on one of them is history rather than guidance:
+     2026-10-03, THE PIVOT. Lapidary is a visual library: pictures and search, and a 3D view
+     only when somebody presses **view**. The render pipeline and the CAD kernel are gone
+     (`docs/ROADMAP.md` § "The pivot" has the shas). The turntable, the thumbnail shading,
+     the first-run bench's scene, measuring and the assembly and PMI sections went with them.
 
-       * THE TURNTABLE. A card has no hover handler at all. Nothing draws, fetches or warms
-         because a pointer crossed a tile, and `Grid.test.tsx` asserts no <canvas> appears on
-         hover at any setting. So "the turntable's step back", the 150 ms rest, the
-         canvas-matches-the-inset rule and the picture-to-3D crossfade are all gone.
-       * THE RENDER ITSELF. A card shows the part's own `part_image` picture, framed by that
-         row's `fit`/`focus`, or — for most parts, because nothing produces a picture — the
-         part's FORMAT as text in the well. "The Inset Picture Rule" still holds for a
-         picture; "renders inset 7%" is about a thing that is no longer made.
-       * THUMBNAIL SHADING. `raster.rs` is deleted, so the rule that the turntable and bench
-         match its shading to the byte has nothing to match. `studio.ts` lost
-         `rasterLights`/`rasterMaterial` with it; ONE lit pair remains.
-       * THE FOUR LIT PLACES. three.js draws in exactly ONE place now — the viewer a **view**
-         press opens, on the part page or the quick look's stage. The turntable, the Space
-         stage's own canvas and the first-run bench (deleted with `web/public/first-run/`)
-         are not among them.
-       * THE ASSEMBLY AND PMI SECTIONS of the part page, and the revision ghost. The sections
-         that render are file, identity and history; "assembly, PMI" in the page-anatomy list
-         is stale.
-       * MEASURING, the section plane and explode. No toolbars; the figures a part shows are
-         read from its mesh and every one is labelled approximate.
-
-     The palette, the type, the shapes, the z scale, the breakpoints and every motion value
-     are UNAFFECTED and still authoritative — `web/src/styles.css` is the live copy. A full
-     pass over the prose below is a goal of its own; it is named in R6's Record. -->
+     2026-10-18, A17: the full pass the pivot asked for, and the redesign's direction
+     (`docs/goals/REDESIGN.md`, owner-approved). The prose below no longer describes the
+     removed things; where a rule rested on one, it is rewritten or gone. New: Doorway,
+     Lattice, Stepper, Dialogs, the stage and filmstrip, and a Motion section with two
+     engines. A15 made a card's picture fill its tile, so the Inset Picture Rule is now The
+     Filled Tile Rule. The palette, type, radii, z scale and breakpoints are unchanged, and
+     `web/src/styles.css` is still the live copy of every token. Two motion tokens named
+     here, `--duration-scene` and `--duration-intro`, are added by A18; until A18 merges
+     they exist only in this file. Where this file describes a component a later goal
+     (A19–A24) builds, it says so. -->
 ---
 name: Lapidary
 description: A visual index for 3D part libraries, where the part is lit and the bench is not.
@@ -140,7 +125,7 @@ components:
     padding: "12px"
   card-well:
     backgroundColor: "{colors.bench-grey}"
-    padding: "7%"
+    padding: "0"
   button-standing:
     backgroundColor: "{colors.anodised-black}"
     textColor: "{colors.quicklime}"
@@ -181,12 +166,9 @@ components:
   stage:
     backgroundColor: "{colors.lamp}"
     rounded: "{rounded.md}"
-  measurement-callout:
-    backgroundColor: "{colors.machined-slate}"
-    textColor: "{colors.quicklime}"
-    typography: "{typography.mono}"
-    rounded: "{rounded.sm}"
-    padding: "2px 6px"
+  lattice:
+    textColor: "{colors.edge}"
+    strokeWidth: "1px"
 ---
 
 # Design System: Lapidary
@@ -196,7 +178,7 @@ components:
 **Creative North Star: "The Lit Bench"**
 
 A machinist's bench under a single task lamp. The parts are lit; the bench is not. Every
-surface in this interface exists to be the unlit surround for a rendered object — the ground
+surface in this interface exists to be the unlit surround for a pictured object — the ground
 is near-black, the chrome is grey on grey, and the only saturated colour in the room appears
 when you are doing something. The user's pinned reference is ArtStation's community browse
 page, and what it gets right is exactly this: a dark room, a dense wall of work, and chrome
@@ -208,21 +190,26 @@ text and why the interface has no decorative colour at all. This is a tool a per
 forty times a day for six seconds each time; it must be legible at a glance and invisible in
 memory.
 
-Where the lamp actually falls is now built. A part is shown in one of four lit places — the
-part page's studio viewer, the card's turntable under the pointer, the Space stage, and an
-empty library's first-run bench — each drawn under the same light as the thumbnails, and
-every one but the turntable (which stays inside its card's well) on the one non-flat ground
-in the system, the lamp's pool, with the part set down on a soft contact shadow. Everything outside those places is
-flat, tonal and silent.
+The lamp falls in one kind of place: a stage. The part page and the quick look each have one,
+and it holds the part's own picture, whole, on the lamp's pool. When somebody presses **view**,
+three.js draws the original mesh on that same pool, set down on a soft contact shadow.
+Everything outside a stage is flat, tonal and silent.
+
+**The cutting bench** (2026-10-18). The redesign adds one motif and no new colour: geometry
+drawn as fine grey lines, the way a part looks laid out on a marking table before it is cut.
+At full size it is the Lattice, and it appears in only two places, the sign-in page and setup.
+Everywhere else the same idea shows only as hairlines: the Scribe Line, a stepper's rail, the
+marker under the current place.
 
 **Key Characteristics:**
 
 - Near-black ground; the part on its lamp-lit stage is the only lit thing on the page
 - Archivo for every word, JetBrains Mono for every figure; headings share one weight (600) and part by size and colour
-- One saturated colour, reserved for live interaction and for marks drawn over a part
+- One saturated colour, reserved for live interaction and the Lattice's draw head while it moves
 - Flat by tonal layering; a shadow only under something that floats over the page
-- Renders inset 7% in a Bench Grey well on a bordered card, lifting to Edge under the pointer
-- Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware
+- A picture fills its card's tile; the card's hairline lifts to Edge under the pointer
+- Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware; authored moments only at the front door
+- One decorative motif, the drawn Lattice, animated only on the pages before you are signed in
 
 ## Colors
 
@@ -233,10 +220,10 @@ other saturated values in the system.
 ### Primary
 
 - **Layout Blue** (`#2cb4f5`): the machinist's marking dye. It marks what is *live right
-  now* — a valid drop target, the focus ring, a pressed measuring tool, a selected card's
-  outline, upload progress, text selection and the caret — and the marks a measurement draws
-  over a part. It is never used for emphasis, never for a heading, and never on a resting
-  control: Upload and Download stand without it.
+  now* — a valid drop target, the focus ring, a selected card's outline, upload progress,
+  text selection and the caret, and the Lattice's draw head while it is drawing. It is never
+  used for emphasis, never for a heading, and never on a resting control: Upload and Download
+  stand without it.
 
 ### Neutral — four grounds
 
@@ -280,14 +267,14 @@ good, **Verdigris** (`#8fd7d0`) an informational note, **Oxide** (`#e88a8a`) a f
 ### Named Rules
 
 **The Marking Dye Rule.** Layout Blue appears only where something is happening — dragging,
-focused, selected, pressed, uploading. If a screenshot taken at rest contains Layout Blue
-anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without
-a legend.
+focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout
+Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable
+without a legend. "At rest" includes the first frame of a dialog: focus that the page moved
+there by itself, before anybody touched a key, must not draw the ring on a control (see
+Dialogs).
 
-**The Marked Part Rule.** The image well is exempt from The Marking Dye Rule (owner decision,
-2026-09-08), and the licence is now spent: a measurement callout is a Layout Blue line
-between its picks with a mono figure label edged in Layout Blue, drawn in with `tween`. The
-exemption covers marks *on the part* and nothing else in the well.
+**The Marked Part Rule** is retired with measuring (2026-10-03). Nothing draws on a part any
+more, so the image well has no exemption.
 
 **The Fixed Greys Rule.** Text is Quicklime, Chalk, Ash or Graphite and nothing between. A
 fifth text grey is how a hierarchy becomes a gradient nobody can parse; when something needs
@@ -310,9 +297,9 @@ copy and paste somewhere that will accept it. `.tabular` applies both the face a
 
 ### Hierarchy
 
-- **Display** (600, 1.875rem, 1.25, −0.025em): the first-run bench's heading, and only that.
+- **Display** (600, 1.875rem, 1.25, −0.025em): an empty library's heading (`FirstRun`), and only that.
 - **Headline** (600, 1.5rem, 1.25, −0.025em): the one headline of a page past the grid — a
-  part's name on its studio page, Removed parts, Shared libraries, the crash page.
+  part's name on its page, Settings, People, Shared with me, Sign in, the crash page.
 - **Scope** (600, 15px, 1): the line above the grid naming what is on screen, and the title
   of an empty or no-result grid state.
 - **Title** (600, 13–14px, 1.375): card names, clamped to two lines and broken at `-`, `_`
@@ -324,7 +311,7 @@ copy and paste somewhere that will accept it. `.tabular` applies both the face a
 - **Wordmark** (700, 0.75rem, 1, 0.16em, uppercase): "Lapidary" in the header. Uppercased in
   CSS, never in the string, so a screen reader says the name rather than spelling it.
 - **Figure** (JetBrains Mono 400, 10.5–12px, tabular): part numbers, triangle counts, byte
-  sizes, dimensions, volumes, hashes, storage paths, a measurement callout's label.
+  sizes, dimensions, volumes, hashes, storage paths.
 
 **This hierarchy changed.** The previous version stated a 1.25rem/500 headline, a 900-weight
 display horizon and a "no weight between 500 and 900" Don't. None of that was buildable: the
@@ -335,9 +322,11 @@ the levels by size and colour (Quicklime over Ash over Graphite), not by a weigh
 ### Named Rules
 
 **The Copyable Mono Rule.** Anything a user might paste into another program or compare
-against another value — a path, a hash, a part number, a measured dimension — is set in mono
+against another value — a path, a hash, a part number, a dimension — is set in mono
 and is selectable. Mono is a promise that the string is exact and complete, never elided in
-the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo.
+the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo,
+and so does a value cell that holds a sentence ("Not available — give the part its material…"),
+even in a column of mono values.
 
 **The Self-Hosted Font Rule.** Lapidary ships into air-gapped deployments. Archivo (400–700)
 and JetBrains Mono (400–600) are self-hosted from `web/public/fonts/` as variable fonts, two
@@ -357,11 +346,15 @@ at comfortable density, `minmax(8rem, 1fr)` with 12px at compact — and under *
 it is forced to two columns, because one card the width of a phone is a list of pictures
 rather than a grid. The gutter separates tiles; no rule is drawn between them.
 
-**The part page is a studio.** At `lg` it is two zones: the stage on the left (sticky under the
-header, up to 72vh) and a 22rem column on the right read top to bottom — name, Download and
-the ⋯ menu, geometry, then what people recorded. Rarely needed matter (file, identity,
-history) sits under both in two columns after a scribe line. Below `lg`, source order is
-reading order: name and Download first, then the stage, then the rest.
+**The part page is a stage and a column.** At `lg` it is two zones: the stage on the left
+(sticky under the header, up to 72vh) with its filmstrip directly under it, and a 22rem column
+on the right read top to bottom — name, Download and the ⋯ menu, geometry, then what people
+recorded. Rarely needed matter (file, identity, history) sits under both in two columns after a
+scribe line. Below `lg`, source order is reading order: name and Download first, then the
+stage and filmstrip, then the rest.
+
+**The doorway is a split.** The two pages before you are signed in (sign-in and setup) have no
+header. At `lg` they are a 55/45 grid; below it, one column. See Doorway.
 
 **Page anatomy** (`web/src/components/Page.ts`), shared by every page past the grid: one
 Headline, a lead no wider than 70ch in Ash, then sections that open on a Label over a
@@ -369,7 +362,7 @@ Scribe Line (40px above, 16px below) rather than living in bordered boxes, and o
 control. Boxes are for things that float or that you pick up.
 
 Spacing runs 4 / 8 / 12 / 16 / 24 / 32. Inside a card footer, 12px; inside a dialog or menu,
-12–16px; between studio zones, 24–32px. Prose is capped at 70ch everywhere, dialogs included.
+12–16px; between the part page's zones, 24–32px. Prose is capped at 70ch everywhere, dialogs included.
 
 **Layers are four and no others:** header 20, drawer 30, overlay 40 (dialogs, the drop
 overlay — a dialog opened from inside the drawer must not open behind it), skip link 50.
@@ -379,6 +372,9 @@ Native popover menus sit in the top layer and need no number.
 
 **Flat by doctrine.** Depth on the page is tonal layering and hairlines, never shadow: ground
 → surface → scribe line, plus a 1px hover lift that reads as the object rising toward the lamp.
+The header is the one sticky surface that changes once the page scrolls under it: a Scribe
+Line and a `backdrop-filter` blur behind its Machined Slate, so content passing beneath reads
+as beneath. Blur is for that one sticky thing; nothing that scrolls is ever blurred.
 A card under the pointer brightens its edge and lifts; it casts nothing.
 
 **One exception in the page: something floating over it.** A dialog, a menu, and the
@@ -389,14 +385,13 @@ each must read as *above* the page rather than merely lighter. Dialogs pair it w
 **Inside a stage, light is real.** The lamp's radial pool and the part's contact shadow are
 the scene's lighting, not interface elevation: a soft round falloff at 60% black under the
 part's lowest point, 1.5× its footprint, so a part stands on the ground instead of floating
-over it. The turntable fades it in with its step back, because the thumbnail it replaces has
-none.
+over it.
 
 ### Shadow Vocabulary
 
 - **Overlay** (`box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6)`): dialogs, menus and the floating
   selection bar only. Never on a card, a button, an input or anything in the page flow.
-- **Contact** (3D scene only, 60% black radial falloff): under a part on a stage. Never a CSS shadow.
+- **Contact** (3D scene only, 60% black radial falloff): under a part the viewer draws. Never a CSS shadow.
 
 ### Named Rules
 
@@ -405,8 +400,9 @@ on the furniture. The only shadows are the one an overlay throws by being in fro
 and the one a part throws on the lamp's ground.
 
 **The Lamp Rule.** The lamp's pool (Lamp at 50% 42% fading to Anodised Black at the box's
-closest side) is the one gradient in the system and belongs only under a part: the studio
-viewer, the Space stage, the first-run bench. `closest-side`, so no rectangle shows where it stops.
+closest side) is the one gradient in the system and belongs only under a part or a drawing of
+one: the part page's stage, the quick look's stage, the viewer a **view** press opens, and the
+Doorway's left half under the Lattice. `closest-side`, so no rectangle shows where it stops.
 
 ## Shapes
 
@@ -417,18 +413,24 @@ controls. **10px** for cards, stages, dialogs and menus, which hold or float ove
 
 Borders are 1px. Cards, menus and dialogs rest on a Scribe Line border and a card lifts to Edge
 under the pointer; dividers keep the Scribe Line always; anything you can operate is bounded by
-Edge. A card's border is not an ornament on the picture: the render is inset, so the border is
-the only thing that gives the card an edge.
+Edge. A card's border is not an ornament on the picture: a photograph runs to the tile's edge,
+and against a dark photograph the hairline is the only thing that says where the card stops.
+
+Radii nest: a 10px card or dialog holds 7px controls, and a 7px control holds a 4px chip.
+Something inside a rounded thing never has a larger radius than its parent.
 
 ### Named Rules
 
-**The Inset Picture Rule.** A render sits *inset* in its card — 7% on every side of a square
-Bench Grey well, with a transparent background of its own — so a wall of parts reads as objects
-on shelves rather than as a mosaic, and the card's hairline border gives it an edge. The
-turntable canvas matches the same inset so the swap from picture to 3D is unseen.
+**The Filled Tile Rule** (A15; replaces The Inset Picture Rule). A card's picture
+fills its square tile, framed by its row's `fit` and `focus` (`cover` by default), because the
+owner's pictures are photographs and store renders with their own backgrounds, and a 7% inset
+only made them a third smaller. A **stage** is the opposite: it shows the whole picture,
+`contain`, on the lamp (A16), because the stage is where you look at the part, and a crop there
+hides the thing you came to see. The tile crops; the stage never does.
 
-Thumbnails are written with alpha rather than a baked-in background, so a palette change never
-leaves every thumbnail carrying a square that no longer matches the well under it.
+A part with no picture has a Bench Grey well and its format, quietly; the redesign may add the
+static Lattice there (see Lattice). It never shows a blank that looks like a picture failed to
+load.
 
 **The Operable Edge Rule.** If a person can click, type into or drop onto it, its boundary is
 Edge, not Scribe Line. A divider gets the hairline.
@@ -437,76 +439,282 @@ Edge, not Scribe Line. A divider gets the hairline.
 
 ### Motion
 
-One curve (`cubic-bezier(0.2, 0, 0, 1)`), three durations (120 / 180 / 280 ms), transform,
-translate and opacity only. CSS moves every state change; `web/src/lib/motion.ts` is the only
-importer of anime.js and the only place motion is sequenced in script. It reads the durations
-and curve from `styles.css`, so a token edit reaches script too.
+**Rewritten 2026-10-18 (A17).** The previous section named one engine; there are now two, each
+with a fenced home, under one doctrine. The doctrine is the part that matters: an engine is only
+how a rule gets carried out.
 
-- **arrive()** — newly added content (a first page, the next page, a new filter's results):
-  opacity plus a 4px rise at 120 ms. The first 12 elements take turns, step
-  `min(24 ms, (280 − 120) / (n − 1))`, so the whole run lands inside 280 ms; anything after the
-  twelfth lands with it. Reverted on completion so no inline style outranks a hover lift. Never
-  for a refetch of what is already on screen.
-- **tween()** — numbers on a three.js object (a callout's draw-in, a light), at 180 ms by default.
-- **curve()** — the same curve as a function, for a script drawing its own frames.
-- Under reduced motion, script moves jump to their end state, CSS transitions drop to 0.01ms,
-  and the turntable, flight and bench do not move at all.
+**The doctrine.**
+
+- **A change of state takes 120, 180 or 280 ms, on the one curve** (`cubic-bezier(0.2, 0, 0, 1)`).
+  120 for hover and a scrim; 180 for a state change — a dialog, a menu, a step, a crossfade, a
+  route; 280 for the longest a person waits on anything they asked for — the quick look's flight,
+  a whole `arrive()` run. Nothing a person does every day takes longer.
+- **Springs are for layout only**, and critically damped: `{ type: 'spring', visualDuration: 0.28,
+  bounce: 0 }`. A spring moves something that changed *place* — the marker under the current
+  place, the stepper's rail marker, the Lattice sliding into setup's left column — because a
+  layout change can be interrupted halfway and a spring picks up from where it is. It never
+  overshoots: bounce is a toy's motion, and this is a tool. Hover, opacity and presence are never
+  springs.
+- **Authored moments exist only at the front door**, and every one can be skipped. The sign-in
+  page's Lattice drawing itself and the intro into setup are the whole list. They get the two
+  long tokens: `--duration-scene` (480 ms, one scene inside a moment, such as the diamond and
+  Lattice drawing in at the centre) and `--duration-intro` (900 ms, the ceiling for a whole
+  moment, end to end). A key, a click or the visible **Skip** ends a moment at its end state.
+  Inside the app there are no authored moments: a person opens it forty times a day, and an
+  animation that was charming once is a wait the fortieth time.
+- **Nothing loops.** No shimmer that repeats, no idle drift, no breathing glow. Anything that
+  moves on its own stops within 5 s and stays still (WCAG 2.2.2). A skeleton is static or shimmers
+  once.
+- **Only `transform`, `opacity` and SVG `stroke-dashoffset` are animated** — `translate`, `scale`
+  and `rotate` are transform. The Lattice is rotated through its SVG `transform` attribute, never
+  by animating `d`, `points` or a coordinate. Nothing animates `width`, `height`, `top`, `left`,
+  `filter`, colour or `box-shadow`; a hover's border brightening is a colour change with no
+  transition at all, under the 1px lift that does move.
+- **Reduced motion is the end state**, never a slower or shorter version. CSS transitions drop to
+  0.01 ms (`styles.css`), `arrive()` and `drawIn()` jump, the flight does not fly, and
+  `MotionRoot` passes `{ duration: 0 }` to everything under it when `reduced()` is true. A
+  front-door moment does not play at all: the Lattice is drawn and settled in its first frame.
+- **Blue at rest is still a defect.** The Lattice's draw head is Layout Blue only while it is
+  moving; when a moment ends, or is skipped, or never starts, there is no blue left on the page
+  but the brand mark.
+- **Every Motion element carries `transition-none`.** `styles.css` gives every element a base
+  transition on `transform`, `translate` and `opacity` (so that every hover lift actually runs).
+  An engine that writes those properties every frame would have each write eased again by CSS,
+  and the motion smears. The primitives in `motion-react.tsx` put `transition-none` on their
+  `m.div` themselves, so feature code cannot forget it; an anime.js target gets it too.
+- **Motion must say something.** Each animation answers one of: something arrived, something
+  left, something changed place, or this is where you are. "It looks nice" is not on the list.
+
+**The two engines, and where each may be imported.** A test (`web/src/lib/motion.test.ts`,
+generalised by A18) fails the build if either is imported anywhere else, and bans
+`framer-motion` outright.
+
+- **anime.js** (pinned) is imported only by `web/src/lib/motion.ts`. It does sequences and
+  staggers on real DOM and SVG nodes, outside React's render:
+  - **arrive()** — newly added content (a first page, the next page, a new filter's results):
+    opacity plus a 4px rise at 120 ms. The first 12 elements take turns, step
+    `min(24 ms, (280 − 120) / (n − 1))`, so the whole run lands inside 280 ms; anything after
+    the twelfth lands with it. Reverted on completion so no inline style outranks a hover lift.
+    Never for a refetch of what is already on screen. Unchanged by the redesign.
+  - **drawIn()** (A18) — the Lattice drawing itself: anime's `createDrawable` and a stagger over
+    its edges on `stroke-dashoffset`, inside `--duration-intro`.
+  - **tween()** — numbers on a three.js object, at 180 ms by default.
+  - **curve()** — the same curve as a function, for a script drawing its own frames.
+- **motion** — motion.dev's MIT `motion` package, pinned exactly and bundled by Vite, so an
+  air-gapped install has it — is imported only by `web/src/lib/motion-react.tsx` and
+  `web/src/lib/motion-features.ts`. It does presence (things entering and leaving React's tree)
+  and layout (`layoutId`), which anime cannot see:
+  - `MotionRoot`, in the root: `LazyMotion strict` with `domMax` loaded lazily from
+    `motion-features.ts`, and `MotionConfig reducedMotion="user"`.
+  - `Presence`, and the primitives `Fade`, `Rise`, `Step` and `Indicator`, each an `m.div` with
+    `transition-none`. Feature code uses these and nothing else; a component that wants a new
+    kind of motion adds a primitive here, under the same rules.
+  - Motion+ (motion.dev/ui) is paid and is not used; anything like it is built in-house as a
+    primitive.
+- **The tokens are shared.** They live in `styles.css @theme` — `--ease-mechanical`,
+  `--duration-fast` / `-base` / `-slow`, and A18's `--duration-scene` / `--duration-intro`. The
+  anime-free math (`tokens`, `durationMs`, `reduced`, `staggerStep`, `curve`) moves into
+  `web/src/lib/motion-tokens.ts`, which both engines read and `motion.ts` re-exports, so the
+  root never pulls anime into the entry bundle.
+- **Which engine.** Something entering or leaving React's tree, or changing place in the layout:
+  motion. A sequence or stagger over nodes that already exist, an SVG drawing itself, a number on
+  a three.js object: anime. A single element changing state on hover or focus: CSS, as it always
+  was. Never two engines on one element.
+
+**The motion in the app**, after the redesign (A18–A24):
+
+- **Routes.** `__root.tsx` wraps `<Outlet>` in `<Rise key={pathname}>`: enter only, 180 ms, 8px.
+  No exit, so two pages never share the DOM and a route change never waits.
+- **The places marker.** The current place in Parts, Dashboard and Shared with me is underlined by
+  one shared `layoutId` marker that moves between them, 180 ms, no bounce.
+- **Menus** scale from 0.98 and fade in over 120 ms, from their anchor (`transform-origin` at the
+  button).
+- **Dialogs** arrive and leave by presence (see Dialogs).
+- **The quick look's flight.** The part's picture travels from the card it was opened from to its
+  place on the stage, 280 ms, one `transform` measured at the click (`flipFrom`, unchanged). The
+  Carried Picture Rule.
+- **The filmstrip.** Choosing a picture crossfades it onto the stage over 180 ms.
+- **Cards.** `arrive()` on new pages; a 1px lift on hover at 180 ms. Nothing else.
+
+### Doorway
+
+The frame for the two pages a person sees before they are signed in: sign-in and setup
+(`web/src/components/Doorway.tsx`). No header, no places, no menu, because none of them work yet.
+It is the only place in the product shaped like a front page, and it gets the only authored
+motion.
+
+- **At `lg` and wider, a 55/45 grid**, full height (`min-h-dvh`, never `min-h-screen`, which jumps
+  under a phone's address bar). **The left half** is an `aside`: the `stage-lamp` pool, the
+  Lattice drawn on it, and at its foot the diamond, the wordmark and one pitch line from
+  `strings.ts` in Ash. **The right half** is the form, `max-w-sm`, centred in its half both ways,
+  with the page's one Headline over it.
+- **Why 55/45.** The drawing is the reason the split exists, so it gets the larger half; the form
+  needs only 24rem, and a form centred in 45% of a wide screen sits where the eye already is.
+  50/50 reads as two equal things competing; this is one thing and its frame.
+- **Below `lg`**, one column: the Lattice becomes a band about 9rem tall above the form, the pool
+  still under it, and the form follows at full width with a 16px gutter.
+- **The left half shows no data**, ever. A signed-out page cannot show anybody's parts, pictures,
+  names or counts. The Lattice is drawn from a pure, deterministic function, not from a part. And
+  no invented testimonial or user count either: PRODUCT.md calls the product pre-alpha.
+- **The form keeps its labels, names and order.** Labels above fields, the standing **Sign in**
+  never wrapping, and the forgot-password note under it, never beside it (at 390 beside it wrapped
+  the button onto two lines).
+- **Setup** uses the same split: the left half holds the Lattice and the Stepper; the right holds
+  the step. See Stepper.
+
+### Lattice
+
+The drawn motif: a part laid out as a fine triangle mesh, the way geometry looks before it is cut.
+It is the only decoration in the product, which is why it is allowed only where there is nothing
+else to show.
+
+- **What it is.** An SVG of a low-poly part — a spur gear or a bracket — produced by a pure,
+  deterministic `lattice()` in `web/src/lib/lattice.ts` (A19), unit-tested for its edge count, no
+  duplicate edges, every point inside the viewBox, and the same output every time. It is drawn
+  by `web/src/components/Lattice.tsx`, `aria-hidden`, because it says nothing a reader needs.
+- **Strokes.** 1px (`vector-effect: non-scaling-stroke`), round joins. Settled, the edges are
+  **Edge** (`#65656d`) for the silhouette and **Scribe Line** (`#26262b`) for the interior
+  triangulation, so the outline reads first and the mesh is texture. No fill except the lamp under
+  it. No second hue.
+- **The draw head.** While an edge is drawing, its leading end — the last few percent of its
+  length — is Layout Blue, the marking dye moving across the bench. The head exists only while the
+  stroke is moving; each edge settles to its grey the moment it is complete.
+- **It settles in under 5 s**, and the authored part of it, on sign-in, inside `--duration-intro`.
+  Then it stays still. **It never loops**, never drifts, never redraws on hover or on focus.
+- **Reduced motion: static.** It is rendered in its final frame — every edge drawn, every edge
+  grey, no blue — and never moves.
+- **It is a lazy import** from sign-in and setup only, so the grid's bundle never carries it.
+- **The static form**, the same drawing at rest with no draw-in, may stand in for a missing
+  picture on a card or a stage, at Scribe Line only. That is a decision for A21/A23; if they use
+  it, it never animates there.
+
+### Stepper
+
+Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
+
+- **On the left**, under the Lattice: a vertical list of the steps — Account, Server, Options —
+  each a 13px Title with the current one in Quicklime and `aria-current="step"`, the done ones in
+  Ash with a 12px check glyph, the ones ahead in Graphite. Beside it a 1px Scribe Line rail, with
+  a 2px Edge marker over the current step's length that moves by `layoutId` (the layout spring).
+  The marker is grey: progress is not live interaction, so it is not blue.
+- **On the right**, the step's content, in `AnimatePresence mode="wait"`: the old step leaves to
+  the left over 120 ms, the new one arrives from the right over 180 ms, 8px each way; **Back**
+  reverses both. Under reduced motion it swaps.
+- **One `<form>`**, and nothing is saved until **Finish**. Back keeps what was typed. A refused
+  setup code goes back to the step that holds that field, with the message under the field.
+- **Below `lg`**, the stepper is a single line above the step: "Step 2 of 3 · Server", the rail
+  as a horizontal hairline under it.
+- **The intro into setup** (once per page load, inside `--duration-intro`): the diamond and the
+  Lattice draw in at the centre over `--duration-scene`; then the Lattice slides into the left
+  column (`layoutId`) while the wizard rises 8px and fades in. A key, a click or **Skip** ends it.
+  Under reduced motion it does not play.
+- **Done.** The Lattice's lines settle and the diamond fills while `followRestart` or `followPort`
+  runs. The animation never delays either: if the server answers first, the page moves on.
 
 ### Buttons
 
 - **Standing:** Anodised Black fill, 1px Edge, 7px radius, Quicklime label at 14px/600, 8px/16px
-  in the page anatomy (`Page.ts`), 6px/12px beside the part page's ⋯ menu.
-  The one action a region is about — Download on the part page, Upload in the header (12px,
-  icon plus label, the label hidden under `sm`) and on the first-run bench. Never blue at rest;
-  it is brighter and heavier than the quiet controls beside it, and that is enough.
-- **Quiet:** transparent, 1px Edge, 7px radius, Graphite label at 12px, 24px tall. Every
-  secondary action: Select, View, New category, measuring tools. Pressed takes a Layout Blue
-  edge and a Quicklime label.
+  in the page anatomy (`Page.ts`), 6px/12px beside the part page's ⋯ menu. The one action a
+  region is about — Download on the part page, Upload in the header (12px, icon plus label, the
+  label hidden under `sm`), Sign in, Finish. One per region: when two controls in a row both
+  stand, neither does. Never blue at rest; it is brighter and heavier than the quiet controls
+  beside it, and that is enough. A label never wraps: shorten it or give it the row.
+- **Quiet:** transparent, 1px Edge, 7px radius, Graphite label at 12px, 24px tall (32px beside a
+  field, matching the field). Every secondary action: Select, View, New category, Check. Pressed
+  takes a Layout Blue edge and a Quicklime label.
 - **Hover / Focus:** label lifts Graphite → Chalk, and a standing control rises 1px, over 120 ms.
-  Focus is one ring for the whole app: 2px Layout Blue, offset 2px.
-- **Disabled:** 50–60% opacity, no lift.
+  Focus is one ring for the whole app: 2px Layout Blue, offset 2px, on `:focus-visible`.
+- **Disabled:** 50% opacity, no lift, and visibly different from a resting quiet button.
+- **Overlay control** (the stage's View, A23): Machined Slate plate, 1px Edge, 7px radius, Chalk
+  label, set on the stage's foot, never directly on the lamp (Edge does not clear 3:1 there).
 
 ### Header (AppFrame)
 
-The one header, sticky, Machined Slate over a Scribe Line: the mark and wordmark, the places
-switch (Parts, Removed parts, Shared libraries — a Bench Grey tray, 3px padding, with the
-current place raised; its 8px corner is an off-ladder one-off, not a fourth radius), search, the Library menu and Upload. The brand mark is a 19px Layout Blue diamond,
-the one resting use of the accent. Under `md` a menu button opens the drawer and search wraps
-to its own row. A skip link sits above everything at z 50.
+The one header, sticky, 56px, Machined Slate: the mark and wordmark, the places (Parts,
+Dashboard, Shared with me), search, then the page's own controls and the account menu. The
+brand mark is a 19px Layout Blue diamond, the one resting use of the accent. A skip link sits
+above everything at z 50.
+
+- **The current place** is marked by text weight and a 2px Quicklime underline marker that moves
+  between places (`layoutId`, 180 ms, no bounce). It replaces the old Bench Grey tray (and the
+  tray's off-ladder 8px radius). A page in the account menu (Profile, Settings, People) marks the
+  account button; the part page keeps Parts marked.
+- **Once the page scrolls**, the header gains its Scribe Line and the blur behind it. At the top
+  it sits flush on the ground.
+- **One standing control on the right**: Upload. Library and Import are quiet. Two controls with
+  one intent side by side read as a choice nobody can make.
+- **Under `md`** it is one row: menu, mark, search (an icon that expands to the row), account.
+  The places, the library switch and Import move into the drawer. Three header rows — 140px of a
+  844px phone, measured in the audit — is the page before the parts.
+- `<meta name="theme-color">` matches Anodised Black, so a phone's browser chrome is part of the
+  room.
 
 ### Menus
 
 Native popovers (`popover="auto"`) anchored under their button where CSS anchor positioning
 exists: 16rem, Machined Slate, Scribe Line border, 10px radius, 12px padding, overlay shadow,
-arriving with the panel's 4px rise. Escape, click-outside and focus return come from the browser.
-The part page's ⋯ menu holds every per-part action that is not Download.
+arriving by scaling from 0.98 and fading in over 120 ms from the button's corner. Escape,
+click-outside and focus return come from the browser. The part page's ⋯ menu holds every
+per-part action that is not Download.
+
+### Dialogs
+
+`web/src/components/Dialog.tsx`, used by Import, Share, the folder picker, delete and link
+import. Machined Slate, Scribe Line border, 10px radius, 16px padding, the overlay shadow, over a
+60% black scrim.
+
+- **Arrival and departure are presence** (A22), replacing the `scrim-in` and `panel-in` keyframes:
+  the scrim fades over 120 ms and the panel rises 4px and fades over 180 ms; leaving is the same,
+  reversed, at 120 ms. Focus handling is unchanged: focus moves in, is trapped, and returns to the
+  control that opened it.
+- **First focus goes to the first field**, or to the dialog's heading (`tabIndex={-1}`) when it
+  has none — never to the close button, whose focus ring would put Layout Blue in the dialog's
+  first frame.
+- **The title is Scope** (15px/600, Quicklime), the lead Ash and no wider than 70ch.
+- **One standing control**, at the foot, right-aligned: the dialog's verb, standing only once it
+  can act ("Add 3 selected", not "Add 0 selected").
+- **No raw native widgets.** A file input is visually hidden behind a quiet button and a Graphite
+  line saying what was chosen.
+- **Under `sm`**, a dialog is a sheet from the bottom at full width, its scrim over the header too;
+  `overscroll-behavior: contain` on its scroller, as on the drawer.
 
 ### Cards / Containers
 
 - **Corner Style:** 10px (7px for a list row)
-- **Background:** Machined Slate; the image well inside is Bench Grey, square, render inset 7%
+- **Background:** Machined Slate; the picture fills the square tile (The Filled Tile Rule)
 - **Shadow Strategy:** none — see Elevation & Depth
 - **Border:** 1px Scribe Line at rest, Edge under the pointer, plus a 1px lift over 180 ms
-  (a list row brightens its edge with no lift). Selected adds a 2px Layout Blue outline.
-- **Footer:** 12px padding; the name in Title, Quicklime, clamped to two lines and broken at
-  separators (one truncated line in the gallery overlay, so the name never covers the part); one mono figures line at 11px in Graphite — part number in Ash, a `·`, the
-  triangle count, and a lowercase "approximate" with a dotted Edge underline whose title
-  explains it. Present at rest, always; nothing about a part hides behind hover.
-- **Turntable:** a pointer resting 150 ms on a card (hover-capable screens, WebGL, no reduced
-  motion) swaps the thumbnail for a canvas drawn under the thumbnail's own light and framing.
-  It holds still through the 180 ms crossfade, steps back over 280 ms to a framing that holds
-  the part at every angle, then turns once every 8 s.
+  (a list row brightens its edge with no lift). No glow, no blue, no scale. Selected adds a 2px
+  Layout Blue outline.
+- **Footer:** 12px padding, a fixed height so a row of cards lines up whatever the names; the
+  name in Title, Archivo 600, Quicklime, clamped to two lines and broken at separators (one
+  truncated line in the gallery overlay, so the name never covers the part); one mono figures
+  line at 11px in Graphite: the format chip, part number in Ash, the triangle count, and the
+  approximate mark with its dotted Edge underline whose title explains it. Present at rest,
+  always; nothing about a part hides behind hover.
+- **No picture:** the tile is Bench Grey with the format in it, quietly, or the static Lattice
+  (A21 decides). Forty identical dark squares with a centred word, as the audit found, tell a
+  person nothing they cannot read in the footer.
+- **Hovering a card loads no mesh** and draws no canvas. `Grid.test.tsx` asserts it.
+- **Skeletons** are the card's own shape in Bench Grey, static, or shimmer once. `arrive()`
+  replaces them.
 
 ### Chips
 
-- **Style:** one chip ships, the active filter: a pill, Machined Slate ground, Chalk label at
-  12px, 1px Layout Blue edge (it is a live narrowing), 4px/12px padding, a 12px close glyph.
+- **Style:** the active filter is a pill, Machined Slate ground, Chalk label at 12px, 1px Layout
+  Blue edge (it is a live narrowing), 4px/12px padding, a 12px close glyph. A format chip on a
+  card is a 4px-radius Bench Grey label in mono Graphite, with no edge: it is a fact, not a
+  control.
 - **State:** a chip that narrows a result set says what it narrowed to and dismisses on click,
   widening the search. It lifts 1px on hover.
 
 ### Inputs / Fields
 
 - **Style:** Bench Grey ground, 1px Edge, 7px radius, Chalk text at 13–14px, Graphite placeholder
+- **Label above, hint below**, the hint at 12px in Graphite, never 11px
+- **Read-only values are not inputs.** A value nobody can change here (the port, the models
+  folder) is mono text on the ground, with no Edge: an Edge border promises you can type. The
+  audit found the Port drawn as an input.
 - **Focus:** the border goes Layout Blue under the global ring; the caret is Layout Blue
 - **Error:** the message sits below the field in Body, says what is wrong and what to do, and
   is announced — never colour alone
@@ -516,7 +724,7 @@ The part page's ⋯ menu holds every per-part action that is not Download.
 The category rail is a flat list: indentation and a disclosure caret carry depth. The selected
 row is Chalk on Machined Slate; unselected rows are Graphite on the ground. A row that is a
 valid drop target during a drag takes a 1px Layout Blue outline. Under `md` the rail slides in
-from the left as a drawer over a scrim, on `translate`.
+from the left as a drawer over a scrim, on `translate`, with `overscroll-behavior: contain`.
 
 ### Upload and the drop overlay
 
@@ -531,38 +739,31 @@ Phosphor, regular weight, vendored as path data in `web/src/components/Icon.tsx`
 `currentColor`, always `aria-hidden`, always inside a control that carries its own text label.
 Add a glyph by copying its path, never by installing the package.
 
-### The Stage (Space)
+### The stage and filmstrip
 
-Space on a card's name puts the part on a stage in a large dialog: the render on the lamp's
-pool, its name and mono figures beside it, arrows walking to the next and previous part.
-The render flies in from the card — the system's one authored flight.
+The part page and the quick look each have one stage: the lamp's pool (`stage-lamp`), 10px
+radius, holding the part.
 
-**The flight.** The scrim fades at 120 ms and the box rises 4px at 180 ms. The part's render
-then travels from the rectangle the card occupied to the one the stage gives it, at 280 ms on
-the mechanical curve: a single `transform`, measured at the click rather than at mount. Under
-reduced motion the flight does not happen and the stage still opens.
-
-### The Studio (part page)
-
-The part on a lamp-lit stage (three.js, studio lights, flat-shaded pale-grey material, contact
-shadow) with a Machined Slate dock of measuring and section tools under it; the name as
-Headline, the part number in mono Ash, Download standing beside a quiet ⋯ menu; then Geometry
-as label-over-rule with every figure in mono and every mesh-derived one marked approximate.
-A measurement draws a Layout Blue line between its picks and a mono label edged in Layout
-Blue, drawn in with `tween`. The thumbnail poster fades out over the first frame rather than
-cutting, since the studio is lit differently from the picture.
-
-Under both zones, an "On this page" index: 14px Ash links underlined in Edge, lifting to Quicklime,
-one per section that actually rendered (assembly, PMI, file, identity, history), each labelled
-with its section's own heading, over the sections in two balanced columns. Links, never tabs:
-every section stays in the page.
-
-### The First-Run Bench
-
-An empty library is a Display heading, one Ash sentence, a standing Upload and a drop hint,
-beside a 16:10 lamp stage holding three real example parts (spur gear, flange, vee block)
-lit as the grid will light them. The key light sweeps ±25° over 12 s. The scene is
-`aria-hidden` and absent without WebGL; the words are the page.
+- **The whole picture, always.** `contain`, never `cover` (A16; The Filled Tile Rule). A square
+  store picture on a wide stage has lamp on both sides, and that is correct.
+- **No picture is still a stage.** The lamp, the format and, if A23 takes it, the static Lattice.
+  The audit found a 600px black void under a full-width View bar.
+- **View** is an overlay control on the stage's foot, keeping its accessible name. Pressing it
+  hands the browser the original mesh and three.js draws it on the same pool, with the contact
+  shadow — the one place three.js draws.
+- **The filmstrip** sits directly under the stage, not at the foot of the column: a row of
+  64px tiles (filled, 7px radius, Scribe Line, Edge under the pointer, the current one with a
+  2px Quicklime underline). Choosing one crossfades it onto the stage over 180 ms. A15's move
+  controls and drag stay on the tiles. The add-picture controls are the strip's last tile. When a
+  part has no pictures, the strip is that one tile.
+- **The quick look** at 1280 and wider is a non-modal pane beside the grid; narrower it is a
+  modal dialog (a bottom sheet under `sm`). It always has a stage, so View sits on it rather than
+  alone on a row. A section with nothing in it (PICTURES with no pictures) is not rendered.
+- **The flight.** The picture flies from the card into the stage, 280 ms (`flipFrom`). Under
+  reduced motion it does not fly and the stage still opens.
+- **The column beside it** is label-over-rule sections. An add-form (tag, material, source) opens
+  from a quiet **Add** in its label row rather than standing open, so the column reads as the part
+  and not as a form.
 
 ### Named Rules
 
@@ -570,40 +771,45 @@ lit as the grid will light them. The key light sweeps ±25° over 12 s. The scen
 itself moves into it. A stage that merely appears makes a person look back at the grid to
 check they opened what they meant to.
 
-**The Four Lit Places Rule.** three.js draws in the studio viewer, the turntable, the Space
-stage and the first-run bench, and nowhere else. Every light and material is defined once in
-`studio.ts`, in two pairs: the turntable and the bench use the raster pair, which matches
-`raster.rs`'s thumbnail shading to the byte, so the crossfade from picture to model is unseen;
-the studio viewer uses the studio trio (a cool-neutral hemisphere fill over a bench-coloured
-ground, the key along the thumbnail's light direction, a faint rim from behind) under sRGB
-output, because it is turned and a front-lit part goes flat, and because its marks, ghost and
-section cap are unlit colours chosen in sRGB that a linear output would shift.
+**The One Lit Place Rule** (replaces The Four Lit Places Rule). three.js draws in the viewer a
+**view** press opens, on the part page's stage or the quick look's, and nowhere else. Every light
+and material is defined once in `studio.ts`: a cool-neutral hemisphere fill over a
+bench-coloured ground, one key light, a faint rim from behind, under sRGB output.
+
+**The Front Door Rule.** The only authored motion, the only decorative drawing and the only
+55/45 split are on the pages before sign-in. Inside the app, motion reports a change and
+nothing more.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** keep Layout Blue (`#2cb4f5`) for live interaction and for marks drawn on a part. A
-  resting screenshot containing it anywhere but the brand mark is a defect.
+- **Do** keep Layout Blue (`#2cb4f5`) for live interaction and for the Lattice's draw head while
+  it moves. A resting screenshot containing it anywhere but the brand mark is a defect.
 - **Do** set every pasteable or comparable figure — path, hash, part number, dimension,
   count — in mono with tabular figures, selectable, never middle-elided.
 - **Do** show a card's name, figures and approximate label at rest, and reach every per-part
   action from the part page, so nothing exists only behind a pointer.
 - **Do** give a page one Headline (600, 1.5rem), a 70ch lead, label-over-rule sections and one
   standing control, from `Page.ts`.
-- **Do** label every mesh-derived measurement as approximate wherever it appears, including
-  the stage, the studio, dialogs and tooltips.
-- **Do** put a part on the lamp's ground with its contact shadow whenever three.js draws it.
-- **Do** sequence script motion only through `web/src/lib/motion.ts`, inside 280 ms end to end.
+- **Do** label every mesh-derived figure as approximate wherever it appears, including the stage,
+  dialogs and tooltips.
+- **Do** show the whole picture on a stage, and fill the tile on a card.
+- **Do** import anime.js only in `web/src/lib/motion.ts`, and `motion` only in
+  `web/src/lib/motion-react.tsx` and `web/src/lib/motion-features.ts`; feature code uses their
+  primitives.
+- **Do** put `transition-none` on every element an engine moves.
+- **Do** make every front-door moment skippable by a key, a click or Skip, and absent under
+  reduced motion.
 - **Do** use the z scale (20 / 30 / 40 / 50) for anything layering over the page; a local
   `z-10` inside a card or the grid (a select checkbox, the sticky selection bar) is not a layer.
 - **Do** self-host Archivo and JetBrains Mono, `latin` + `latin-ext`.
-- **Do** route every user-facing string through `web/src/lib/strings.ts`.
+- **Do** route every user-facing string through `web/src/lib/strings.ts`, and write `…`, never `...`.
 
 ### Don't:
 
-- **Don't** set a card's render edge to edge or drop the card's hairline; the render is inset
-  and the border is the card's only edge.
+- **Don't** drop a card's hairline; against a dark photograph it is the card's only edge.
+- **Don't** crop a picture on a stage.
 - **Don't** add a box-shadow to anything that is not a dialog, a menu or the floating
   selection bar.
 - **Don't** introduce a fifth text grey, a second accent hue, or a fourth radius.
@@ -611,9 +817,13 @@ section cap are unlit colours chosen in sRGB that a linear output would shift.
   and names are 600, labels 500, the wordmark alone 700.
 - **Don't** fill a standing control with Layout Blue; Upload and Download stand in Quicklime.
 - **Don't** put a stage's controls directly on the lamp; Edge does not clear 3:1 there, so they
-  sit on a Machined Slate dock.
+  sit on a Machined Slate plate.
 - **Don't** let colour alone carry a state. Every state has a second cue: a label, an
   outline, a position, an icon.
 - **Don't** word an eviction so it reads as deletion, or a removal so it reads as a saving.
-- **Don't** animate anything but `transform`, `translate` and `opacity`, or past 180 ms for a
-  state change; 280 ms is for the flight, the turntable's step back and a whole arrival run.
+- **Don't** animate anything but `transform`, `translate`, `opacity` and SVG `stroke-dashoffset`,
+  or past 180 ms for a state change; 280 ms is for the flight and a whole arrival run, and the
+  scene and intro tokens are for the front door alone.
+- **Don't** loop anything, bounce anything, or put a spring on anything but a layout change.
+- **Don't** import `framer-motion`, or Motion+.
+- **Don't** show anybody's data, a testimonial or a user count on a signed-out page.

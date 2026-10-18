@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-17T16:55:51.608728+00:00",
+  "generatedAt": "2026-10-18T00:00:00+00:00",
   "title": "Design System: Lapidary",
   "extensions": {
     "colorMeta": {
@@ -280,22 +280,37 @@
       {
         "name": "ease-mechanical",
         "value": "cubic-bezier(0.2, 0, 0, 1)",
-        "purpose": "The one curve, CSS and script."
+        "purpose": "The one curve, CSS and both engines."
       },
       {
         "name": "duration-fast",
         "value": "120ms",
-        "purpose": "Hover, scrim fade, one arrival."
+        "purpose": "Hover, scrim fade, a menu, a step leaving, one arrival."
       },
       {
         "name": "duration-base",
         "value": "180ms",
-        "purpose": "State changes, panel rise, turntable crossfade, tween default."
+        "purpose": "State changes: a dialog, a step arriving, a crossfade, the places marker, a route enter, tween default."
       },
       {
         "name": "duration-slow",
         "value": "280ms",
-        "purpose": "The quick-look flight, the turntable step back, a whole staggered arrival run."
+        "purpose": "The quick-look flight, a whole staggered arrival run. The ceiling for anything inside the app."
+      },
+      {
+        "name": "duration-scene",
+        "value": "480ms",
+        "purpose": "One scene of a front-door moment (the diamond and Lattice drawing in). Added by A18."
+      },
+      {
+        "name": "duration-intro",
+        "value": "900ms",
+        "purpose": "The ceiling for a whole front-door moment, end to end; always skippable. Added by A18."
+      },
+      {
+        "name": "spring-layout",
+        "value": "{ type: 'spring', visualDuration: 0.28, bounce: 0 }",
+        "purpose": "Layout changes only (layoutId markers, the Lattice into setup's column). Critically damped, never overshoots."
       },
       {
         "name": "arrive-stagger",
@@ -303,14 +318,9 @@
         "purpose": "arrive() in lib/motion.ts."
       },
       {
-        "name": "turntable-turn",
-        "value": "8000ms per turn",
-        "purpose": "Card turntable."
-      },
-      {
-        "name": "bench-sweep",
-        "value": "12000ms, ±25°",
-        "purpose": "First-run key light."
+        "name": "lattice-settle",
+        "value": "< 5000ms, once",
+        "purpose": "The Lattice settles to grey and stays still. Nothing loops."
       }
     ],
     "breakpoints": [
@@ -397,7 +407,7 @@
       "refersTo": "card-part",
       "description": "Inset render in a Bench Grey well, two-line name, one mono figures line with the approximate label at rest.",
       "html": "<article class=\"ds-card\"><div class=\"ds-well\"><div class=\"ds-render\"></div></div><div class=\"ds-foot\"><h3 class=\"ds-name\">flange-dn40-lp-3310-02</h3><p class=\"ds-figs\"><span>784 triangles</span> <span class=\"ds-approx\">approximate</span></p></div></article>",
-      "css": ".ds-card{width:180px;background:#1a1a1d;border:1px solid #26262b;border-radius:10px;overflow:hidden;transition:translate 180ms cubic-bezier(0.2,0,0,1)}.ds-card:hover{border-color:#65656d;translate:0 -1px}.ds-well{aspect-ratio:1;background:#17171b;padding:7%;display:grid}.ds-render{border-radius:50%;background:#b8bcc4}.ds-foot{padding:12px}.ds-name{margin:0;font:600 13px/1.375 Archivo,sans-serif;color:#f0f0f2}.ds-figs{margin:6px 0 0;font:400 11px 'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#8a8a92}.ds-approx{text-decoration:underline dotted #65656d;text-underline-offset:2px}"
+      "css": ".ds-card{width:180px;background:#1a1a1d;border:1px solid #26262b;border-radius:10px;overflow:hidden;transition:translate 180ms cubic-bezier(0.2,0,0,1)}.ds-card:hover{border-color:#65656d;translate:0 -1px}.ds-well{aspect-ratio:1;background:#17171b;display:grid}.ds-render{border-radius:50%;background:#b8bcc4}.ds-foot{padding:12px}.ds-name{margin:0;font:600 13px/1.375 Archivo,sans-serif;color:#f0f0f2}.ds-figs{margin:6px 0 0;font:400 11px 'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#8a8a92}.ds-approx{text-decoration:underline dotted #65656d;text-underline-offset:2px}"
     },
     {
       "name": "Lamp Stage with Callout",
@@ -418,24 +428,20 @@
   ],
   "narrative": {
     "northStar": "The Lit Bench",
-    "overview": "A machinist's bench under a single task lamp. The parts are lit; the bench is not. Every surface in this interface exists to be the unlit surround for a rendered object — the ground is near-black, the chrome is grey on grey, and the only saturated colour in the room appears when you are doing something. The user's pinned reference is ArtStation's community browse page, and what it gets right is exactly this: a dark room, a dense wall of work, and chrome so quiet you stop seeing it after four seconds.\n\nThe register is quiet, precise and unhurried. Nothing raises its voice. Trust is earned by being exact rather than by being emphatic, which is why secondary text outnumbers primary text and why the interface has no decorative colour at all. This is a tool a person opens forty times a day for six seconds each time; it must be legible at a glance and invisible in memory.\n\nWhere the lamp actually falls is now built. A part is shown in one of four lit places — the part page's studio viewer, the card's turntable under the pointer, the Space stage, and an empty library's first-run bench — each drawn under the same light as the thumbnails, and every one but the turntable (which stays inside its card's well) on the one non-flat ground in the system, the lamp's pool, with the part set down on a soft contact shadow. Everything outside those places is flat, tonal and silent.",
+    "overview": "A machinist's bench under a single task lamp. The parts are lit; the bench is not. Every surface in this interface exists to be the unlit surround for a pictured object — the ground is near-black, the chrome is grey on grey, and the only saturated colour in the room appears when you are doing something. The user's pinned reference is ArtStation's community browse page, and what it gets right is exactly this: a dark room, a dense wall of work, and chrome so quiet you stop seeing it after four seconds.\n\nThe register is quiet, precise and unhurried. Nothing raises its voice. Trust is earned by being exact rather than by being emphatic, which is why secondary text outnumbers primary text and why the interface has no decorative colour at all. This is a tool a person opens forty times a day for six seconds each time; it must be legible at a glance and invisible in memory.\n\nThe lamp falls in one kind of place: a stage. The part page and the quick look each have one, and it holds the part's own picture, whole, on the lamp's pool. When somebody presses view, three.js draws the original mesh on that same pool, set down on a soft contact shadow. Everything outside a stage is flat, tonal and silent.\n\nThe cutting bench (2026-10-18). The redesign adds one motif and no new colour: geometry drawn as fine grey lines, the way a part looks laid out on a marking table before it is cut. At full size it is the Lattice, and it appears in only two places, the sign-in page and setup. Everywhere else the same idea shows only as hairlines: the Scribe Line, a stepper's rail, the marker under the current place.",
     "keyCharacteristics": [
       "Near-black ground; the part on its lamp-lit stage is the only lit thing on the page",
       "Archivo for every word, JetBrains Mono for every figure; headings share one weight (600) and part by size and colour",
-      "One saturated colour, reserved for live interaction and for marks drawn over a part",
+      "One saturated colour, reserved for live interaction and the Lattice's draw head while it moves",
       "Flat by tonal layering; a shadow only under something that floats over the page",
-      "Renders inset 7% in a Bench Grey well on a bordered card, lifting to Edge under the pointer",
-      "Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware"
+      "A picture fills its card's tile; the card's hairline lifts to Edge under the pointer",
+      "Motion is mechanical: transform and opacity, 120/180/280 ms, one curve, always reduced-motion aware; authored moments only at the front door",
+      "One decorative motif, the drawn Lattice, animated only on the pages before you are signed in"
     ],
     "rules": [
       {
         "name": "The Marking Dye Rule",
-        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, pressed, uploading. If a screenshot taken at rest contains Layout Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without a legend.",
-        "section": "colors"
-      },
-      {
-        "name": "The Marked Part Rule",
-        "body": "The image well is exempt from The Marking Dye Rule (owner decision, 2026-09-08), and the licence is now spent: a measurement callout is a Layout Blue line between its picks with a mono figure label edged in Layout Blue, drawn in with `tween`. The exemption covers marks *on the part* and nothing else in the well.",
+        "body": "Layout Blue appears only where something is happening — dragging, focused, selected, pressed, uploading, drawing. If a screenshot taken at rest contains Layout Blue anywhere but the brand mark, that is a defect. Its rarity is what makes it readable without a legend. \"At rest\" includes the first frame of a dialog: focus that the page moved there by itself, before anybody touched a key, must not draw the ring on a control (see Dialogs).",
         "section": "colors"
       },
       {
@@ -450,7 +456,7 @@
       },
       {
         "name": "The Copyable Mono Rule",
-        "body": "Anything a user might paste into another program or compare against another value — a path, a hash, a part number, a measured dimension — is set in mono and is selectable. Mono is a promise that the string is exact and complete, never elided in the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo.",
+        "body": "Anything a user might paste into another program or compare against another value — a path, a hash, a part number, a dimension — is set in mono and is selectable. Mono is a promise that the string is exact and complete, never elided in the middle. Words are not figures: a sentence that happens to contain a number stays in Archivo, and so does a value cell that holds a sentence (\"Not available — give the part its material…\"), even in a column of mono values.",
         "section": "typography"
       },
       {
@@ -470,12 +476,12 @@
       },
       {
         "name": "The Lamp Rule",
-        "body": "The lamp's pool (Lamp at 50% 42% fading to Anodised Black at the box's closest side) is the one gradient in the system and belongs only under a part: the studio viewer, the Space stage, the first-run bench. `closest-side`, so no rectangle shows where it stops.",
+        "body": "The lamp's pool (Lamp at 50% 42% fading to Anodised Black at the box's closest side) is the one gradient in the system and belongs only under a part or a drawing of one: the part page's stage, the quick look's stage, the viewer a **view** press opens, and the Doorway's left half under the Lattice. `closest-side`, so no rectangle shows where it stops.",
         "section": "elevation"
       },
       {
-        "name": "The Inset Picture Rule",
-        "body": "A render sits *inset* in its card — 7% on every side of a square Bench Grey well, with a transparent background of its own — so a wall of parts reads as objects on shelves rather than as a mosaic, and the card's hairline border gives it an edge. The turntable canvas matches the same inset so the swap from picture to 3D is unseen.",
+        "name": "The Filled Tile Rule",
+        "body": "(A15; replaces The Inset Picture Rule). A card's picture fills its square tile, framed by its row's `fit` and `focus` (`cover` by default), because the owner's pictures are photographs and store renders with their own backgrounds, and a 7% inset only made them a third smaller. A **stage** is the opposite: it shows the whole picture, `contain`, on the lamp (A16), because the stage is where you look at the part, and a crop there hides the thing you came to see. The tile crops; the stage never does.",
         "section": "shapes"
       },
       {
@@ -489,33 +495,44 @@
         "section": "components"
       },
       {
-        "name": "The Four Lit Places Rule",
-        "body": "three.js draws in the studio viewer, the turntable, the Space stage and the first-run bench, and nowhere else. Every light and material is defined once in `studio.ts`, in two pairs: the turntable and the bench use the raster pair, which matches `raster.rs`'s thumbnail shading to the byte, so the crossfade from picture to model is unseen; the studio viewer uses the studio trio (a cool-neutral hemisphere fill over a bench-coloured ground, the key along the thumbnail's light direction, a faint rim from behind) under sRGB output, because it is turned and a front-lit part goes flat, and because its marks, ghost and section cap are unlit colours chosen in sRGB that a linear output would shift.",
+        "name": "The One Lit Place Rule",
+        "body": "(replaces The Four Lit Places Rule). three.js draws in the viewer a **view** press opens, on the part page's stage or the quick look's, and nowhere else. Every light and material is defined once in `studio.ts`: a cool-neutral hemisphere fill over a bench-coloured ground, one key light, a faint rim from behind, under sRGB output.",
+        "section": "components"
+      },
+      {
+        "name": "The Front Door Rule",
+        "body": "The only authored motion, the only decorative drawing and the only 55/45 split are on the pages before sign-in. Inside the app, motion reports a change and nothing more.",
         "section": "components"
       }
     ],
     "dos": [
-      "Do keep Layout Blue (`#2cb4f5`) for live interaction and for marks drawn on a part. A resting screenshot containing it anywhere but the brand mark is a defect.",
+      "Do keep Layout Blue (`#2cb4f5`) for live interaction and for the Lattice's draw head while it moves. A resting screenshot containing it anywhere but the brand mark is a defect.",
       "Do set every pasteable or comparable figure — path, hash, part number, dimension, count — in mono with tabular figures, selectable, never middle-elided.",
       "Do show a card's name, figures and approximate label at rest, and reach every per-part action from the part page, so nothing exists only behind a pointer.",
       "Do give a page one Headline (600, 1.5rem), a 70ch lead, label-over-rule sections and one standing control, from `Page.ts`.",
-      "Do label every mesh-derived measurement as approximate wherever it appears, including the stage, the studio, dialogs and tooltips.",
-      "Do put a part on the lamp's ground with its contact shadow whenever three.js draws it.",
-      "Do sequence script motion only through `web/src/lib/motion.ts`, inside 280 ms end to end.",
+      "Do label every mesh-derived figure as approximate wherever it appears, including the stage, dialogs and tooltips.",
+      "Do show the whole picture on a stage, and fill the tile on a card.",
+      "Do import anime.js only in `web/src/lib/motion.ts`, and `motion` only in `web/src/lib/motion-react.tsx` and `web/src/lib/motion-features.ts`; feature code uses their primitives.",
+      "Do put `transition-none` on every element an engine moves.",
+      "Do make every front-door moment skippable by a key, a click or Skip, and absent under reduced motion.",
       "Do use the z scale (20 / 30 / 40 / 50) for anything layering over the page; a local `z-10` inside a card or the grid (a select checkbox, the sticky selection bar) is not a layer.",
       "Do self-host Archivo and JetBrains Mono, `latin` + `latin-ext`.",
-      "Do route every user-facing string through `web/src/lib/strings.ts`."
+      "Do route every user-facing string through `web/src/lib/strings.ts`, and write `…`, never `...`."
     ],
     "donts": [
-      "Don't set a card's render edge to edge or drop the card's hairline; the render is inset and the border is the card's only edge.",
+      "Don't drop a card's hairline; against a dark photograph it is the card's only edge.",
+      "Don't crop a picture on a stage.",
       "Don't add a box-shadow to anything that is not a dialog, a menu or the floating selection bar.",
       "Don't introduce a fifth text grey, a second accent hue, or a fourth radius.",
       "Don't use a weight outside 400–700; the self-hosted Archivo file stops at 700. Headings and names are 600, labels 500, the wordmark alone 700.",
       "Don't fill a standing control with Layout Blue; Upload and Download stand in Quicklime.",
-      "Don't put a stage's controls directly on the lamp; Edge does not clear 3:1 there, so they sit on a Machined Slate dock.",
+      "Don't put a stage's controls directly on the lamp; Edge does not clear 3:1 there, so they sit on a Machined Slate plate.",
       "Don't let colour alone carry a state. Every state has a second cue: a label, an outline, a position, an icon.",
       "Don't word an eviction so it reads as deletion, or a removal so it reads as a saving.",
-      "Don't animate anything but `transform`, `translate` and `opacity`, or past 180 ms for a state change; 280 ms is for the flight, the turntable's step back and a whole arrival run."
+      "Don't animate anything but `transform`, `translate`, `opacity` and SVG `stroke-dashoffset`, or past 180 ms for a state change; 280 ms is for the flight and a whole arrival run, and the scene and intro tokens are for the front door alone.",
+      "Don't loop anything, bounce anything, or put a spring on anything but a layout change.",
+      "Don't import `framer-motion`, or Motion+.",
+      "Don't show anybody's data, a testimonial or a user count on a signed-out page."
     ]
   }
 }

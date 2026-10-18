@@ -97,12 +97,17 @@ position or an icon.
 | `--radius-md` | `10px` | cards, stages, dialogs, menus |
 | `--shadow-overlay` | `0 16px 48px rgba(0,0,0,.6)` | dialogs, menus and the floating selection bar — **nothing else** casts a shadow |
 | `--z-header` / `--z-drawer` / `--z-overlay` / `--z-skip` | 20 / 30 / 40 / 50 | the only layers |
-| `--duration-fast` / `--duration-base` / `--duration-slow` | 120 / 180 / 280 ms | hover; a state change; the flight, the turntable's step back, a whole arrival |
+| `--duration-fast` / `--duration-base` / `--duration-slow` | 120 / 180 / 280 ms | hover; a state change; the quick look's flight, a whole arrival |
+| `--duration-scene` / `--duration-intro` | 480 / 900 ms | the front door only: one scene of the sign-in or setup moment; a whole moment, skippable (added by A18) |
 | `--ease-mechanical` | `cubic-bezier(0.2, 0, 0, 1)` | every transition (the `ease-mechanical` utility) |
 
 Flat by doctrine: depth is tonal layering and hairlines, plus a 1px hover lift
 (`hover:-translate-y-px`) that reads as the object rising toward the lamp. Transitions animate
-`transform`, `translate` and `opacity` only. Reduced motion is handled globally.
+`transform`, `translate`, `opacity` and SVG `stroke-dashoffset` only. Reduced motion is the end state, handled
+globally. Two engines, each fenced: anime.js only in `web/src/lib/motion.ts`, motion (`motion/react`) only in
+`web/src/lib/motion-react.tsx` and `motion-features.ts`; feature code uses their primitives, and every element an
+engine moves carries `transition-none`. Springs for layout only (`visualDuration 0.28, bounce 0`); nothing loops;
+authored moments only at the front door. DESIGN.md § Motion is the whole doctrine.
 
 Focus is global: a 2px Layout Blue ring at 2px offset. Never remove an outline without replacing it.
 
@@ -146,8 +151,9 @@ Spacing runs 4 / 8 / 12 / 16 / 24 / 32.
 
 ## Parts, measurements and honesty
 
-- A part's render sits **inset 7%** in a square Bench Grey well on a bordered card; the border is
-  the card's only edge. Never set a render edge to edge.
+- A part's picture **fills** its card's square tile (A15); a **stage** shows the whole picture,
+  `contain`, on the lamp (A16). The card's hairline border stays: against a dark photograph it is
+  the card's only edge.
 - A card's name, figures and "approximate" label show **at rest**; nothing hides behind hover.
 - **Measurements taken from a mesh are approximations, and Lapidary always says so.** Wherever a
   mesh-derived value appears — card, stage, dialog, tooltip — it is labelled "approximate".
