@@ -2,7 +2,6 @@
 
 use crate::stl::Mesh;
 use lapidary_core::MeshMeasurements;
-use std::collections::HashMap;
 
 /// The mesh's measurements, and the centre of its volume where it has one.
 ///
@@ -68,16 +67,22 @@ pub fn measure(mesh: &Mesh) -> (MeshMeasurements, Option<[f64; 3]>) {
 /// Closed means every edge is shared by exactly two triangles. Vertices are quantised
 /// before comparison because STL stores each vertex independently as f32, so the same
 /// corner arrives with different bit patterns from different facets.
+///
+/// Each edge is one `u64` (its two corners' keys, ordered and mixed), all of them sorted, and every run of equal edges
+/// must be exactly two long (A32). A `HashMap` of corner pairs held 1.5 entries a triangle with its own overhead and
+/// doubled as it grew; this is a fixed 24 bytes a triangle. Mixing two keys into one can make two different edges look
+/// alike, about once in 2^64 pairs, which the corner keys already accept.
 fn is_closed(mesh: &Mesh) -> bool {
-    let mut edges: HashMap<(u64, u64), i32> = HashMap::new();
+    let mut edges: Vec<u64> = Vec::with_capacity(mesh.triangles.len() * 3);
     for tri in &mesh.triangles {
         let k = [key(tri[0]), key(tri[1]), key(tri[2])];
         for (a, b) in [(k[0], k[1]), (k[1], k[2]), (k[2], k[0])] {
             let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-            *edges.entry((lo, hi)).or_insert(0) += 1;
+            edges.push(lo.rotate_left(17) ^ hi.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         }
     }
-    !edges.is_empty() && edges.values().all(|&n| n == 2)
+    edges.sort_unstable();
+    !edges.is_empty() && edges.chunk_by(|a, b| a == b).all(|run| run.len() == 2)
 }
 
 fn key(v: [f32; 3]) -> u64 {
