@@ -155,8 +155,7 @@ pub(crate) fn entry_stream<'a, 'b>(
     archive: &'b mut Archive<'a>,
     name: &str,
     caps: &Caps,
-) -> Result<std::io::BufReader<Capped<zip::read::ZipFile<'b, std::io::Cursor<&'a [u8]>>>>, CadError>
-{
+) -> Result<ModelStream<'a, 'b>, CadError> {
     let file = archive
         .by_name(name)
         .map_err(|_| malformed(format!("the package has no {name} part")))?;
@@ -171,6 +170,10 @@ pub(crate) fn entry_stream<'a, 'b>(
         },
     ))
 }
+
+/// A model part as it is read out of its package, capped.
+pub(crate) type ModelStream<'a, 'b> =
+    std::io::BufReader<Capped<zip::read::ZipFile<'b, std::io::Cursor<&'a [u8]>>>>;
 
 /// A reader that ends in an error, and says so, once more than its cap has come through it.
 pub(crate) struct Capped<R> {
