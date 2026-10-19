@@ -990,6 +990,39 @@ mod tests {
         ])
     }
 
+    /// A32: the model part is streamed, and a stream that breaks its cap is refused as that cap — the bound's own
+    /// words, the same as a part read whole — never reported as broken XML. Repeated vertices deflate far past 20:1.
+    #[test]
+    fn a_streamed_model_past_the_ratio_cap_is_refused_as_that_cap() {
+        let mut xml = String::from(
+            r#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model"><mesh><vertices>"#,
+        );
+        for _ in 0..20_000 {
+            xml.push_str(r#"<vertex x="0" y="0" z="0"/>"#);
+        }
+        xml.push_str("</vertices></mesh></object></resources></model>");
+        let bytes = package(&xml);
+        let caps = Caps {
+            max_decompressed: 1 << 30,
+            max_entries: 4,
+            max_ratio: 20,
+            max_triangles: usize::MAX,
+        };
+        let mut archive = open_archive(&bytes, &caps).expect("opens");
+        let stream =
+            entry_stream(&mut archive, "3D/carrier.model", &caps).expect("the part is there");
+        let Err(err) = read_model(stream) else {
+            panic!("a stream past its cap must not parse")
+        };
+        let CadError::ArchiveRefused { detail, .. } = &err else {
+            panic!("wrong variant: {err}")
+        };
+        assert!(
+            detail.contains("20:1"),
+            "expected the ratio cap's message, got: {detail}"
+        );
+    }
+
     /// The thumbnail is found through its relationship — here at a path no slicer uses, so a
     /// lookup that guessed `Metadata/thumbnail.png` would miss it — and a stray PNG nobody points
     /// at is not taken for one.

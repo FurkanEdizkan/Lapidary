@@ -622,25 +622,33 @@ impl WorkerHandler {
         // nothing to parse: no figures, no picture, and its contents instead.
         let (measurements, centre_of_mass_mm, embedded, size, contents) = match body {
             Body::Mesh(bytes) => {
-                let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
-                let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
-                // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
-                // reason to fail: a part with no picture is a part.
-                let embedded = if format == "3mf" {
-                    lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
-                        tracing::warn!(source_path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                // Off the async threads, since a large mesh is seconds of work (A32), and in the order that holds
+                // least at once: the thumbnail while the file's bytes are needed anyway, then the parse, then the bytes
+                // go before the triangles are measured.
+                let (fmt, path) = (format.clone(), source_path.to_owned());
+                let (mesh, embedded, size) = tokio::task::spawn_blocking(move || {
+                    let size = bytes.len() as u64;
+                    // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
+                    // reason to fail: a part with no picture is a part.
+                    let embedded = if fmt == "3mf" {
+                        lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
+                            tracing::warn!(source_path = %path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                            None
+                        })
+                    } else {
                         None
-                    })
-                } else {
-                    None
-                };
-                (
-                    Some(measurements),
-                    centre_of_mass_mm,
-                    embedded,
-                    bytes.len() as u64,
-                    None,
-                )
+                    };
+                    let mesh = lapidary_cad::parse(&bytes, &fmt);
+                    drop(bytes);
+                    let mesh = mesh.map(|mesh| lapidary_cad::measure(&mesh));
+                    (mesh, embedded, size)
+                })
+                .await
+                .map_err(|e| HandlerError::Transient {
+                    message: format!("Reading {source_path} stopped: {e}"),
+                })?;
+                let (measurements, centre_of_mass_mm) = mesh.map_err(classify_cad)?;
+                (Some(measurements), centre_of_mass_mm, embedded, size, None)
             }
             Body::Pack { size, contents } => (None, None, None, size, Some(contents)),
         };
