@@ -156,7 +156,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A37](A37.md) | Follow-ups from A33–A36 | 16 | web + docs | A36 | see [A37.md](A37.md) | — | merged `fbef537` | `fix/scale-followups` |
 | [A38](A38.md) | Access and data safety | 17 | api + core + db + ingest | A37 | see [A38.md](A38.md) | — | merged `c5bbba4` | `fix/access-safety` |
 | [A39](A39.md) | Ingest and count correctness | 17 | ingest + db + cad | A38 | see [A39.md](A39.md) | — | merged `efad46f` | `fix/ingest-counts` |
-| [A40](A40.md) | Grid and quick look, made whole | 17 | web | A39 | see [A40.md](A40.md) | — | open | `fix/grid-look` |
+| [A40](A40.md) | Grid and quick look, made whole | 17 | web | A39 | see [A40.md](A40.md) | — | merged `228234a` | `fix/grid-look` |
 
 **Migration numbers:** 0063 A1 · 0064 A2 · 0065 A3 · 0066 A4.
 
