@@ -44,12 +44,14 @@ services:
     # spare gigabytes. The mesh parsers are the largest user. 3g since F3 (2026-10-16): with the
     # 3MF cap at 20 M triangles, two of the owner's 11 M-triangle Bambu kits parsing at once
     # touched 2 GiB; see docs/goals/F3.md for what 3g measured.
-    # Compose v2 honours deploy.resources outside swarm.
+    # Compose v2 honours deploy.resources outside swarm. The CPU ceiling is a setting (A36): two
+    # CPUs keep a first scan from taking over a modest machine, and LAPIDARY_CPUS in deploy/.env
+    # raises it where there are cores to spare. A first scan is CPU-bound; memory is not the limit.
     deploy:
       resources:
         limits:
           memory: 3g
-          cpus: "2.0"
+          cpus: "${LAPIDARY_CPUS:-2.0}"
     build:
       context: ..
       dockerfile: deploy/Containerfile

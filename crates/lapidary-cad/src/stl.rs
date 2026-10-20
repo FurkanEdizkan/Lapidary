@@ -80,8 +80,14 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
         let mut count = [0u8; 4];
         count.copy_from_slice(&bytes[HEADER..HEADER + COUNT]);
         let claimed = u32::from_le_bytes(count) as usize;
-        if bytes.len() == HEADER + COUNT + claimed * TRIANGLE {
+        let needs = HEADER + COUNT + claimed * TRIANGLE;
+        if bytes.len() == needs {
             return parse_binary(bytes, claimed);
+        }
+        // Bytes after the last declared triangle (A36): some exporters pad the file, and most readers ignore what
+        // follows the count. Text is still read as text; a file shorter than its count is still refused.
+        if bytes.len() > needs && !looks_like_ascii(bytes) {
+            return parse_binary(&bytes[..needs], claimed);
         }
         // The length says binary but does not add up. If it also does not look like
         // text, report the binary shape — that is the more useful diagnosis.
@@ -90,7 +96,7 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
                 format: "STL".to_owned(),
                 detail: format!(
                     "the header claims {claimed} triangles, which needs {} bytes, but the file is {} — it looks truncated or incomplete",
-                    HEADER + COUNT + claimed * TRIANGLE,
+                    needs,
                     bytes.len()
                 ),
             });
@@ -349,6 +355,15 @@ endsolid spacer
             msg.contains("truncated") || msg.contains("incomplete"),
             "message must suggest a cause: {msg}"
         );
+    }
+
+    /// A36: the one STL in the owner's corpus that was refused is 200 bytes longer than its two-triangle count needs.
+    #[test]
+    fn a_binary_stl_with_bytes_after_its_last_triangle_is_read() {
+        let mut bytes = binary_stl_that_looks_ascii(2);
+        bytes.extend_from_slice(&[0u8; 200]);
+        let mesh = parse_stl(&bytes).expect("padded binary STL parses");
+        assert_eq!(mesh.triangles.len(), 2);
     }
 
     #[test]

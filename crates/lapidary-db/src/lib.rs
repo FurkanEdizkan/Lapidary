@@ -40,7 +40,7 @@ pub use sources::{FolderUse, PgSources, SourceRow, covers};
 pub use sqlx::PgPool;
 pub use tags::PgTags;
 pub use touches::Touches;
-pub use wall::{PgWall, WallPicture};
+pub use wall::{PgWall, WallBytes, WallPicture};
 // Re-exported so lapidary-jobs's worker loop can hold a listener without taking sqlx as
 // its own dependency -- "No SQL outside lapidary-db" (CLAUDE.md) is about not depending
 // on sqlx at all, not only about not writing queries.

@@ -12,8 +12,7 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use base64::Engine as _;
-use lapidary_core::{BlobHash, PartId};
+use lapidary_core::{PartId, PartImageId};
 use lapidary_db::{PgSettings, PgWall};
 use lapidary_storage::DerivativeStore;
 use serde::{Deserialize, Serialize};
@@ -46,27 +45,18 @@ pub struct WallSwitch {
 
 const SETTING: &str = "sign_in_wall";
 
-/// `GET /api/wall` — signed out: up to 48 pictures in a new random order. Empty when there is nothing to show.
+/// `GET /api/wall` — signed out: up to 48 pictures in a new random order, each by its address (A36): a page anyone can
+/// open carries no picture's bytes. Empty when there is nothing to show.
 pub async fn pictures(State(state): State<AppState>) -> Response {
     match PgWall(state.db).pictures(PICTURES).await {
         Ok(rows) => {
             let pictures: Vec<WallPicture> = rows
                 .into_iter()
-                .filter_map(|row| {
-                    let src = match (row.inline_webp, row.hash) {
-                        (Some(bytes), _) => format!(
-                            "data:image/webp;base64,{}",
-                            base64::engine::general_purpose::STANDARD.encode(bytes)
-                        ),
-                        (None, Some(hash)) => format!("/api/wall/{}", hash.to_hex()),
-                        (None, None) => return None,
-                    };
-                    Some(WallPicture {
-                        src,
-                        fit: row.fit,
-                        focus_x: row.focus.0,
-                        focus_y: row.focus.1,
-                    })
+                .map(|row| WallPicture {
+                    src: format!("/api/wall/{}", row.image),
+                    fit: row.fit,
+                    focus_x: row.focus.0,
+                    focus_y: row.focus.1,
                 })
                 .collect();
             ([NO_STORE], Json(pictures)).into_response()
@@ -75,28 +65,34 @@ pub async fn pictures(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `GET /api/wall/{hash}` — signed out: a picture over the inline line, only while the wall shows it. Anything else
-/// is `blob.rs`'s 404, so a guess learns nothing about what is stored.
-pub async fn picture(State(state): State<AppState>, Path(hash): Path<String>) -> Response {
-    let Ok(hash) = BlobHash::parse_hex(&hash) else {
+/// `GET /api/wall/{image}` — signed out: one picture, only while the wall shows it. Anything else is `blob.rs`'s 404,
+/// so a guess learns nothing about what is stored.
+pub async fn picture(State(state): State<AppState>, Path(image): Path<String>) -> Response {
+    let Ok(image) = image.parse::<PartImageId>() else {
         return crate::blob::not_found();
     };
-    match PgWall(state.db).shows(&hash).await {
-        Ok(true) => {}
-        Ok(false) => return crate::blob::not_found(),
-        Err(err) => return internal_error(&err, "wall picture check failed"),
-    }
-    match DerivativeStore::open(&state.blob_root).get(&hash) {
-        Ok(bytes) => (
-            [
-                NO_STORE,
-                (header::CONTENT_TYPE, crate::blob::content_type(&bytes)),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => crate::blob::not_found(),
-    }
+    let bytes = match PgWall(state.db).picture(image).await {
+        Ok(Some(lapidary_db::WallBytes {
+            inline_webp: Some(bytes),
+            ..
+        })) => bytes,
+        Ok(Some(lapidary_db::WallBytes {
+            hash: Some(hash), ..
+        })) => match DerivativeStore::open(&state.blob_root).get(&hash) {
+            Ok(bytes) => bytes,
+            Err(_) => return crate::blob::not_found(),
+        },
+        Ok(_) => return crate::blob::not_found(),
+        Err(err) => return internal_error(&err, "wall picture failed"),
+    };
+    (
+        [
+            NO_STORE,
+            (header::CONTENT_TYPE, crate::blob::content_type(&bytes)),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// `GET /api/parts/{id}/wall` — whether this part may show on the wall. `auth::scope` has checked the caller sees it.

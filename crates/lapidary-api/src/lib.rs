@@ -157,7 +157,7 @@ pub fn router(state: AppState, role: Role) -> Router {
             get(auth::me).post(auth::sign_in).delete(auth::sign_out),
         )
         .route("/api/wall", get(wall::pictures))
-        .route("/api/wall/{blake3}", get(wall::picture));
+        .route("/api/wall/{image}", get(wall::picture));
     let by_role = match role {
         Role::Api => public.merge(guarded(state.db.clone())),
         Role::Worker => Router::new(),
