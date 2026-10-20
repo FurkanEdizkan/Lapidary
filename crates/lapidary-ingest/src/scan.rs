@@ -85,7 +85,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use lapidary_core::{BatchId, JobPayload, LibraryId, Outcome, ScanAccepted};
+use lapidary_core::{BatchId, FileRoot, JobPayload, LibraryId, Outcome, ScanAccepted};
 use lapidary_db::{DbError, PgJobs, PgParts, PgRevisions, PgSources};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::LibraryReader;
@@ -200,19 +200,21 @@ impl WorkerHandler {
             .await
             .map_err(classify_db)?;
         let reader = LibraryReader::open(&self.ingest_dir);
-        let found = paths.len();
-        paths.retain(|path| {
-            !current.get(path).is_some_and(|indexed| {
-                reader
-                    .stat_at(path)
-                    .is_ok_and(|stat| indexed.is_file(path, stat.size, stat.mtime_ns))
+        let (unchanged, paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|path| {
+            current.get(path).is_some_and(|indexed| {
+                reader.stat_at(path).is_ok_and(|stat| {
+                    indexed.is_file(FileRoot::Library, path, stat.size, stat.mtime_ns)
+                })
             })
         });
-        let unchanged = u32::try_from(found - paths.len()).unwrap_or(u32::MAX);
-        PgJobs(self.db.clone())
-            .note_unchanged(batch, unchanged)
+        let jobs = PgJobs(self.db.clone());
+        jobs.note_unchanged(batch, &unchanged)
             .await
             .map_err(classify_db)?;
+        // A file indexed as it is now has nothing wrong with it, whatever an earlier attempt said (A39).
+        if let Err(err) = jobs.forget_failures(library, &unchanged).await {
+            tracing::warn!(error = %err, "could not forget the failures of files found unchanged");
+        }
 
         // Deterministic order, so the job ids a scan issues are ordered the way a person
         // reading the tree would expect. The whole relative path sorts, not the basename,

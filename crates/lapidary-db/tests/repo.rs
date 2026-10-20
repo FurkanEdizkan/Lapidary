@@ -3208,3 +3208,47 @@ async fn a_cards_picture_is_the_parts_first_image_with_its_framing(pool: sqlx::P
     );
     assert_eq!(image.inline_webp, None);
 }
+
+/// A39: a format filter narrows the other facets as it narrows the grid, by any source file of the current revision,
+/// not only its newest.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_format_filter_narrows_the_other_facets_as_the_grid(pool: sqlx::PgPool) {
+    let ingest = PgIngest(pool.clone());
+    let part = seed_with_format(&ingest, "bracket-lp-1042-03.stl", 0xa1, "stl").await;
+    sqlx::query("UPDATE part SET materials = ARRAY['PLA'] WHERE id = $1")
+        .bind(part.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("a material");
+    // A second, newer source file of the same revision, in another format.
+    sqlx::query(
+        "INSERT INTO file SELECT (jsonb_populate_record(f, jsonb_build_object( \
+           'id', gen_random_uuid(), 'format', 'obj', 'created_at', f.created_at + interval '1 minute'))).* \
+         FROM file f JOIN revision r ON r.id = f.revision_id WHERE r.part_id = $1 AND f.role = 'source'",
+    )
+    .bind(part.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("a second source file");
+    let parts = PgParts(pool.clone());
+    let grid = parts
+        .page(
+            &GridQuery {
+                format: Some("stl"),
+                ..GridQuery::new(library(), 50)
+            },
+            Sort::Newest,
+        )
+        .await
+        .expect("page");
+    assert_eq!(grid.len(), 1, "the grid shows it under stl");
+    let materials = parts
+        .material_facet(library(), None, None, Some("stl"), None, None, None)
+        .await
+        .expect("facet");
+    assert_eq!(
+        pairs(&materials),
+        [("PLA", Some(1))],
+        "and so do the counts beside it"
+    );
+}

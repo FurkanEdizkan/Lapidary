@@ -184,17 +184,44 @@ impl PgJobs {
         Ok(retried.rows_affected() + gone.rows_affected())
     }
 
-    /// Record on `batch`'s scan job that its walk found `unchanged` files as they were indexed and queued none of them
-    /// (A33). `batch_status` counts them, so the batch still says how many files it holds and that they are here.
-    pub async fn note_unchanged(&self, batch: BatchId, unchanged: u32) -> Result<(), DbError> {
+    /// Record on `batch`'s scan job how many files its walk found as they were indexed and queued none of them (A33).
+    /// `batch_status` counts them, so the batch still says how many files it holds and that they are here. A file this
+    /// batch already holds a job for is not counted again (A39): a walk run a second time finds the files its first
+    /// run queued, and since ingested, unchanged.
+    pub async fn note_unchanged(
+        &self,
+        batch: BatchId,
+        unchanged: &[String],
+    ) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE job SET unchanged = $2 WHERE batch_id = $1 AND kind = 'scan_directory'",
+            "UPDATE job SET unchanged = (SELECT count(*) FROM unnest($2::text[]) AS u(path) \
+               WHERE u.path NOT IN (SELECT payload->>'path' FROM job WHERE batch_id = $1 \
+                                    AND kind = 'ingest_file' AND payload->>'path' IS NOT NULL)) \
+             WHERE batch_id = $1 AND kind = 'scan_directory'",
         )
         .bind(batch.as_uuid())
-        .bind(i32::try_from(unchanged).unwrap_or(i32::MAX))
+        .bind(unchanged)
         .execute(&self.0)
         .await?;
         Ok(())
+    }
+
+    /// Forget the failed file jobs of `library` for `paths` (A39): files a scan found indexed as they are now, so an
+    /// earlier refusal of one, a mount not ready, say, is no longer true and no scan will try it again to replace it.
+    pub async fn forget_failures(
+        &self,
+        library: LibraryId,
+        paths: &[String],
+    ) -> Result<u64, DbError> {
+        let gone = sqlx::query(
+            "DELETE FROM job WHERE library_id = $1 AND kind = 'ingest_file' AND state = 'failed' \
+               AND payload->>'path' = ANY($2)",
+        )
+        .bind(library.as_uuid())
+        .bind(paths)
+        .execute(&self.0)
+        .await?;
+        Ok(gone.rows_affected())
     }
 
     /// Queue a build of `revision`'s `produce`, unless one is already pending or running.

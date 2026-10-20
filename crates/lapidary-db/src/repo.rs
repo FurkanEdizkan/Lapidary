@@ -1480,7 +1480,6 @@ pub struct FacetValue {
     pub count: Option<u64>,
 }
 
-/// Matching parts up to which a facet's counts are exact.
 /// The three groups of counts beside the grid, from [`PgParts::facets`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct GridFacets {
@@ -1489,6 +1488,7 @@ pub struct GridFacets {
     pub tags: Vec<FacetValue>,
 }
 
+/// Matching parts up to which a facet's counts are exact.
 pub const EXACT_FACET_ROWS: i64 = 10_000;
 
 /// Grouped `(value, count)` rows as a facet: counts kept when every matching part together
@@ -1542,7 +1542,9 @@ mod facet_tests {
 
 /// Each part of the library and its current source format: its latest revision's latest source file's, as the card's
 /// is. Set-based, two sorted passes, rather than a lookup per part (A34): at 20,000 parts the lookups were a tenth of a
-/// second of every facet request. Follows `down` in a facet query's `WITH`, and reads its `$1`, the library.
+/// second of every facet request. And `in_format`, the parts with *any* source file of their current revision in the
+/// format `$5`, which is the grid's own test of a format filter (A39). Follows `down` in a facet query's `WITH`, and
+/// reads `$1`, the library, and `$5`, the format.
 macro_rules! current_format {
     () => {
         "cur AS (SELECT DISTINCT ON (r.part_id) r.part_id, r.id FROM revision r \
@@ -1550,7 +1552,9 @@ macro_rules! current_format {
            ORDER BY r.part_id, r.created_at DESC, r.id DESC), \
          fmt AS (SELECT DISTINCT ON (f.revision_id) cur.part_id, f.format FROM file f \
            JOIN cur ON f.revision_id = cur.id WHERE f.role = 'source' \
-           ORDER BY f.revision_id, f.created_at DESC, f.id DESC)"
+           ORDER BY f.revision_id, f.created_at DESC, f.id DESC), \
+         in_format AS (SELECT cur.part_id FROM cur JOIN file f ON f.revision_id = cur.id \
+           WHERE f.role = 'source' AND f.format = $5)"
     };
 }
 
@@ -1589,7 +1593,8 @@ impl PgParts {
              JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
             current_format!(),
             ", \
-             base AS MATERIALIZED (SELECT p.id, p.materials, p.tags, s.format FROM part p \
+             base AS MATERIALIZED (SELECT p.id, p.materials, p.tags, s.format, \
+               ($5::text IS NULL OR p.id IN (SELECT part_id FROM in_format)) AS in_format FROM part p \
                LEFT JOIN fmt s ON s.part_id = p.id \
                WHERE p.library_id = $1 \
                  AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
@@ -1605,13 +1610,13 @@ impl PgParts {
              UNION ALL \
              SELECT 'material', m.material, count(DISTINCT id) FROM base \
              CROSS JOIN LATERAL unnest(materials) AS m(material) \
-             WHERE ($5::text IS NULL OR format = $5) \
+             WHERE in_format \
                AND ($7::text IS NULL OR tags @> ARRAY[$7::text]) \
              GROUP BY m.material \
              UNION ALL \
              SELECT 'tag', t.tag, count(DISTINCT id) FROM base \
              CROSS JOIN LATERAL unnest(tags) AS t(tag) \
-             WHERE ($5::text IS NULL OR format = $5) \
+             WHERE in_format \
                AND ($6::text IS NULL OR materials @> ARRAY[$6::text]) \
              GROUP BY t.tag \
              ORDER BY 1, 2"
@@ -1764,7 +1769,7 @@ impl PgParts {
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
                     OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM fmt WHERE format = $5)) \
+               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM in_format)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND kv.key = ANY($8::text[]) \

@@ -156,8 +156,8 @@ impl PgFolders {
     /// this once and the delete confirmation reads the count off the node it already has, so a per-folder count query
     /// would be N round trips for a panel that is one request. The count is subtree-*inclusive*, because a delete
     /// cascades that way. (Until A34 a recursive CTE paired every folder with each of its descendants, which at 4,000
-    /// folders and 20,000 parts was most of a tenth of a second.) The walk up stops after as many steps as there are
-    /// folders, so a parent cycle a repair script left behind cannot hang it.
+    /// folders and 20,000 parts was most of a tenth of a second.) The walk up stops at a folder it has passed, so a parent
+    /// cycle a repair script left behind neither hangs it nor counts a part twice.
     ///
     /// `p.library_id = $1` is not redundant with the folder being in this library.
     /// Every writer of `part.folder_id` keeps a part and its folder in one library, but
@@ -181,14 +181,19 @@ impl PgFolders {
             .map(|(index, row)| (row.0, index))
             .collect();
         let mut counts: Vec<i64> = rows.iter().map(|row| row.4).collect();
-        for row in &rows {
+        // Each folder's count goes once to each ancestor. The walk keeps the ones it passed, so a parent cycle a repair
+        // script left behind ends the walk instead of counting its parts once per lap (A39).
+        let mut passed = std::collections::HashSet::new();
+        for (start, row) in rows.iter().enumerate() {
+            passed.clear();
+            passed.insert(start);
             let mut parent = row.1;
-            for _ in 0..rows.len() {
-                let Some(up) = parent.and_then(|id| at.get(&id)) else {
+            while let Some(&up) = parent.and_then(|id| at.get(&id)) {
+                if !passed.insert(up) {
                     break;
-                };
-                counts[*up] += row.4;
-                parent = rows[*up].1;
+                }
+                counts[up] += row.4;
+                parent = rows[up].1;
             }
         }
         Ok(rows

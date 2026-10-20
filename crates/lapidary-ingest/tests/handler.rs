@@ -3845,3 +3845,63 @@ async fn a_whole_folder_scan_leaves_other_peoples_uploads_and_imports_alone(pool
         "Bob's folders are his"
     );
 }
+
+/// A39: a failure for a file the scan now finds indexed as it is goes, since no later scan would try it again to
+/// replace it; and a walk run a second time in its batch does not count the files its first run queued again.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_rescan_forgets_a_stale_failure_and_a_retried_walk_counts_once(pool: PgPool) {
+    whole_folder(&pool).await;
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let carrier = format!("drives/planetary/{CARRIER}");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    handler.handle(&job_for(BRACKET)).await.expect("ingests");
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    // An earlier attempt at the bracket that failed, a mount not ready, say.
+    let (old, _) = jobs
+        .enqueue_scan(seeded(), &[BRACKET.to_owned()])
+        .await
+        .expect("enqueues");
+    sqlx::query(
+        "UPDATE job SET state = 'failed', last_error = 'mount not ready' WHERE batch_id = $1",
+    )
+    .bind(old.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("it failed");
+
+    stage(ingest_dir.path(), &carrier, CARRIER_FIXTURE);
+    let (batch, _) = jobs
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues the scan");
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("walks");
+    let failed: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE state = 'failed'")
+        .fetch_one(&pool)
+        .await
+        .expect("counts");
+    assert_eq!(
+        failed, 0,
+        "the bracket is indexed as it is; its old failure is gone"
+    );
+
+    // The carrier's job runs, then the walk runs again in the same batch, as a retried scan job does.
+    handler.handle(&job_for(&carrier)).await.expect("ingests");
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("walks again");
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads")
+        .expect("exists");
+    assert_eq!(
+        status.total, 3,
+        "the scan job, the carrier's job and the unchanged bracket; the carrier is not counted again"
+    );
+}
