@@ -154,9 +154,21 @@ impl PgJobs {
 
     /// Forget the finished file jobs of `library`'s earlier batches (A31), leaving `keep` alone. A scan leaves one row
     /// per file, so without this every rescan grew the table by the library's size. Only a batch with nothing left to
-    /// do loses its rows, so a tab still watching one is not shown it shrinking; failures stay, because a person reads
-    /// them, and so does every scan job, which is how the examples know a library has history.
+    /// do loses its rows, so a tab still watching one is not shown it shrinking; a failure stays, because a person reads
+    /// it, until a later scan tries the same file again (A33), and so does every scan job, which is how the examples know a library has history.
     pub async fn prune_finished(&self, library: LibraryId, keep: BatchId) -> Result<u64, DbError> {
+        // A refusal a later scan has tried again (A33): the newer row is the one that says what is true now, so a library
+        // that holds a file it cannot read has one failure for it, not one per scan.
+        let retried = sqlx::query(
+            "DELETE FROM job WHERE library_id = $1 AND batch_id <> $2 \
+               AND kind = 'ingest_file' AND state = 'failed' \
+               AND payload->>'path' IN (SELECT payload->>'path' FROM job \
+                                        WHERE batch_id = $2 AND kind = 'ingest_file')",
+        )
+        .bind(library.as_uuid())
+        .bind(keep.as_uuid())
+        .execute(&self.0)
+        .await?;
         let gone = sqlx::query(
             // The batches still at work once, off `job_active_idx`, rather than per row: a correlated check per row
             // read the whole batch for every one of its jobs, and at 20,000 rows outlived the scan job's lease.
@@ -169,7 +181,20 @@ impl PgJobs {
         .bind(keep.as_uuid())
         .execute(&self.0)
         .await?;
-        Ok(gone.rows_affected())
+        Ok(retried.rows_affected() + gone.rows_affected())
+    }
+
+    /// Record on `batch`'s scan job that its walk found `unchanged` files as they were indexed and queued none of them
+    /// (A33). `batch_status` counts them, so the batch still says how many files it holds and that they are here.
+    pub async fn note_unchanged(&self, batch: BatchId, unchanged: u32) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE job SET unchanged = $2 WHERE batch_id = $1 AND kind = 'scan_directory'",
+        )
+        .bind(batch.as_uuid())
+        .bind(i32::try_from(unchanged).unwrap_or(i32::MAX))
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     /// Queue a build of `revision`'s `produce`, unless one is already pending or running.
@@ -517,11 +542,11 @@ impl PgJobs {
             Option<i64>,
             Option<i64>,
         )> = sqlx::query_as(
-            "SELECT count(*), \
+            "SELECT count(*) + coalesce(sum(unchanged), 0)::bigint, \
                     count(*) FILTER (WHERE state = 'pending'), \
                     count(*) FILTER (WHERE state = 'running'), \
                     count(*) FILTER (WHERE outcome = 'ingested'), \
-                    count(*) FILTER (WHERE outcome = 'skipped'), \
+                    count(*) FILTER (WHERE outcome = 'skipped') + coalesce(sum(unchanged), 0)::bigint, \
                     count(*) FILTER (WHERE outcome = 'rendered'), \
                     count(*) FILTER (WHERE outcome = 'revised'), \
                     count(*) FILTER (WHERE outcome = 'scanned'), \

@@ -85,8 +85,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BatchId, JobPayload, LibraryId, Outcome, ScanAccepted};
-use lapidary_db::{DbError, PgJobs, PgSources};
+use lapidary_db::{DbError, PgJobs, PgRevisions, PgSources};
 use lapidary_jobs::HandlerError;
+use lapidary_storage::LibraryReader;
 use std::path::Path as FsPath;
 
 /// Enqueues one `scan_directory` job for `library` and returns `202` with the batch id
@@ -170,6 +171,28 @@ impl WorkerHandler {
         // Two sources can cover one file; it is filed once.
         paths.sort();
         paths.dedup();
+
+        // A file as it was when it was indexed is not queued at all (A33): the same test the job makes before it reads
+        // one (A31), made here for every file in one read, so a rescan of an unchanged library is a stat per file
+        // rather than a job per file. The job's own test stays, for a file that changes while the queue drains.
+        let current = PgRevisions(self.db.clone())
+            .current_by_path(library)
+            .await
+            .map_err(classify_db)?;
+        let reader = LibraryReader::open(&self.ingest_dir);
+        let found = paths.len();
+        paths.retain(|path| {
+            !current.get(path).is_some_and(|indexed| {
+                reader
+                    .stat_at(path)
+                    .is_ok_and(|stat| indexed.is_file(path, stat.size, stat.mtime_ns))
+            })
+        });
+        let unchanged = u32::try_from(found - paths.len()).unwrap_or(u32::MAX);
+        PgJobs(self.db.clone())
+            .note_unchanged(batch, unchanged)
+            .await
+            .map_err(classify_db)?;
 
         // Deterministic order, so the job ids a scan issues are ordered the way a person
         // reading the tree would expect. The whole relative path sorts, not the basename,
