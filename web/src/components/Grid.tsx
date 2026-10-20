@@ -106,16 +106,20 @@ function useRowWindow(list: React.RefObject<HTMLUListElement | null>, count: num
       const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length
       const item = node.firstElementChild
       const height = item instanceof HTMLElement ? item.offsetHeight : 0
+      // Nothing to measure. Before any card is drawn (a test's layout) that is every card drawn; once a window was
+      // measured it is that window kept, because dropping it here drew every card loaded for one frame (A35).
       if (columns === 0 || height === 0) {
-        setView(null)
+        setView((now) => (now === null || item !== null ? null : now))
         return
       }
       const rowHeight = height + (Number.parseFloat(style.rowGap) || 0)
       // Where the grid starts on the page: its border box, which the padding for undrawn rows is inside.
       const start = node.getBoundingClientRect().top + window.scrollY
       const rows = Math.ceil(count / columns)
-      const first = Math.max(0, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS)
       const last = Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS)
+      // Scrolled past the grid's end (End, a dragged scrollbar, the page below it), the window still holds its last
+      // rows rather than none.
+      const first = Math.max(0, Math.min(last - OVERSCAN_ROWS, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS))
       setView((now) =>
         now !== null && now.columns === columns && now.rowHeight === rowHeight && now.first === first && now.last === last
           ? now
@@ -147,6 +151,7 @@ export function Grid({
   onSelectAll,
   onOpen,
   onLook,
+  following,
 }: {
   parts: readonly PartCard[]
   density: Density
@@ -160,6 +165,11 @@ export function Grid({
   onOpen: (part: PartCard, from: DOMRect) => void
   /** Space on a card's name. See `StageLook`. */
   onLook?: (part: PartCard, from: DOMRect) => void
+  /**
+   * The part open in quick look (A35). Its arrows step through the grid, past the rows drawn, and closing it hands
+   * focus back to the card, so the grid keeps that card's row in its window.
+   */
+  following?: PartId
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -216,6 +226,14 @@ export function Grid({
   const end = view === null ? parts.length : Math.min(parts.length, (view.last + 1) * view.columns)
   const rows = view === null ? 0 : Math.ceil(parts.length / view.columns)
   const drawn = parts.slice(start, end)
+  const index = following === undefined ? -1 : parts.findIndex((part) => part.id === following)
+  useEffect(() => {
+    const node = list.current
+    if (view === null || node === null || index < 0 || (index >= start && index < end)) return
+    const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
+    window.scrollTo({ top: top - window.innerHeight / 3 })
+    // Only when the part changes: a person scrolling the grid beside the pane is not pulled back to it.
+  }, [index])
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.
