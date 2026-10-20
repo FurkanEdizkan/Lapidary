@@ -1481,6 +1481,14 @@ pub struct FacetValue {
 }
 
 /// Matching parts up to which a facet's counts are exact.
+/// The three groups of counts beside the grid, from [`PgParts::facets`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridFacets {
+    pub formats: Vec<FacetValue>,
+    pub materials: Vec<FacetValue>,
+    pub tags: Vec<FacetValue>,
+}
+
 pub const EXACT_FACET_ROWS: i64 = 10_000;
 
 /// Grouped `(value, count)` rows as a facet: counts kept when every matching part together
@@ -1532,10 +1540,111 @@ mod facet_tests {
     }
 }
 
+/// Each part of the library and its current source format: its latest revision's latest source file's, as the card's
+/// is. Set-based, two sorted passes, rather than a lookup per part (A34): at 20,000 parts the lookups were a tenth of a
+/// second of every facet request. Follows `down` in a facet query's `WITH`, and reads its `$1`, the library.
+macro_rules! current_format {
+    () => {
+        "cur AS (SELECT DISTINCT ON (r.part_id) r.part_id, r.id FROM revision r \
+           JOIN part q ON q.id = r.part_id WHERE q.library_id = $1 \
+           ORDER BY r.part_id, r.created_at DESC, r.id DESC), \
+         fmt AS (SELECT DISTINCT ON (f.revision_id) cur.part_id, f.format FROM file f \
+           JOIN cur ON f.revision_id = cur.id WHERE f.role = 'source' \
+           ORDER BY f.revision_id, f.created_at DESC, f.id DESC)"
+    };
+}
+
 impl PgParts {
-    /// The source formats among the parts the grid would show for the same library,
-    /// category, query and state, per [`facet_values`]: narrowed by the grid's chosen material
-    /// and tag, and never by its own chosen format.
+    /// The format, material and tag counts beside the grid, per [`facet_values`], among the parts the grid would show
+    /// for the same library, category, query and field filter: each group narrowed by the other two groups' choices
+    /// and never by its own. Counts that obeyed their own choice would show every other value as zero; counts that
+    /// ignored the others' would offer parts the grid is not showing. The format is the latest revision's source
+    /// file's, as the card's is, and a material or tag is counted once per part (`count(DISTINCT p.id)`), because a
+    /// file can name one material for several bodies.
+    ///
+    /// One query (A34): the parts that pass the shared filters are read once and counted three ways. As three
+    /// queries each worked out every part's current format again, and at 20,000 parts on the database's one CPU that
+    /// was most of a second's tenth per group.
+    ///
+    /// ponytail: every match is counted even past the threshold, where the counts are only withheld. A rollup table
+    /// refreshed on ingest (`docs/DATA.md` §3.4) is the upgrade, when a large library measures slow.
+    // One argument per filter the grid can hold, each narrowing the same query.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn facets(
+        &self,
+        library: LibraryId,
+        folder: Option<FolderId>,
+        query: Option<&str>,
+        format: Option<&str>,
+        material: Option<&str>,
+        tag: Option<&str>,
+        field: Option<&str>,
+        field_range: Option<&str>,
+    ) -> Result<GridFacets, DbError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(concat!(
+            "WITH RECURSIVE down AS ( \
+             SELECT id FROM folder WHERE id = $2 \
+             UNION ALL \
+             SELECT f.id FROM folder f \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            ", \
+             base AS MATERIALIZED (SELECT p.id, p.materials, p.tags, s.format FROM part p \
+               LEFT JOIN fmt s ON s.part_id = p.id \
+               WHERE p.library_id = $1 \
+                 AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
+                 AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
+                      OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
+                 AND ($8::jsonb IS NULL OR p.metadata_json->'custom' @> $8::jsonb) \
+                 AND ($9::jsonpath IS NULL OR p.metadata_json->'custom' @? $9::jsonpath)) \
+             SELECT 'format', format, count(*) FROM base \
+             WHERE format IS NOT NULL \
+               AND ($6::text IS NULL OR materials @> ARRAY[$6::text]) \
+               AND ($7::text IS NULL OR tags @> ARRAY[$7::text]) \
+             GROUP BY format \
+             UNION ALL \
+             SELECT 'material', m.material, count(DISTINCT id) FROM base \
+             CROSS JOIN LATERAL unnest(materials) AS m(material) \
+             WHERE ($5::text IS NULL OR format = $5) \
+               AND ($7::text IS NULL OR tags @> ARRAY[$7::text]) \
+             GROUP BY m.material \
+             UNION ALL \
+             SELECT 'tag', t.tag, count(DISTINCT id) FROM base \
+             CROSS JOIN LATERAL unnest(tags) AS t(tag) \
+             WHERE ($5::text IS NULL OR format = $5) \
+               AND ($6::text IS NULL OR materials @> ARRAY[$6::text]) \
+             GROUP BY t.tag \
+             ORDER BY 1, 2"
+        ))
+        .bind(library.as_uuid())
+        .bind(folder.map(|f| f.as_uuid()))
+        .bind(query)
+        .bind(query.map(like_pattern))
+        .bind(format)
+        .bind(material)
+        .bind(tag)
+        .bind(field)
+        .bind(field_range)
+        .fetch_all(&self.0)
+        .await?;
+        let mut groups: [Vec<(String, i64)>; 3] = Default::default();
+        for (group, value, count) in rows {
+            let at = match group.as_str() {
+                "format" => 0,
+                "material" => 1,
+                _ => 2,
+            };
+            groups[at].push((value, count));
+        }
+        let [formats, materials, tags] = groups.map(|rows| facet_values(rows, EXACT_FACET_ROWS));
+        Ok(GridFacets {
+            formats,
+            materials,
+            tags,
+        })
+    }
+
+    /// The format counts alone, as [`Self::facets`] counts them.
     // One argument per filter the grid can hold, each narrowing the same query.
     #[allow(clippy::too_many_arguments)]
     pub async fn format_facet(
@@ -1548,53 +1657,22 @@ impl PgParts {
         field: Option<&str>,
         field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
-        // The grid's own predicates, so a count never includes a part the grid would not show:
-        // the library, the state, the category subtree, and `search`'s match when there is a
-        // query. The format is the latest revision's source file's, as the card's is.
-        //
-        // ponytail: every match is counted even past the threshold, where the counts are only
-        // withheld. A rollup table refreshed on ingest (`docs/DATA.md` §3.4) is the upgrade,
-        // when a large library measures slow.
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $2 \
-             UNION ALL \
-             SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             SELECT s.format, count(*) FROM part p \
-             JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
-             WHERE p.library_id = $1 \
-               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
-                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR p.materials @> ARRAY[$5::text]) \
-               AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
-               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
-               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY s.format ORDER BY s.format",
-        )
-        .bind(library.as_uuid())
-        .bind(folder.map(|f| f.as_uuid()))
-        .bind(query)
-        .bind(query.map(like_pattern))
-        .bind(material)
-        .bind(tag)
-        .bind(field)
-        .bind(field_range)
-        .fetch_all(&self.0)
-        .await?;
-        Ok(facet_values(rows, EXACT_FACET_ROWS))
+        let facets = self
+            .facets(
+                library,
+                folder,
+                query,
+                None,
+                material,
+                tag,
+                field,
+                field_range,
+            )
+            .await?;
+        Ok(facets.formats)
     }
 
-    /// The materials among the same parts, per [`facet_values`]: narrowed by the grid's chosen
-    /// format and tag, and never by its own chosen material. Counts that obeyed their own choice would
-    /// show every other material as zero; counts that ignored the format would offer parts the
-    /// grid is not showing. `format_facet` keeps the same rule the other way round.
-    ///
-    /// `count(DISTINCT p.id)`, because a file can name one material for several bodies.
+    /// The material counts alone, as [`Self::facets`] counts them.
     // One argument per filter the grid can hold, each narrowing the same query.
     #[allow(clippy::too_many_arguments)]
     pub async fn material_facet(
@@ -1607,41 +1685,22 @@ impl PgParts {
         field: Option<&str>,
         field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $2 \
-             UNION ALL \
-             SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             SELECT m.material, count(DISTINCT p.id) FROM part p \
-             CROSS JOIN LATERAL unnest(p.materials) AS m(material) \
-             WHERE p.library_id = $1 \
-               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
-                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
-               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
-               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY m.material ORDER BY m.material",
-        )
-        .bind(library.as_uuid())
-        .bind(folder.map(|f| f.as_uuid()))
-        .bind(query)
-        .bind(query.map(like_pattern))
-        .bind(format)
-        .bind(tag)
-        .bind(field)
-        .bind(field_range)
-        .fetch_all(&self.0)
-        .await?;
-        Ok(facet_values(rows, EXACT_FACET_ROWS))
+        let facets = self
+            .facets(
+                library,
+                folder,
+                query,
+                format,
+                None,
+                tag,
+                field,
+                field_range,
+            )
+            .await?;
+        Ok(facets.materials)
     }
 
-    /// The tags among the same parts, per [`facet_values`]: narrowed by the grid's chosen format
-    /// and material, and never by its own chosen tag, for the reason `material_facet` gives.
+    /// The tag counts alone, as [`Self::facets`] counts them.
     // One argument per filter the grid can hold, each narrowing the same query.
     #[allow(clippy::too_many_arguments)]
     pub async fn tag_facet(
@@ -1654,37 +1713,19 @@ impl PgParts {
         field: Option<&str>,
         field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "WITH RECURSIVE down AS ( \
-             SELECT id FROM folder WHERE id = $2 \
-             UNION ALL \
-             SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             SELECT t.tag, count(DISTINCT p.id) FROM part p \
-             CROSS JOIN LATERAL unnest(p.tags) AS t(tag) \
-             WHERE p.library_id = $1 \
-               AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
-               AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
-                    OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
-               AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
-               AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
-               AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY t.tag ORDER BY t.tag",
-        )
-        .bind(library.as_uuid())
-        .bind(folder.map(|f| f.as_uuid()))
-        .bind(query)
-        .bind(query.map(like_pattern))
-        .bind(format)
-        .bind(material)
-        .bind(field)
-        .bind(field_range)
-        .fetch_all(&self.0)
-        .await?;
-        Ok(facet_values(rows, EXACT_FACET_ROWS))
+        let facets = self
+            .facets(
+                library,
+                folder,
+                query,
+                format,
+                material,
+                None,
+                field,
+                field_range,
+            )
+            .await?;
+        Ok(facets.tags)
     }
 
     /// How many of the same parts hold each value of the choice fields `keys`, per [`facet_values`] for
@@ -1708,12 +1749,14 @@ impl PgParts {
     ) -> Result<std::collections::BTreeMap<String, Vec<FacetValue>>, DbError> {
         // `jsonb_each_text` over an object only: a `custom` that is anything else holds no field values,
         // and would fail the query rather than count nothing.
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            " \
              SELECT kv.key, kv.value, count(*) FROM part p \
              CROSS JOIN LATERAL jsonb_each_text(CASE jsonb_typeof(p.metadata_json->'custom') \
                   WHEN 'object' THEN p.metadata_json->'custom' END) AS kv(key, value) \
@@ -1721,16 +1764,15 @@ impl PgParts {
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
                     OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM fmt WHERE format = $5)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND kv.key = ANY($8::text[]) \
                AND (kv.key = $9 \
                     OR (($10::jsonb IS NULL OR p.metadata_json->'custom' @> $10::jsonb) \
                         AND ($11::jsonpath IS NULL OR p.metadata_json->'custom' @? $11::jsonpath))) \
-             GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value",
+             GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value"
+        ),
         )
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))

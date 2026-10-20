@@ -2311,6 +2311,53 @@ test("a deep-scrolled grid does not refetch every page on every settle tick", as
   ).toBe(0);
 });
 
+test("a running scan refreshes the counts beside the grid at most every five seconds", async () => {
+  // A34: facets and storage each read the whole library, and at 20,000 parts a scan asked
+  // for both again on every poll that settled a job.
+  let facetRequests = 0;
+  let ingested = 100;
+  const running = () => ({
+    batchId: "01931b6e-0000-7000-8000-0000000b0001",
+    libraryId: DEFAULT_LIBRARY_ID,
+    total: 400,
+    pending: 400 - (ingested += 10),
+    running: 1,
+    ingested,
+    skipped: 0,
+    rendered: 0,
+    scanned: 0,
+    failedTotal: 0,
+    failed: [],
+    startedAt: "2026-09-06T10:00:00Z",
+    finishedAt: null,
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (url.includes("/jobs/"))
+        return { ok: true, json: async () => running() };
+      if (url.includes("/facets")) {
+        facetRequests++;
+        return { ok: true, json: async () => ({ formats: [], materials: [], tags: [], fields: [] }) };
+      }
+      if (url.includes("/parts"))
+        return { ok: true, json: async () => page([MOTOR_MOUNT]) };
+      if (url.includes("/healthz"))
+        return { ok: true, json: async () => HEALTHY };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }),
+  );
+
+  renderIndex({ batch: "01931b6e-0000-7000-8000-0000000b0001" });
+  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  const first = facetRequests;
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  expect(
+    facetRequests - first,
+    "several polls settled jobs, and the counts followed at most once",
+  ).toBeLessThanOrEqual(1);
+});
+
 test("the progress line moves from the stream, which is what a hidden tab still gets", async () => {
   // The freeze slice 5's handoff recorded: react-query does not poll a hidden document,
   // so a user who dropped a thousand files and switched tabs came back to a line stopped

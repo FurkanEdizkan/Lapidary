@@ -152,14 +152,14 @@ impl PgFolders {
 
     /// The whole tree of one library, flat, each node carrying its subtree part count.
     ///
-    /// One recursive CTE for every node's count, not one query per node: the sidebar reads
-    /// this once and the delete confirmation reads the count off the node it already has,
-    /// so a per-folder count query would be N round trips for a panel that is one request.
-    /// `down` pairs every folder with each of its descendants (itself included, which is
-    /// what makes the count subtree-*inclusive*), and the aggregate below counts live parts
-    /// per root.
+    /// One query for every node's own count, then each count added to the node's ancestors here: the sidebar reads
+    /// this once and the delete confirmation reads the count off the node it already has, so a per-folder count query
+    /// would be N round trips for a panel that is one request. The count is subtree-*inclusive*, because a delete
+    /// cascades that way. (Until A34 a recursive CTE paired every folder with each of its descendants, which at 4,000
+    /// folders and 20,000 parts was most of a tenth of a second.) The walk up stops after as many steps as there are
+    /// folders, so a parent cycle a repair script left behind cannot hang it.
     ///
-    /// `p.library_id = $1` is not redundant with the walk starting inside this library.
+    /// `p.library_id = $1` is not redundant with the folder being in this library.
     /// Every writer of `part.folder_id` keeps a part and its folder in one library, but
     /// nothing in the schema requires it — `part.folder_id` references `folder(id)` and no
     /// constraint relates the two `library_id` columns — so without this clause one bad row
@@ -168,27 +168,33 @@ impl PgFolders {
     /// has to agree with filters on library, so this count does too.
     pub async fn tree(&self, library: LibraryId) -> Result<Vec<FolderRow>, DbError> {
         let rows: Vec<(Uuid, Option<Uuid>, String, String, i64)> = sqlx::query_as(
-            "WITH RECURSIVE down AS ( \
-             SELECT id AS root, id FROM folder \
-             WHERE library_id = $1 \
-             UNION ALL \
-             SELECT d.root, f.id FROM folder f \
-             JOIN down d ON f.parent_id = d.id) CYCLE id SET is_cycle USING seen, \
-             counts AS ( \
-             SELECT d.root, count(p.id) AS n FROM down d \
-             JOIN part p ON p.folder_id = d.id \
-             WHERE NOT d.is_cycle AND p.library_id = $1 \
-             GROUP BY d.root) \
-             SELECT f.id, f.parent_id, f.name, f.slug, coalesce(c.n, 0) \
-             FROM folder f LEFT JOIN counts c ON c.root = f.id \
-             WHERE f.library_id = $1 ORDER BY f.name",
+            "SELECT f.id, f.parent_id, f.name, f.slug, count(p.id) \
+             FROM folder f LEFT JOIN part p ON p.folder_id = f.id AND p.library_id = $1 \
+             WHERE f.library_id = $1 GROUP BY f.id ORDER BY f.name",
         )
         .bind(library.as_uuid())
         .fetch_all(&self.0)
         .await?;
+        let at: std::collections::HashMap<Uuid, usize> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.0, index))
+            .collect();
+        let mut counts: Vec<i64> = rows.iter().map(|row| row.4).collect();
+        for row in &rows {
+            let mut parent = row.1;
+            for _ in 0..rows.len() {
+                let Some(up) = parent.and_then(|id| at.get(&id)) else {
+                    break;
+                };
+                counts[*up] += row.4;
+                parent = rows[*up].1;
+            }
+        }
         Ok(rows
             .into_iter()
-            .map(|(id, parent_id, name, slug, part_count)| FolderRow {
+            .zip(counts)
+            .map(|((id, parent_id, name, slug, _), part_count)| FolderRow {
                 id: FolderId::from_uuid(id),
                 parent_id: parent_id.map(FolderId::from_uuid),
                 name,

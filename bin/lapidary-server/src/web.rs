@@ -9,10 +9,12 @@
 //! because where they sit on disk is a fact about this deployment.
 
 use axum::Router;
-use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, Uri, Version, header};
 use axum::response::{IntoResponse, Response};
 use std::path::Path;
 use tower::ServiceExt;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{Predicate, SizeAbove};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -24,9 +26,25 @@ const IMMUTABLE: HeaderValue = HeaderValue::from_static("public, max-age=3153600
 /// new build would keep loading last week's bundle.
 const REVALIDATE: HeaderValue = HeaderValue::from_static("no-cache");
 
-// ponytail: no compression. Caddy gzipped; on a LAN the 150 kB the viewer chunk would save is not
-// worth tower-http's compression features and their C-free but large dependency tree. Add
-// `CompressionLayer` here if the app is ever served across a slow link.
+/// Gzip for what is text, and only that (A34): at 20,000 parts the category tree is 1.6 MB of JSON and 0.3 MB
+/// gzipped. A model file, a picture or a download is never compressed in flight, so a download stays the bytes on
+/// disk with their own length, and a stream of events is never held back to fill a block. Gzip only: flate2 was
+/// already in the tree.
+fn textual(_: StatusCode, _: Version, headers: &HeaderMap, _: &Extensions) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|kind| kind.to_str().ok())
+        .is_some_and(|kind| {
+            [
+                "application/json",
+                "text/html",
+                "text/css",
+                "text/javascript",
+            ]
+            .iter()
+            .any(|text| kind.starts_with(text))
+        })
+}
 
 /// `app` with the browser app at `dist` behind every route it does not answer itself.
 pub fn with_web(app: Router, dist: &Path) -> Router {
@@ -37,8 +55,8 @@ pub fn with_web(app: Router, dist: &Path) -> Router {
         ))
         .service(ServeDir::new(dist.join("assets")));
     let pages = ServeDir::new(dist).fallback(ServeFile::new(dist.join("index.html")));
-    app.nest_service("/assets", assets).fallback(
-        move |uri: Uri, request: axum::extract::Request| {
+    app.nest_service("/assets", assets)
+        .fallback(move |uri: Uri, request: axum::extract::Request| {
             let pages = pages.clone();
             async move {
                 // An API route nobody mounted is the API's 404, not the app's front page.
@@ -54,8 +72,8 @@ pub fn with_web(app: Router, dist: &Path) -> Router {
                     .insert(header::CACHE_CONTROL, REVALIDATE);
                 response
             }
-        },
-    )
+        })
+        .layer(CompressionLayer::new().compress_when(SizeAbove::new(1024).and(textual)))
 }
 
 #[cfg(test)]
@@ -150,5 +168,49 @@ mod tests {
         let (status, _, body) = get_path(&app, "/assets/gone-123.js").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(!body.contains("doctype"));
+    }
+
+    /// A34: JSON is gzipped when the browser accepts it; a model file never is, so a download keeps its bytes and
+    /// its length.
+    #[tokio::test]
+    async fn json_is_gzipped_and_a_model_file_is_not() {
+        let dist = dist();
+        let big = "x".repeat(4096);
+        let api = Router::new()
+            .route(
+                "/api/tree",
+                get({
+                    let big = big.clone();
+                    move || async move { axum::Json(vec![big]) }
+                }),
+            )
+            .route(
+                "/api/model",
+                get(move || async move {
+                    (
+                        [(header::CONTENT_TYPE, "model/stl")],
+                        big.clone().into_bytes(),
+                    )
+                }),
+            );
+        let app = with_web(api, dist.path());
+        let encoding = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT_ENCODING, "gzip")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("responds")
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .map(|value| value.to_str().expect("ascii").to_owned())
+            }
+        };
+        assert_eq!(encoding("/api/tree").await.as_deref(), Some("gzip"));
+        assert_eq!(encoding("/api/model").await, None);
     }
 }

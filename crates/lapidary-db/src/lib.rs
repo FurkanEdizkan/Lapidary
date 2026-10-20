@@ -28,10 +28,10 @@ pub use folders::{FolderRow, PgFolders};
 pub use jobs::{FAILED_SAMPLE, JOB_CHANNEL, JobRow, PgJobs};
 pub use repo::{
     Access, BundlePartRow, BundleRevisionRow, BundleSource, DownloadSource, EXACT_FACET_ROWS,
-    FacetValue, Framing, GridQuery, ImageBytes, IngestRequest, InstanceStorage, LibraryRow,
-    MoveRow, MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow, PartRepository,
-    PartRow, PartSourceRow, PgBlobs, PgIngest, PgParts, ReapReport, RenderCacheFreed,
-    RevisionSource, Sort, StorageTotals, StoredBlobRow,
+    FacetValue, Framing, GridFacets, GridQuery, ImageBytes, IngestRequest, InstanceStorage,
+    LibraryRow, MoveRow, MoveSource, NewPartImage, NewPartSource, PartDetailRow, PartImageRow,
+    PartRepository, PartRow, PartSourceRow, PgBlobs, PgIngest, PgParts, ReapReport,
+    RenderCacheFreed, RevisionSource, Sort, StorageTotals, StoredBlobRow,
 };
 pub use revisions::{CurrentRevision, PgRevisions, RevisionRequest, RevisionRow};
 pub use saved_filters::{FilterMove, PgSavedFilters, SavedFilterRow};

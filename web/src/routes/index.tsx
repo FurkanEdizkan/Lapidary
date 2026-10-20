@@ -789,6 +789,7 @@ export function Index({
   const settled = scan.data === undefined ? 0 : jobsSettled(scan.data)
   const pagesLoaded = parts.data?.pages.length ?? 0
   const batchFinished = scan.data?.finishedAt != null
+  const countsAt = useRef(0)
   useEffect(() => {
     if (settled === 0) {
       return
@@ -812,11 +813,15 @@ export function Index({
     }
     // The totals move with the grid, and nothing else would tell them so. A scan that
     // ingests 151 parts under a line still reporting the pre-scan figure is a
-    // measurement contradicted by the cards directly above it. One row either way, so it
-    // is not worth gating.
-    void queryClient.invalidateQueries({ queryKey: ['storage', library] })
-    // And the counts beside the grid, which a scan changes as surely as it changes the grid.
-    void queryClient.invalidateQueries({ queryKey: ['facets', library] })
+    // measurement contradicted by the cards directly above it. And the counts beside the
+    // grid, which a scan changes as surely as it changes the grid. Both read the whole
+    // library, so while it scans they follow at most every few seconds (A34), and once more
+    // when it ends.
+    if (batchFinished || Date.now() - countsAt.current >= COUNTS_EVERY_MS) {
+      countsAt.current = Date.now()
+      void queryClient.invalidateQueries({ queryKey: ['storage', library] })
+      void queryClient.invalidateQueries({ queryKey: ['facets', library] })
+    }
   }, [settled, pagesLoaded, batchFinished, queryClient])
 
   const note = scanNow.isError ? strings.scan.startFailed : null
@@ -1513,6 +1518,9 @@ function SavedFilters({
     </section>
   )
 }
+
+/** How often a scan's counts beside the grid follow it (A34): each reads the whole library. */
+const COUNTS_EVERY_MS = 5000
 
 /** The two ways a saved filter moves, named once rather than spelled inside the JSX. */
 const UP: MoveDirection = 'up'

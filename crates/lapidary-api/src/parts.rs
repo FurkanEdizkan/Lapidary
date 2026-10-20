@@ -507,84 +507,59 @@ pub async fn facets(
             })
             .collect()
     };
-    let formats = match parts
-        .format_facet(
-            library,
-            folder_id,
-            q,
-            material.as_deref(),
-            tag.as_deref(),
-            field.exact.as_deref(),
-            field.range.as_deref(),
-        )
-        .await
-    {
-        Ok(formats) => formats,
-        Err(err) => return internal_error(&err, "facet query failed"),
-    };
-    let materials = match parts
-        .material_facet(
-            library,
-            folder_id,
-            q,
-            format.as_deref(),
-            tag.as_deref(),
-            field.exact.as_deref(),
-            field.range.as_deref(),
-        )
-        .await
-    {
-        Ok(materials) => materials,
-        Err(err) => return internal_error(&err, "facet query failed"),
-    };
-    let tags = match parts
-        .tag_facet(
-            library,
-            folder_id,
-            q,
-            format.as_deref(),
-            material.as_deref(),
-            field.exact.as_deref(),
-            field.range.as_deref(),
-        )
-        .await
-    {
-        Ok(tags) => tags,
-        Err(err) => return internal_error(&err, "facet query failed"),
-    };
-    // The choice fields offered as filters: the only fields whose values are a list to count.
-    let keys: Vec<String> = match lapidary_db::PgCustomFields(parts.0.clone())
-        .list(library)
-        .await
-    {
-        Ok(defined) => defined
+    // The grid's three groups in one read (A34), and the choice fields beside it at the same time.
+    let choices = async {
+        // The choice fields offered as filters: the only fields whose values are a list to count.
+        let keys: Vec<String> = lapidary_db::PgCustomFields(parts.0.clone())
+            .list(library)
+            .await?
             .into_iter()
             .filter(|one| one.indexed && one.kind == "choice")
             .map(|one| one.key)
-            .collect(),
-        Err(err) => return internal_error(&err, "custom field list failed"),
+            .collect();
+        let counted = if keys.is_empty() {
+            std::collections::BTreeMap::new()
+        } else {
+            parts
+                .choice_facet(
+                    library,
+                    folder_id,
+                    q,
+                    format.as_deref(),
+                    material.as_deref(),
+                    tag.as_deref(),
+                    field.exact.as_deref(),
+                    field.range.as_deref(),
+                    filtered.as_deref(),
+                    &keys,
+                )
+                .await?
+        };
+        Ok::<_, lapidary_db::DbError>((keys, counted))
     };
-    let mut counted = if keys.is_empty() {
-        std::collections::BTreeMap::new()
-    } else {
-        match parts
-            .choice_facet(
-                library,
-                folder_id,
-                q,
-                format.as_deref(),
-                material.as_deref(),
-                tag.as_deref(),
-                field.exact.as_deref(),
-                field.range.as_deref(),
-                filtered.as_deref(),
-                &keys,
-            )
-            .await
-        {
-            Ok(counted) => counted,
-            Err(err) => return internal_error(&err, "facet query failed"),
-        }
+    let (grid, choices) = tokio::join!(
+        parts.facets(
+            library,
+            folder_id,
+            q,
+            format.as_deref(),
+            material.as_deref(),
+            tag.as_deref(),
+            field.exact.as_deref(),
+            field.range.as_deref(),
+        ),
+        choices,
+    );
+    let (
+        lapidary_db::GridFacets {
+            formats,
+            materials,
+            tags,
+        },
+        (keys, mut counted),
+    ) = match (grid, choices) {
+        (Ok(grid), Ok(choices)) => (grid, choices),
+        (Err(err), _) | (_, Err(err)) => return internal_error(&err, "facet query failed"),
     };
     Json(Facets {
         formats: values(formats),
