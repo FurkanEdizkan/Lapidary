@@ -60,6 +60,17 @@ type CurrentRow = (
     Option<i64>,
 );
 
+/// A [`CurrentRow`] led by its part's source path.
+type PathRow = (
+    String,
+    Uuid,
+    Uuid,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
 fn current_revision(
     (part, revision, hash, storage_path, size_bytes, mtime_ns): CurrentRow,
 ) -> Result<CurrentRevision, DbError> {
@@ -185,15 +196,7 @@ impl PgRevisions {
         &self,
         library: LibraryId,
     ) -> Result<HashMap<String, CurrentRevision>, DbError> {
-        let rows: Vec<(
-            String,
-            Uuid,
-            Uuid,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-        )> = sqlx::query_as(concat!(
+        let rows: Vec<PathRow> = sqlx::query_as(concat!(
             "SELECT p.source_path, p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns",
             current_from!(),
             "WHERE p.library_id = $1"
