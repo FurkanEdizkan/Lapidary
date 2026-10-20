@@ -154,15 +154,20 @@ async fn the_wall_shows_only_pictures_of_parts_shared_with_everyone_and_not_hidd
     common::ensure_session(&pool).await;
     let part = lenas_bracket(&pool).await;
     mira(&pool).await;
+    let image = uuid::Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO part_image (id, part_id, image_webp, origin) VALUES (gen_random_uuid(), $1, $2, 'uploaded')",
+        "INSERT INTO part_image (id, part_id, image_webp, origin) VALUES ($1, $2, $3, 'uploaded')",
     )
+    .bind(image)
     .bind(part.as_uuid())
     .bind(&b"RIFF\0\0\0\0WEBPVP8 "[..])
     .execute(&pool)
     .await
     .expect("a picture");
     let wall = || signed_out(&pool, "/api/wall");
+    let address = format!("/api/wall/{image}");
+    let served = || async { signed_out(&pool, &address).await.0 };
+    assert_eq!(served().await, StatusCode::NOT_FOUND, "private: not served");
 
     // Private, then shared with Mira alone: on nobody's sign-in page.
     assert_eq!(wall().await, (StatusCode::OK, json!([])));
@@ -197,11 +202,9 @@ async fn the_wall_shows_only_pictures_of_parts_shared_with_everyone_and_not_hidd
         .collect();
     keys.sort();
     assert_eq!(keys, ["fit", "focusX", "focusY", "src"]);
-    assert!(
-        pictures[0]["src"]
-            .as_str()
-            .is_some_and(|src| src.starts_with("data:image/webp;base64,"))
-    );
+    // By its address, never inline (A36), and served signed out while the wall shows it.
+    assert_eq!(pictures[0]["src"], json!(address));
+    assert_eq!(served().await, StatusCode::OK);
 
     // Only its owner hides it; hidden, it is gone.
     let switch = format!("/api/parts/{part}/wall");
@@ -222,6 +225,7 @@ async fn the_wall_shows_only_pictures_of_parts_shared_with_everyone_and_not_hidd
         StatusCode::OK
     );
     assert_eq!(wall().await.1, json!([]));
+    assert_eq!(served().await, StatusCode::NOT_FOUND, "hidden: not served");
     send(&pool, false, "PUT", &switch, Some(json!({ "on": true }))).await;
     assert_eq!(wall().await.1.as_array().map(Vec::len), Some(1));
 
@@ -257,10 +261,15 @@ async fn the_wall_shows_only_pictures_of_parts_shared_with_everyone_and_not_hidd
         json!({ "on": false })
     );
     assert_eq!(wall().await.1, json!([]));
+    assert_eq!(
+        served().await,
+        StatusCode::NOT_FOUND,
+        "the wall off: not served"
+    );
 }
 
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
-async fn a_picture_hash_is_served_signed_out_only_while_the_wall_shows_it(pool: sqlx::PgPool) {
+async fn a_stored_picture_is_read_by_its_id_only_while_the_wall_shows_it(pool: sqlx::PgPool) {
     common::ensure_session(&pool).await;
     let part = lenas_bracket(&pool).await;
     let hash = BlobHash::from_bytes(*blake3::hash(b"a photograph of the bracket").as_bytes());
@@ -271,15 +280,25 @@ async fn a_picture_hash_is_served_signed_out_only_while_the_wall_shows_it(pool: 
     .execute(&pool)
     .await
     .expect("a blob");
-    sqlx::query("INSERT INTO part_image (id, part_id, blake3, origin) VALUES (gen_random_uuid(), $1, $2, 'uploaded')")
-        .bind(part.as_uuid())
-        .bind(hash.to_hex())
-        .execute(&pool)
-        .await
-        .expect("a picture");
+    let image = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO part_image (id, part_id, blake3, origin) VALUES ($1, $2, $3, 'uploaded')",
+    )
+    .bind(image)
+    .bind(part.as_uuid())
+    .bind(hash.to_hex())
+    .execute(&pool)
+    .await
+    .expect("a picture");
     let wall = lapidary_db::PgWall(pool.clone());
+    let id = lapidary_core::PartImageId::from_uuid(image);
 
-    assert!(!wall.shows(&hash).await.expect("checks"));
+    assert!(wall.picture(id).await.expect("reads").is_none());
+    assert_eq!(
+        signed_out(&pool, &format!("/api/wall/{image}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // The hash is no address: the old route's shape is a 404 too.
     assert_eq!(
         signed_out(&pool, &format!("/api/wall/{}", hash.to_hex()))
             .await
@@ -291,11 +310,17 @@ async fn a_picture_hash_is_served_signed_out_only_while_the_wall_shows_it(pool: 
         .execute(&pool)
         .await
         .expect("shared");
-    assert!(wall.shows(&hash).await.expect("checks"));
+    assert_eq!(
+        wall.picture(id)
+            .await
+            .expect("reads")
+            .and_then(|bytes| bytes.hash),
+        Some(hash)
+    );
     assert_eq!(
         signed_out(&pool, "/api/wall").await.1[0]["src"],
-        json!(format!("/api/wall/{}", hash.to_hex()))
+        json!(format!("/api/wall/{image}"))
     );
     wall.set_on_wall(part, false).await.expect("hidden");
-    assert!(!wall.shows(&hash).await.expect("checks"));
+    assert!(wall.picture(id).await.expect("reads").is_none());
 }
