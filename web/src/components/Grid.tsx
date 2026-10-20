@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { type Density, type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
-import { Card } from './Card'
+import { Card, cardName } from './Card'
 import { arrive } from '../lib/motion'
 
 /**
@@ -32,30 +32,47 @@ export function MorePages({
   onMore: () => void
 }) {
   const sentinel = useRef<HTMLDivElement>(null)
+  // Read through a ref, never depended on (A40). Re-creating the observer on every fetch, or on
+  // every render that hands down a new `onMore`, would disconnect and reconnect it mid-scroll, and
+  // an observer that reconnects while its target is already visible fires immediately — which
+  // asked for the page still in flight again and cancelled it.
+  const latest = useRef({ fetching, onMore })
+  const watching = useRef<IntersectionObserver | null>(null)
+  useEffect(() => {
+    latest.current = { fetching, onMore }
+  })
 
   useEffect(() => {
     const node = sentinel.current
     if (node === null || !hasMore) {
       return
     }
-    // `fetching` is deliberately not in the dependency list. Re-creating the observer on
-    // every fetch would disconnect and reconnect it mid-scroll, and an observer that
-    // reconnects while its target is already visible fires immediately — which is a
-    // second request for the page still in flight. The guard is inside the callback
-    // instead, where it reads the current value.
     // Two screens ahead (A30): a page of cards is a few tens of kB now that pictures are addresses, so the next one
     // is asked for well before the end comes into view, and a steady scroll never waits at the bottom.
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          onMore()
+        if (!latest.current.fetching && entries.some((entry) => entry.isIntersecting)) {
+          latest.current.onMore()
         }
       },
       { rootMargin: '0px 0px 200% 0px' },
     )
     observer.observe(node)
-    return () => observer.disconnect()
-  }, [hasMore, onMore])
+    watching.current = observer
+    return () => {
+      watching.current = null
+      observer.disconnect()
+    }
+  }, [hasMore])
+  // A page landed and the end is still within reach: an observer reports only changes, so it is asked again, and a
+  // short page or a tall screen keeps filling without a scroll.
+  useEffect(() => {
+    const node = sentinel.current
+    const observer = watching.current
+    if (fetching || node === null || observer === null) return
+    observer.unobserve(node)
+    observer.observe(node)
+  }, [fetching])
 
   return (
     <>
@@ -106,25 +123,27 @@ function useRowWindow(list: React.RefObject<HTMLUListElement | null>, count: num
       const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length
       const item = node.firstElementChild
       const height = item instanceof HTMLElement ? item.offsetHeight : 0
-      // Nothing to measure. Before any card is drawn (a test's layout) that is every card drawn; once a window was
-      // measured it is that window kept, because dropping it here drew every card loaded for one frame (A35).
-      if (columns === 0 || height === 0) {
-        setView((now) => (now === null || item !== null ? null : now))
-        return
-      }
-      const rowHeight = height + (Number.parseFloat(style.rowGap) || 0)
+      const gap = Number.parseFloat(style.rowGap) || 0
       // Where the grid starts on the page: its border box, which the padding for undrawn rows is inside.
       const start = node.getBoundingClientRect().top + window.scrollY
-      const rows = Math.ceil(count / columns)
-      const last = Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS)
-      // Scrolled past the grid's end (End, a dragged scrollbar, the page below it), the window still holds its last
-      // rows rather than none.
-      const first = Math.max(0, Math.min(last - OVERSCAN_ROWS, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS))
-      setView((now) =>
-        now !== null && now.columns === columns && now.rowHeight === rowHeight && now.first === first && now.last === last
+      setView((now) => {
+        // Nothing to measure. Before any card is drawn (a test's layout) that is every card drawn. Once a window was
+        // measured, its row and columns stand in (A35), and the window is worked out again from them: dropping it drew
+        // every card loaded for a frame, and keeping it as it was left a grid whose count had shrunk under it with no
+        // card drawn and so nothing to measure ever again (A40).
+        const measured = columns > 0 && height > 0
+        if (!measured && (now === null || item !== null)) return null
+        const cols = measured ? columns : now!.columns
+        const rowHeight = measured ? height + gap : now!.rowHeight
+        const rows = Math.max(1, Math.ceil(count / cols))
+        const last = Math.max(0, Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS))
+        // Scrolled past the grid's end (End, a dragged scrollbar, the page below it), the window still holds its last
+        // rows rather than none.
+        const first = Math.max(0, Math.min(last - OVERSCAN_ROWS, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS))
+        return now !== null && now.columns === cols && now.rowHeight === rowHeight && now.first === first && now.last === last
           ? now
-          : { columns, rowHeight, first, last },
-      )
+          : { columns: cols, rowHeight, first, last }
+      })
     }
     const schedule = () => {
       if (frame === 0) frame = requestAnimationFrame(measure)
@@ -152,6 +171,7 @@ export function Grid({
   onOpen,
   onLook,
   following,
+  focus,
 }: {
   parts: readonly PartCard[]
   density: Density
@@ -170,6 +190,11 @@ export function Grid({
    * focus back to the card, so the grid keeps that card's row in its window.
    */
   following?: PartId
+  /**
+   * A card to give focus to when a look closes (A40), a new object each time it is asked. Drawn first if it is outside
+   * the window: the part a look stepped to, or one the grid was scrolled away from beside the pane.
+   */
+  focus?: { part: PartId }
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -222,19 +247,41 @@ export function Grid({
   // Only the rows in view are in the DOM (A30): at twenty thousand cards a grid that kept every one
   // held 300,000 nodes and each next page took longer to land than the last.
   const view = useRowWindow(list, parts.length, layout, density)
-  const start = view === null ? 0 : view.first * view.columns
-  const end = view === null ? parts.length : Math.min(parts.length, (view.last + 1) * view.columns)
   const rows = view === null ? 0 : Math.ceil(parts.length / view.columns)
+  // Clamped to the parts there are: the window is the last render's until it is measured again (A40).
+  const first = view === null ? 0 : Math.max(0, Math.min(view.first, rows - 1 - (view.last - view.first)))
+  const last = view === null ? 0 : Math.min(view.last, Math.max(0, rows - 1))
+  const start = view === null ? 0 : first * view.columns
+  const end = view === null ? parts.length : Math.min(parts.length, (last + 1) * view.columns)
   const drawn = parts.slice(start, end)
-  const index = following === undefined ? -1 : parts.findIndex((part) => part.id === following)
+  // One card the grid is bringing into view (A40): the part a look has open, followed, or the card a closed look hands
+  // focus back to. Kept until that card is drawn — its page may not have landed, or the window not been measured yet —
+  // then let go, so a person scrolling the grid beside the pane is not pulled back to it, nor by a refetch moving it.
+  const target = useRef<{ part: PartId; focus: boolean; scrolledTo: number } | null>(null)
   useEffect(() => {
+    if (following !== undefined) target.current = { part: following, focus: false, scrolledTo: -1 }
+  }, [following])
+  useEffect(() => {
+    if (focus !== undefined) target.current = { part: focus.part, focus: true, scrolledTo: -1 }
+  }, [focus])
+  useEffect(() => {
+    const wanted = target.current
     const node = list.current
-    if (view === null || node === null || index < 0 || (index >= start && index < end)) return
+    if (wanted === null || node === null) return
+    // Drawn is what the page holds, not what this render's window says: the first render's effects run with the
+    // window not yet measured, and taking that for "every card drawn" let the target go before it was reached.
+    const name = cardName(wanted.part)
+    if (name !== null) {
+      if (wanted.focus) name.focus()
+      target.current = null
+      return
+    }
+    const index = parts.findIndex((part) => part.id === wanted.part)
+    if (view === null || index < 0 || wanted.scrolledTo === index) return
+    wanted.scrolledTo = index
     const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
     window.scrollTo({ top: top - window.innerHeight / 3 })
-    // Only when the part changes, not when its place does: a person scrolling the grid beside the pane is not pulled
-    // back to it, nor by a scan's refetch putting new parts above it.
-  }, [following])
+  })
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.
@@ -269,8 +316,8 @@ export function Grid({
         view === null
           ? undefined
           : {
-              paddingTop: view.first * view.rowHeight,
-              paddingBottom: Math.max(0, rows - 1 - view.last) * view.rowHeight,
+              paddingTop: first * view.rowHeight,
+              paddingBottom: Math.max(0, rows - 1 - last) * view.rowHeight,
             }
       }
       // Ctrl/Cmd-A inside the grid selects every part loaded, while selecting. Anywhere else

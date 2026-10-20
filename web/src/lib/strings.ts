@@ -1891,6 +1891,8 @@ export const strings = {
     fullPage: 'Open the full page',
     /** Where the stage is in the parts on screen: `3 of 40`. */
     position: (at: number, of: number) => `${at.toLocaleString('en-US')} of ${of.toLocaleString('en-US')}`,
+    /** The same, while more of the library is still to load (A40): the count is so far, not the whole. */
+    positionSoFar: (at: number, of: number) => `${at.toLocaleString('en-US')} of ${of.toLocaleString('en-US')}+`,
     /** Under the stage's figures, once: the keys are the fastest way through a library and nothing else says so. */
     steps: 'Left and right arrows step through the parts.',
     loading: 'Loading…',

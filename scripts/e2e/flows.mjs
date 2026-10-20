@@ -793,6 +793,20 @@ const FLOWS = [
       await page.key('Escape', 'Escape', 27)
       await sleep(500)
       expect((await focused()) === title, `after ${steps} steps to ${title}, focus came back to ${JSON.stringify(await focused())}`)
+      // A40: at a width with room for the pane, open it on the top card, scroll the grid away, close it: focus is the
+      // card's again, drawn first if the scroll took it out of the window.
+      if (page.width >= 1280) {
+        await page.evaluate('scrollTo(0, 0)')
+        await sleep(200)
+        const again = await page.rect(S.card, 0)
+        await page.click(again.left + again.width / 2, again.top + again.height * 0.3)
+        await sleep(600)
+        await page.evaluate('scrollTo(0, document.documentElement.scrollHeight)')
+        await sleep(400)
+        await page.key('Escape', 'Escape', 27)
+        await sleep(600)
+        expect((await focused()) === top, `closing the pane after scrolling away left focus on ${JSON.stringify(await focused())}, not ${top}`)
+      }
       return `20 Tabs inside the grid; focus back on ${JSON.stringify(top)} and, ${steps} steps on, ${JSON.stringify(title)}`
     },
   },

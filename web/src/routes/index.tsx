@@ -63,7 +63,7 @@ import { DEFAULT_ORIGIN } from '../components/Card'
 import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
 import { ConfirmDelete } from '../components/ConfirmDelete'
-import { QuickLook, StageLook, cardName, useWide } from '../components/QuickLook'
+import { QuickLook, StageLook, useWide } from '../components/QuickLook'
 import { hostRootsOf } from '../components/ShowInFolder'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
@@ -524,15 +524,15 @@ export function Index({
     if (onOpenPart === undefined) setOwnPart(id ?? undefined)
     else onOpenPart(id)
   }
+  // The card a closed look gives focus back to, through the grid (A40).
+  const [focusing, setFocusing] = useState<{ part: PartId } | undefined>(undefined)
   const closeLook = () => {
     const id = openPart
     setOpenPart(null)
-    // The pane traps nothing, so nothing gives focus back for it: return it to the card's name,
-    // the keyboard's way in. The dialog restores focus itself, and doing it here as well would
-    // fight its own blur handler.
-    if (wide && id !== undefined) {
-      cardName(id)?.focus()
-    }
+    // Back to the card's name, the keyboard's way in, through the grid (A40), which draws the card
+    // first if the person scrolled it out of the window beside the pane. The narrow dialog gives
+    // focus back too, when it closes; this lands after it, on the same card, so the two agree.
+    if (id !== undefined) setFocusing({ part: id })
   }
 
   /**
@@ -545,10 +545,10 @@ export function Index({
   const [bulk, setBulk] = useState<BulkProgress | null>(null)
   const [picking, setPicking] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
-  // Ids picked out of one grid mean nothing in another: a category, format or search that
+  // Ids picked out of one grid mean nothing in another: a category, format, field filter (A40) or search that
   // changes which parts are on screen would otherwise leave hidden parts selected, and a
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
-  const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? ''].join('\u0000')
+  const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? '', field ?? '', fieldValue ?? '', fieldMin ?? '', fieldMax ?? ''].join('\u0000')
   const [selectionScope, setSelectionScope] = useState(scope)
   if (scope !== selectionScope) {
     setSelectionScope(scope)
@@ -790,6 +790,8 @@ export function Index({
   const pagesLoaded = parts.data?.pages.length ?? 0
   const batchFinished = scan.data?.finishedAt != null
   const countsAt = useRef(0)
+  const batchId = scan.data?.batchId ?? null
+  const finishedFor = useRef<string | null>(null)
   useEffect(() => {
     if (settled === 0) {
       return
@@ -808,6 +810,14 @@ export function Index({
     // would be the other way to make it cheap and it snaps a reading user back to the
     // top of a library they were scrolled into, which is worse than a grid that fills a
     // few seconds later.
+    //
+    // A finished batch refreshes everything once (A40). `batchFinished` stays true while the
+    // page holds the batch, so without the once each next page that landed refetched every
+    // page held, and the counts, again.
+    if (batchFinished) {
+      if (finishedFor.current === batchId) return
+      finishedFor.current = batchId
+    }
     if (pagesLoaded <= 1 || batchFinished) {
       void queryClient.invalidateQueries({ queryKey: ['parts', library] })
     }
@@ -822,7 +832,7 @@ export function Index({
       void queryClient.invalidateQueries({ queryKey: ['storage', library] })
       void queryClient.invalidateQueries({ queryKey: ['facets', library] })
     }
-  }, [settled, pagesLoaded, batchFinished, queryClient])
+  }, [settled, pagesLoaded, batchFinished, batchId, queryClient])
 
   const note = scanNow.isError ? strings.scan.startFailed : null
 
@@ -1114,7 +1124,12 @@ export function Index({
                   setStageFrom(DEFAULT_ORIGIN)
                   setStagedId(loaded[next]?.id ?? null)
                 }}
-                onClose={() => setStagedId(null)}
+                hasMore={parts.hasNextPage}
+                onMore={() => void parts.fetchNextPage()}
+                onClose={() => {
+                  if (stagedId !== null) setFocusing({ part: stagedId })
+                  setStagedId(null)
+                }}
               />
             )}
             <Presence>
@@ -1174,7 +1189,8 @@ export function Index({
             </Presence>
             <Grid
               parts={loaded}
-              following={openPart ?? stagedId ?? undefined}
+              following={stagedId ?? openPart}
+              focus={focusing}
               density={density}
               layout={layout}
               selecting={selecting}

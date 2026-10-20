@@ -61,13 +61,17 @@ const GEAR = card('01931b6e-0000-7000-8000-0000000b0002', 'spur-gear-m2-20t-lp-5
 const VEE = card('01931b6e-0000-7000-8000-0000000b0003', 'vee-block-lp-3072-02')
 
 let setParts: (parts: PartCard[]) => void = () => {}
+let setFocus: (focus: { part: PartId } | undefined) => void = () => {}
 
 function Harness({ initial = [FLANGE, GEAR] }: { initial?: PartCard[] }) {
   const [parts, set] = useState<PartCard[]>(initial)
+  const [focus, focusOn] = useState<{ part: PartId } | undefined>(undefined)
   setParts = set
+  setFocus = focusOn
   return (
     <Grid
       parts={parts}
+      focus={focus}
       density="comfortable"
       layout="detail"
       selecting={false}
@@ -323,5 +327,80 @@ test('scrolled past the end, the grid still draws a window and never every card'
   expect(list.children.length, 'the last rows are drawn').toBeGreaterThan(0)
   expect(list.children.length).toBeLessThan(100)
   expect(most, 'never every card, not even for a frame').toBeLessThan(100)
+  vi.restoreAllMocks()
+})
+
+/**
+ * A40: scrolled deep, the parts shrink under a grid that stays mounted (a cached search, a small category). The window
+ * was the old one, past the new end, so nothing was drawn and nothing could be measured again: the grid stayed blank.
+ */
+test('a grid whose parts shrink under it while scrolled deep still draws them', async () => {
+  const many = Array.from({ length: 2000 }, (_, i) =>
+    card(`01931b6e-0000-7000-8000-${i.toString(16).padStart(12, '0')}`, `bracket-lp-${1000 + i}-03`),
+  )
+  let scrollY = 0
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => scrollY })
+  const real = window.getComputedStyle
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((node) =>
+    node instanceof HTMLUListElement
+      ? ({ gridTemplateColumns: '200px 200px 200px 200px', rowGap: '0' } as CSSStyleDeclaration)
+      : real(node),
+  )
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLUListElement.prototype, 'getBoundingClientRect').mockImplementation(
+    () => ({ top: 100 - scrollY }) as DOMRect,
+  )
+  await renderGrid(many)
+  scrollY = 100 * 300
+  await act(async () => {
+    window.dispatchEvent(new Event('scroll'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  const list = screen.getByRole('list')
+  expect(list.children.length).toBeGreaterThan(0)
+  await act(async () => setParts(many.slice(0, 50)))
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  expect(list.children.length, 'the fifty are drawn, not none').toBeGreaterThan(0)
+  vi.restoreAllMocks()
+})
+
+/** A40: a closed look hands focus to a card the person scrolled far from; the grid draws it, then focuses its name. */
+test('focus asked for a card outside the window scrolls to it and lands on its name', async () => {
+  const many = Array.from({ length: 2000 }, (_, i) =>
+    card(`01931b6e-0000-7000-8000-${i.toString(16).padStart(12, '0')}`, `bracket-lp-${1000 + i}-03`),
+  )
+  let scrollY = 0
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => scrollY })
+  vi.spyOn(window, 'scrollTo').mockImplementation(((options: ScrollToOptions) => {
+    scrollY = Math.max(0, options.top ?? 0)
+    // As a browser does: the scroll event comes after, not inside the call.
+    setTimeout(() => window.dispatchEvent(new Event('scroll')), 0)
+  }) as typeof window.scrollTo)
+  const real = window.getComputedStyle
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((node) =>
+    node instanceof HTMLUListElement
+      ? ({ gridTemplateColumns: '200px 200px 200px 200px', rowGap: '0' } as CSSStyleDeclaration)
+      : real(node),
+  )
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLUListElement.prototype, 'getBoundingClientRect').mockImplementation(
+    () => ({ top: 100 - scrollY }) as DOMRect,
+  )
+  await renderGrid(many)
+  const far = many[1500]!
+  expect(document.getElementById(`part-name-${far.id}`)).toBeNull()
+  await act(async () => {
+    setFocus({ part: far.id })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  })
+  // In jsdom the grid's scroll listener is torn down as the mocked scroll lands (seen, not explained: the test's router
+  // redraws its route), so a second scroll is the one it hears. In a browser the rig's keyboard flow covers this.
+  await act(async () => {
+    window.dispatchEvent(new Event('scroll'))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  })
+  expect(document.activeElement?.textContent).toBe(far.name)
   vi.restoreAllMocks()
 })

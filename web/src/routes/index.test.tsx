@@ -2358,6 +2358,57 @@ test("a running scan refreshes the counts beside the grid at most every five sec
   ).toBeLessThanOrEqual(1);
 });
 
+test("a finished batch refreshes the grid once, not on every page that lands after it", async () => {
+  // A40: `finishedAt` stays set while the page holds the batch, so each next page re-ran the
+  // settle effect and refetched every page held.
+  const cursor = "01931b6e-0000-7000-8000-0000000a0002";
+  let firstPages = 0;
+  let laterPages = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (url.includes("/jobs/"))
+        return {
+          ok: true,
+          json: async () => ({
+            batchId: "01931b6e-0000-7000-8000-0000000b0001",
+            libraryId: DEFAULT_LIBRARY_ID,
+            total: 3,
+            pending: 0,
+            running: 0,
+            ingested: 2,
+            skipped: 0,
+            rendered: 0,
+            scanned: 1,
+            failedTotal: 0,
+            failed: [],
+            startedAt: "2026-09-06T10:00:00Z",
+            finishedAt: "2026-09-06T10:00:09Z",
+          }),
+        };
+      if (url.includes("/parts")) {
+        if (url.includes("after=")) {
+          laterPages++;
+          return { ok: true, json: async () => ({ parts: [HEX_NUT], next: cursor }) };
+        }
+        firstPages++;
+        return { ok: true, json: async () => ({ parts: [MOTOR_MOUNT], next: cursor }) };
+      }
+      if (url.includes("/healthz"))
+        return { ok: true, json: async () => HEALTHY };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }),
+  );
+  renderIndex({ batch: "01931b6e-0000-7000-8000-0000000b0001" });
+  await screen.findByRole("article", { name: MOTOR_MOUNT.name });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const settledFirst = firstPages;
+  scrollToEnd();
+  await waitFor(() => expect(laterPages).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(firstPages, "the first page is not fetched again because a later one landed").toBe(settledFirst);
+});
+
 test("the progress line moves from the stream, which is what a hidden tab still gets", async () => {
   // The freeze slice 5's handoff recorded: react-query does not poll a hidden document,
   // so a user who dropped a thousand files and switched tabs came back to a line stopped
