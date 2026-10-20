@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { type Density, type Layout } from '../lib/preferences'
 import { strings } from '../lib/strings'
 import type { PartCard, PartId } from '../lib/types'
-import { Card } from './Card'
+import { Card, cardName } from './Card'
 import { arrive } from '../lib/motion'
 
 /**
@@ -171,6 +171,7 @@ export function Grid({
   onOpen,
   onLook,
   following,
+  focus,
 }: {
   parts: readonly PartCard[]
   density: Density
@@ -189,6 +190,11 @@ export function Grid({
    * focus back to the card, so the grid keeps that card's row in its window.
    */
   following?: PartId
+  /**
+   * A card to give focus to when a look closes (A40), a new object each time it is asked. Drawn first if it is outside
+   * the window: the part a look stepped to, or one the grid was scrolled away from beside the pane.
+   */
+  focus?: { part: PartId }
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -248,15 +254,32 @@ export function Grid({
   const start = view === null ? 0 : first * view.columns
   const end = view === null ? parts.length : Math.min(parts.length, (last + 1) * view.columns)
   const drawn = parts.slice(start, end)
-  const index = following === undefined ? -1 : parts.findIndex((part) => part.id === following)
+  // One card the grid is bringing into view (A40): the part a look has open, followed, or the card a closed look hands
+  // focus back to. Kept until that card is drawn — its page may not have landed, or the window not been measured yet —
+  // then let go, so a person scrolling the grid beside the pane is not pulled back to it, nor by a refetch moving it.
+  const target = useRef<{ part: PartId; focus: boolean; scrolledTo: number } | null>(null)
   useEffect(() => {
+    if (following !== undefined) target.current = { part: following, focus: false, scrolledTo: -1 }
+  }, [following])
+  useEffect(() => {
+    if (focus !== undefined) target.current = { part: focus.part, focus: true, scrolledTo: -1 }
+  }, [focus])
+  useEffect(() => {
+    const wanted = target.current
     const node = list.current
-    if (view === null || node === null || index < 0 || (index >= start && index < end)) return
+    if (wanted === null || node === null) return
+    const index = parts.findIndex((part) => part.id === wanted.part)
+    if (index < 0) return
+    if (view === null || (index >= start && index < end)) {
+      if (wanted.focus) cardName(wanted.part)?.focus()
+      target.current = null
+      return
+    }
+    if (wanted.scrolledTo === index) return
+    wanted.scrolledTo = index
     const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
     window.scrollTo({ top: top - window.innerHeight / 3 })
-    // Only when the part changes, not when its place does: a person scrolling the grid beside the pane is not pulled
-    // back to it, nor by a scan's refetch putting new parts above it.
-  }, [following])
+  })
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.

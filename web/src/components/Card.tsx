@@ -120,6 +120,11 @@ export function pictureStyle(image: PartImage | null): CSSProperties {
   }
 }
 
+/** A card's name on the grid, the keyboard's way into it, or `null` when it is not drawn. */
+export function cardName(part: PartId): HTMLElement | null {
+  return document.getElementById(`part-name-${part}`)?.querySelector('a') ?? null
+}
+
 export function Card({
   part,
   layout,

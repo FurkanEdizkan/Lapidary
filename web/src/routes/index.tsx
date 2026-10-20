@@ -63,7 +63,7 @@ import { DEFAULT_ORIGIN } from '../components/Card'
 import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
 import { ConfirmDelete } from '../components/ConfirmDelete'
-import { QuickLook, StageLook, cardName, useWide } from '../components/QuickLook'
+import { QuickLook, StageLook, useWide } from '../components/QuickLook'
 import { hostRootsOf } from '../components/ShowInFolder'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
@@ -524,15 +524,15 @@ export function Index({
     if (onOpenPart === undefined) setOwnPart(id ?? undefined)
     else onOpenPart(id)
   }
+  // The card a closed look gives focus back to, through the grid (A40).
+  const [focusing, setFocusing] = useState<{ part: PartId } | undefined>(undefined)
   const closeLook = () => {
     const id = openPart
     setOpenPart(null)
-    // The pane traps nothing, so nothing gives focus back for it: return it to the card's name,
-    // the keyboard's way in. The dialog restores focus itself, and doing it here as well would
-    // fight its own blur handler.
-    if (wide && id !== undefined) {
-      cardName(id)?.focus()
-    }
+    // Back to the card's name, the keyboard's way in, through the grid (A40), which draws the card
+    // first if the person scrolled it out of the window beside the pane. The narrow dialog gives
+    // focus back too, when it closes; this lands after it, on the same card, so the two agree.
+    if (id !== undefined) setFocusing({ part: id })
   }
 
   /**
@@ -1124,7 +1124,12 @@ export function Index({
                   setStageFrom(DEFAULT_ORIGIN)
                   setStagedId(loaded[next]?.id ?? null)
                 }}
-                onClose={() => setStagedId(null)}
+                hasMore={parts.hasNextPage}
+                onMore={() => void parts.fetchNextPage()}
+                onClose={() => {
+                  if (stagedId !== null) setFocusing({ part: stagedId })
+                  setStagedId(null)
+                }}
               />
             )}
             <Presence>
@@ -1184,7 +1189,8 @@ export function Index({
             </Presence>
             <Grid
               parts={loaded}
-              following={openPart ?? stagedId ?? undefined}
+              following={stagedId ?? openPart}
+              focus={focusing}
               density={density}
               layout={layout}
               selecting={selecting}

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { downloadUrl, fetchPartDetail } from '../lib/api'
 import { flipFrom } from '../lib/flip'
+import { cardName } from './Card'
 import { Dialog } from './Dialog'
 import { ShowInFolder, type HostRoots } from './ShowInFolder'
 import { Detail, Preview } from './PartDetail'
@@ -99,11 +100,6 @@ function QuickLookPane({
     </aside>
     </Fade>
   )
-}
-
-/** A card's name on the grid, the keyboard's way into it, or `null` when it is not drawn. */
-export function cardName(part: PartId): HTMLElement | null {
-  return document.getElementById(`part-name-${part}`)?.querySelector('a') ?? null
 }
 
 /**
@@ -235,9 +231,14 @@ export function StageLook({
   from,
   onStep,
   onClose,
+  hasMore = false,
+  onMore,
 }: {
   parts: readonly PartCard[]
   index: number
+  /** More of the library past `parts` (A40): the last loaded part steps on by asking for them. */
+  hasMore?: boolean
+  onMore?: () => void
   /** Where the first part's render sat on the grid; a zero rectangle after a step. */
   from: DOMRect
   onStep: (index: number) => void
@@ -255,17 +256,33 @@ export function StageLook({
     if (image != null) flipFrom(image, from)
   }, [detail.data, from])
 
-  const step = useRef({ index, count: parts.length, onStep })
+  const step = useRef({ index, count: parts.length, onStep, hasMore, onMore })
   useEffect(() => {
-    step.current = { index, count: parts.length, onStep }
+    step.current = { index, count: parts.length, onStep, hasMore, onMore }
   })
+  // A step asked for past the last loaded part, taken when its page lands.
+  const waiting = useRef<number | null>(null)
+  useEffect(() => {
+    const next = waiting.current
+    if (next !== null && next < parts.length) {
+      waiting.current = null
+      onStep(next)
+    }
+  }, [parts.length, onStep])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
       if (event.defaultPrevented || ownsArrows(event.target)) return
-      const { index: at, count, onStep: go } = step.current
+      const { index: at, count, onStep: go, hasMore: more, onMore: fetchMore } = step.current
       const next = at + (event.key === 'ArrowRight' ? 1 : -1)
-      if (next < 0 || next >= count) return
+      if (next < 0) return
+      if (next >= count) {
+        if (!more || fetchMore === undefined) return
+        event.preventDefault()
+        waiting.current = next
+        fetchMore()
+        return
+      }
       event.preventDefault()
       go(next)
     }
@@ -296,7 +313,7 @@ export function StageLook({
         </div>
         <div className="flex min-w-0 flex-col gap-4 text-sm">
           <p className="tabular text-xs text-[var(--color-muted)]">
-            {strings.quickLook.position(index + 1, parts.length)}
+            {(hasMore ? strings.quickLook.positionSoFar : strings.quickLook.position)(index + 1, parts.length)}
           </p>
           {part.partNumber === null ? null : (
             <p className="tabular text-[var(--color-dim)]">{part.partNumber}</p>
