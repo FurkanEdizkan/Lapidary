@@ -1532,6 +1532,20 @@ mod facet_tests {
     }
 }
 
+/// Each part of the library and its current source format: its latest revision's latest source file's, as the card's
+/// is. Set-based, two sorted passes, rather than a lookup per part (A34): at 20,000 parts the lookups were a tenth of a
+/// second of every facet request. Follows `down` in a facet query's `WITH`, and reads its `$1`, the library.
+macro_rules! current_format {
+    () => {
+        "cur AS (SELECT DISTINCT ON (r.part_id) r.part_id, r.id FROM revision r \
+           JOIN part q ON q.id = r.part_id WHERE q.library_id = $1 \
+           ORDER BY r.part_id, r.created_at DESC, r.id DESC), \
+         fmt AS (SELECT DISTINCT ON (f.revision_id) cur.part_id, f.format FROM file f \
+           JOIN cur ON f.revision_id = cur.id WHERE f.role = 'source' \
+           ORDER BY f.revision_id, f.created_at DESC, f.id DESC)"
+    };
+}
+
 impl PgParts {
     /// The source formats among the parts the grid would show for the same library,
     /// category, query and state, per [`facet_values`]: narrowed by the grid's chosen material
@@ -1555,17 +1569,15 @@ impl PgParts {
         // ponytail: every match is counted even past the threshold, where the counts are only
         // withheld. A rollup table refreshed on ingest (`docs/DATA.md` §3.4) is the upgrade,
         // when a large library measures slow.
-        let rows: Vec<(String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
-             SELECT s.format, count(*) FROM part p \
-             JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-             JOIN LATERAL (SELECT format FROM file WHERE revision_id = r.id AND role = 'source' \
-                           ORDER BY created_at DESC, id DESC LIMIT 1) s ON true \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            " \
+             SELECT s.format, count(*) FROM part p JOIN fmt s ON s.part_id = p.id \
              WHERE p.library_id = $1 \
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
@@ -1574,8 +1586,8 @@ impl PgParts {
                AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
                AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
                AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY s.format ORDER BY s.format",
-        )
+             GROUP BY s.format ORDER BY s.format"
+        ))
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
@@ -1607,26 +1619,26 @@ impl PgParts {
         field: Option<&str>,
         field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            " \
              SELECT m.material, count(DISTINCT p.id) FROM part p \
              CROSS JOIN LATERAL unnest(p.materials) AS m(material) \
              WHERE p.library_id = $1 \
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
                     OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM fmt WHERE format = $5)) \
                AND ($6::text IS NULL OR p.tags @> ARRAY[$6::text]) \
                AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
                AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY m.material ORDER BY m.material",
-        )
+             GROUP BY m.material ORDER BY m.material"
+        ))
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
@@ -1654,26 +1666,26 @@ impl PgParts {
         field: Option<&str>,
         field_range: Option<&str>,
     ) -> Result<Vec<FacetValue>, DbError> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            " \
              SELECT t.tag, count(DISTINCT p.id) FROM part p \
              CROSS JOIN LATERAL unnest(p.tags) AS t(tag) \
              WHERE p.library_id = $1 \
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
                     OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM fmt WHERE format = $5)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::jsonb IS NULL OR p.metadata_json->'custom' @> $7::jsonb) \
                AND ($8::jsonpath IS NULL OR p.metadata_json->'custom' @? $8::jsonpath) \
-             GROUP BY t.tag ORDER BY t.tag",
-        )
+             GROUP BY t.tag ORDER BY t.tag"
+        ))
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))
         .bind(query)
@@ -1708,12 +1720,14 @@ impl PgParts {
     ) -> Result<std::collections::BTreeMap<String, Vec<FacetValue>>, DbError> {
         // `jsonb_each_text` over an object only: a `custom` that is anything else holds no field values,
         // and would fail the query rather than count nothing.
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(concat!(
             "WITH RECURSIVE down AS ( \
              SELECT id FROM folder WHERE id = $2 \
              UNION ALL \
              SELECT f.id FROM folder f \
-             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen \
+             JOIN down ON f.parent_id = down.id) CYCLE id SET is_cycle USING seen, ",
+            current_format!(),
+            " \
              SELECT kv.key, kv.value, count(*) FROM part p \
              CROSS JOIN LATERAL jsonb_each_text(CASE jsonb_typeof(p.metadata_json->'custom') \
                   WHEN 'object' THEN p.metadata_json->'custom' END) AS kv(key, value) \
@@ -1721,16 +1735,15 @@ impl PgParts {
                AND ($2::uuid IS NULL OR p.folder_id IN (SELECT id FROM down WHERE NOT is_cycle)) \
                AND ($3::text IS NULL OR p.part_number ILIKE $4 OR p.name ILIKE $4 \
                     OR p.source_path ILIKE $4 OR p.search @@ plainto_tsquery('simple', $3)) \
-               AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM file f WHERE f.role = 'source' \
-                    AND f.format = $5 AND f.revision_id = (SELECT id FROM revision \
-                    WHERE part_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1))) \
+               AND ($5::text IS NULL OR p.id IN (SELECT part_id FROM fmt WHERE format = $5)) \
                AND ($6::text IS NULL OR p.materials @> ARRAY[$6::text]) \
                AND ($7::text IS NULL OR p.tags @> ARRAY[$7::text]) \
                AND kv.key = ANY($8::text[]) \
                AND (kv.key = $9 \
                     OR (($10::jsonb IS NULL OR p.metadata_json->'custom' @> $10::jsonb) \
                         AND ($11::jsonpath IS NULL OR p.metadata_json->'custom' @? $11::jsonpath))) \
-             GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value",
+             GROUP BY kv.key, kv.value ORDER BY kv.key, kv.value"
+        ),
         )
         .bind(library.as_uuid())
         .bind(folder.map(|f| f.as_uuid()))
