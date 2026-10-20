@@ -1,7 +1,7 @@
 //! `import_link`: a model from the page a person pasted (F3, 2026-10-16).
 //!
 //! The site is read with the key saved in Settings, each of the model's mesh files is fetched and
-//! written once into the inbox at `imports/<site>/<creator>/<model>/<file>` and indexed from there
+//! written once into the inbox at `imports/<owner>/<site>/<creator>/<model>/<file>` (per person since A38) and indexed from there
 //! through [`WorkerHandler::index`] — the path a scan and an upload take, hash first — as the part
 //! `<site>/<creator>/<model>/<file>`, and then each part gets what the page said about it: a source
 //! row naming the page, the site, the model's id and its licence; the creator's tags when the part has
@@ -206,6 +206,7 @@ impl WorkerHandler {
             slugify(model.creator.as_deref().unwrap_or("unknown")),
             slugify(&model.name),
         );
+        let imports = self.imports_dir(library).await?;
         let mut outcome = Outcome::Skipped;
         for file in meshes {
             let bytes = self
@@ -218,7 +219,7 @@ impl WorkerHandler {
             // Into Lapidary's own part of the inbox, once (M4), then indexed from there like any
             // other file. A re-import of unchanged bytes leaves the file as it was.
             let placed = InboxWriter::open(&self.inbox_dir)
-                .put(&format!("imports/{source_path}"), &bytes)
+                .put(&format!("{imports}/{source_path}"), &bytes)
                 .map_err(|e| HandlerError::Transient {
                     message: format!("Could not write {source_path} into the inbox: {e}"),
                 })?;

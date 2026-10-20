@@ -103,21 +103,24 @@ pub async fn browse(
     axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Query(query): Query<BrowseQuery>,
 ) -> Response {
-    let path = query.path.trim_matches('/').to_owned();
+    let path = match normalize(&query.path) {
+        Ok(path) => path,
+        Err(refusal) => return *refusal,
+    };
     if let Err(refusal) = inside(&path) {
         return *refusal;
     }
     if let Err(refusal) = not_someone_elses(&path, &user.username) {
         return *refusal;
     }
-    let only = (path == UPLOADS).then(|| user.username.clone());
+    let only = (path == UPLOADS || path == IMPORTS).then(|| user.username.clone());
     let dir = state.ingest_dir.join(&path);
     let listed = tokio::task::spawn_blocking(move || list(&dir)).await;
     match listed {
         Ok(Ok((entries, truncated))) => Json(BrowseListing {
             entries: entries
                 .into_iter()
-                // In `uploads/`, only the person's own folder (A3).
+                // In `uploads/` and `imports/`, only the person's own folder (A3, A38).
                 .filter(|(name, _, _)| only.as_ref().is_none_or(|own| name == own))
                 .map(|(name, is_folder, size)| BrowseEntry {
                     path: if path.is_empty() {
@@ -188,14 +191,17 @@ pub async fn add_source(
     if let Some(refusal) = no_library(&state, library).await {
         return refusal;
     }
-    let path = body.path.trim_matches('/').to_owned();
+    let path = match normalize(&body.path) {
+        Ok(path) => path,
+        Err(refusal) => return *refusal,
+    };
     if let Err(refusal) = inside(&path) {
         return *refusal;
     }
-    if path == UPLOADS {
+    if path == UPLOADS || path == IMPORTS {
         return refused(
             StatusCode::BAD_REQUEST,
-            "uploads holds everybody's uploads. Open it and add your own folder instead.",
+            "This folder holds everybody's uploads and imports. Open it and add your own folder instead.",
         );
     }
     if let Err(refusal) = not_someone_elses(&path, &user.username) {
@@ -276,12 +282,36 @@ pub async fn remove_source(
 
 /// Where uploads are written, one folder per person (A2).
 const UPLOADS: &str = "uploads";
+/// Where a site link or a bundle is imported, one folder per person (A38).
+const IMPORTS: &str = "imports";
 
-/// Not inside another person's uploads (A3), which is that person's to see. Said as a folder that is
-/// not there, which is what it is to this person.
+/// A path in the models folder as one spelling (A38): no leading, trailing or doubled `/`, and no `.`. Every check below
+/// reads the first segments, and `./uploads/bob` passed them while naming Bob's folder; stored as written, it also
+/// failed the exact match that keeps a removal from moving a file another part still uses. `..` is refused here.
+fn normalize(raw: &str) -> Result<String, Box<Response>> {
+    let mut segments = Vec::new();
+    for segment in raw.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                return Err(Box::new(refused(
+                    StatusCode::BAD_REQUEST,
+                    "That path leaves your models folder. Choose a folder from the list.",
+                )));
+            }
+            segment => segments.push(segment),
+        }
+    }
+    Ok(segments.join("/"))
+}
+
+/// Not inside another person's uploads (A3) or imports (A38), which are that person's to see. Said as a folder that
+/// is not there, which is what it is to this person.
 fn not_someone_elses(path: &str, username: &str) -> Result<(), Box<Response>> {
     let mut segments = path.split('/');
-    if segments.next() == Some(UPLOADS)
+    if segments
+        .next()
+        .is_some_and(|first| first == UPLOADS || first == IMPORTS)
         && let Some(owner) = segments.next()
         && owner != username
     {

@@ -86,7 +86,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use lapidary_core::{BatchId, JobPayload, LibraryId, Outcome, ScanAccepted};
-use lapidary_db::{DbError, PgJobs, PgRevisions, PgSources};
+use lapidary_db::{DbError, PgJobs, PgParts, PgRevisions, PgSources};
 use lapidary_jobs::HandlerError;
 use lapidary_storage::LibraryReader;
 use std::path::Path as FsPath;
@@ -136,9 +136,27 @@ impl WorkerHandler {
             .list(library)
             .await
             .map_err(classify_db)?;
+        // Whose library this is (A38): another person's `uploads/` and `imports/` are theirs, even under a folder this
+        // library added whole.
+        let owner = PgParts(self.db.clone())
+            .library_owner_name(library)
+            .await
+            .map_err(classify_db)?
+            .unwrap_or_default();
         let mut paths = Vec::new();
         for source in &sources {
             let at = source.path.trim_matches('/');
+            if !at.is_empty()
+                && at
+                    .split('/')
+                    .any(|segment| segment.is_empty() || segment == ".")
+            {
+                return Err(HandlerError::Permanent {
+                    message: format!(
+                        "The added path {at:?} is refused: write it without `.` or doubled `/`. Remove it from the library and add the folder again."
+                    ),
+                });
+            }
             if !at.is_empty() {
                 lapidary_core::slug::reject_escaping_path(at).map_err(|e| {
                     HandlerError::Permanent {
@@ -169,6 +187,7 @@ impl WorkerHandler {
         // An archive under `uploads/` was unpacked into parts when it was uploaded (A10); as a pack it would
         // be a second copy of the same models.
         paths.retain(|path| !(path.starts_with("uploads/") && lapidary_core::is_pack_file(path)));
+        paths.retain(|path| belongs_to(path, &owner));
         // Two sources can cover one file; it is filed once.
         paths.sort();
         paths.dedup();
@@ -221,6 +240,16 @@ impl WorkerHandler {
             tracing::warn!(error = %err, "could not prune the finished jobs of earlier scans");
         }
         Ok(Outcome::Scanned)
+    }
+}
+
+/// Whether a path under the models folder is the library owner's to scan: anything but another person's folder in
+/// `uploads/` or `imports/` (A38).
+fn belongs_to(path: &str, owner: &str) -> bool {
+    let mut segments = path.split('/');
+    match (segments.next(), segments.next()) {
+        (Some("uploads" | "imports"), Some(folder)) => folder == owner,
+        _ => true,
     }
 }
 
