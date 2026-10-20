@@ -51,6 +51,8 @@ function QuickLookPane({
 }: {
   title: string
   onClose: () => void
+  /** Unused: the pane is not modal, and the grid gives focus back when it closes. Here so it shares the dialog's props. */
+  returnFocus?: () => HTMLElement | null
   children: ReactNode
 }) {
   const titleId = useId()
@@ -97,6 +99,11 @@ function QuickLookPane({
     </aside>
     </Fade>
   )
+}
+
+/** A card's name on the grid, the keyboard's way into it, or `null` when it is not drawn. */
+export function cardName(part: PartId): HTMLElement | null {
+  return document.getElementById(`part-name-${part}`)?.querySelector('a') ?? null
 }
 
 /**
@@ -153,7 +160,9 @@ export function QuickLook({
   }, [detail.data, from])
   const Frame = pane ? QuickLookPane : Dialog
   return (
-    <Frame title={part.name} onClose={onClose}>
+    // The dialog gives focus back to the card's name, not to whatever was focused when it opened: a click on the card's
+    // picture focuses the grid around it, and closing onto that loses the card.
+    <Frame title={part.name} onClose={onClose} returnFocus={() => cardName(part.id)}>
       <div ref={panel}>
       {detail.isPending ? (
         <p className="mt-2 text-sm text-[var(--color-muted)]">{strings.quickLook.loading}</p>
@@ -271,7 +280,7 @@ export function StageLook({
       title={part.name}
       size="stage"
       onClose={onClose}
-      returnFocus={() => document.getElementById(`part-name-${part.id}`)?.querySelector('a') ?? null}
+      returnFocus={() => cardName(part.id)}
     >
       <div className="mt-3 grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div ref={stage} className="flex min-h-[18rem] min-w-0">

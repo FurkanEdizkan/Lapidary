@@ -752,6 +752,51 @@ const FLOWS = [
     },
   },
   {
+    // A35: the grid draws only the rows in view, so the keyboard has to keep working past them. Tab walks cards
+    // without leaving the grid, and closing a look hands focus back to the card it was on, however far it stepped.
+    name: 'keyboard',
+    widths: [1440, 1024],
+    async run(page, ctx) {
+      const focused = () =>
+        page.evaluate(
+          `document.activeElement?.closest(${JSON.stringify(S.card)})?.querySelector('h2')?.textContent.trim() ?? null`,
+        )
+      await page.go(grid(ctx.sweep.id), gridReady)
+      await cardsSettled(page)
+      await page.evaluate(`document.querySelector(${JSON.stringify(S.card)} + ' h2 a').focus()`)
+      for (let i = 0; i < 20; i++) {
+        await page.key('Tab', 'Tab', 9)
+        await sleep(25)
+        expect((await focused()) !== null, `Tab ${i + 1} left the grid's cards`)
+      }
+      await page.evaluate('scrollTo(0, 0)')
+      await sleep(200)
+      const top = await page.evaluate(`document.querySelector(${JSON.stringify(S.card)} + ' h2').textContent.trim()`)
+      const card = await page.rect(S.card, 0)
+      await page.click(card.left + card.width / 2, card.top + card.height * 0.3)
+      await sleep(600)
+      await page.key('Escape', 'Escape', 27)
+      await sleep(500)
+      expect((await focused()) === top, `closing the quick look left focus on ${JSON.stringify(await focused())}, not ${top}`)
+      await page.evaluate(`document.querySelector(${JSON.stringify(S.card)} + ' h2 a').focus()`)
+      await page.key(' ', 'Space', 32, ' ')
+      await sleep(600)
+      const steps = Math.min(40, (await loaded(page)) - 1)
+      for (let i = 0; i < steps; i++) {
+        await page.key('ArrowRight', 'ArrowRight', 39)
+        await sleep(20)
+      }
+      await sleep(400)
+      const title = await page.evaluate(
+        `[...document.querySelectorAll('[role="dialog"] h2')].map((h) => h.textContent.trim()).filter(Boolean)[0] ?? ''`,
+      )
+      await page.key('Escape', 'Escape', 27)
+      await sleep(500)
+      expect((await focused()) === title, `after ${steps} steps to ${title}, focus came back to ${JSON.stringify(await focused())}`)
+      return `20 Tabs inside the grid; focus back on ${JSON.stringify(top)} and, ${steps} steps on, ${JSON.stringify(title)}`
+    },
+  },
+  {
     name: 'quick-look',
     widths: [1440, 390],
     async run(page, ctx) {

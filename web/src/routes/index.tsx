@@ -63,7 +63,7 @@ import { DEFAULT_ORIGIN } from '../components/Card'
 import { BULK_CONCURRENCY, Grid, GridSkeleton, MorePages, SelectionBar } from '../components/Grid'
 import type { BulkProgress } from '../components/Grid'
 import { ConfirmDelete } from '../components/ConfirmDelete'
-import { QuickLook, StageLook, useWide } from '../components/QuickLook'
+import { QuickLook, StageLook, cardName, useWide } from '../components/QuickLook'
 import { hostRootsOf } from '../components/ShowInFolder'
 import { InstanceStorage, StorageDetails, StorageTotals } from '../components/Storage'
 import { LibraryMenu, Toolbar } from '../components/Toolbar'
@@ -531,7 +531,7 @@ export function Index({
     // the keyboard's way in. The dialog restores focus itself, and doing it here as well would
     // fight its own blur handler.
     if (wide && id !== undefined) {
-      document.getElementById(`part-name-${id}`)?.querySelector('a')?.focus()
+      cardName(id)?.focus()
     }
   }
 
@@ -1174,6 +1174,7 @@ export function Index({
             </Presence>
             <Grid
               parts={loaded}
+              following={openPart ?? stagedId ?? undefined}
               density={density}
               layout={layout}
               selecting={selecting}

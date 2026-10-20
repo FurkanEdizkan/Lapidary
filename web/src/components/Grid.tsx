@@ -151,6 +151,7 @@ export function Grid({
   onSelectAll,
   onOpen,
   onLook,
+  following,
 }: {
   parts: readonly PartCard[]
   density: Density
@@ -164,6 +165,11 @@ export function Grid({
   onOpen: (part: PartCard, from: DOMRect) => void
   /** Space on a card's name. See `StageLook`. */
   onLook?: (part: PartCard, from: DOMRect) => void
+  /**
+   * The part open in quick look (A35). Its arrows step through the grid, past the rows drawn, and closing it hands
+   * focus back to the card, so the grid keeps that card's row in its window.
+   */
+  following?: PartId
 }) {
   // Two numbers move together and have to: the column width sets how tall a card ends up,
   // and `contain-intrinsic-size` is the placeholder height for one that has not rendered.
@@ -220,6 +226,14 @@ export function Grid({
   const end = view === null ? parts.length : Math.min(parts.length, (view.last + 1) * view.columns)
   const rows = view === null ? 0 : Math.ceil(parts.length / view.columns)
   const drawn = parts.slice(start, end)
+  const index = following === undefined ? -1 : parts.findIndex((part) => part.id === following)
+  useEffect(() => {
+    const node = list.current
+    if (view === null || node === null || index < 0 || (index >= start && index < end)) return
+    const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
+    window.scrollTo({ top: top - window.innerHeight / 3 })
+    // Only when the part changes: a person scrolling the grid beside the pane is not pulled back to it.
+  }, [index])
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.
