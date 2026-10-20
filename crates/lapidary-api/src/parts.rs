@@ -507,8 +507,7 @@ pub async fn facets(
             })
             .collect()
     };
-    // The four groups at once (A34): each leaves out its own filter, so they are four reads, and in turn they cost the
-    // sum of four scans of the library where together they cost the longest one.
+    // The grid's three groups in one read (A34), and the choice fields beside it at the same time.
     let choices = async {
         // The choice fields offered as filters: the only fields whose values are a list to count.
         let keys: Vec<String> = lapidary_db::PgCustomFields(parts.0.clone())
@@ -538,42 +537,29 @@ pub async fn facets(
         };
         Ok::<_, lapidary_db::DbError>((keys, counted))
     };
-    let (formats, materials, tags, choices) = tokio::join!(
-        parts.format_facet(
-            library,
-            folder_id,
-            q,
-            material.as_deref(),
-            tag.as_deref(),
-            field.exact.as_deref(),
-            field.range.as_deref(),
-        ),
-        parts.material_facet(
-            library,
-            folder_id,
-            q,
-            format.as_deref(),
-            tag.as_deref(),
-            field.exact.as_deref(),
-            field.range.as_deref(),
-        ),
-        parts.tag_facet(
+    let (grid, choices) = tokio::join!(
+        parts.facets(
             library,
             folder_id,
             q,
             format.as_deref(),
             material.as_deref(),
+            tag.as_deref(),
             field.exact.as_deref(),
             field.range.as_deref(),
         ),
         choices,
     );
-    let (formats, materials, tags, (keys, mut counted)) = match (formats, materials, tags, choices)
-    {
-        (Ok(formats), Ok(materials), Ok(tags), Ok(choices)) => (formats, materials, tags, choices),
-        (Err(err), ..) | (_, Err(err), ..) | (_, _, Err(err), _) | (.., Err(err)) => {
-            return internal_error(&err, "facet query failed");
-        }
+    let (
+        lapidary_db::GridFacets {
+            formats,
+            materials,
+            tags,
+        },
+        (keys, mut counted),
+    ) = match (grid, choices) {
+        (Ok(grid), Ok(choices)) => (grid, choices),
+        (Err(err), _) | (_, Err(err)) => return internal_error(&err, "facet query failed"),
     };
     Json(Facets {
         formats: values(formats),
