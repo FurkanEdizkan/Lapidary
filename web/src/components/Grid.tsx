@@ -106,25 +106,27 @@ function useRowWindow(list: React.RefObject<HTMLUListElement | null>, count: num
       const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length
       const item = node.firstElementChild
       const height = item instanceof HTMLElement ? item.offsetHeight : 0
-      // Nothing to measure. Before any card is drawn (a test's layout) that is every card drawn; once a window was
-      // measured it is that window kept, because dropping it here drew every card loaded for one frame (A35).
-      if (columns === 0 || height === 0) {
-        setView((now) => (now === null || item !== null ? null : now))
-        return
-      }
-      const rowHeight = height + (Number.parseFloat(style.rowGap) || 0)
+      const gap = Number.parseFloat(style.rowGap) || 0
       // Where the grid starts on the page: its border box, which the padding for undrawn rows is inside.
       const start = node.getBoundingClientRect().top + window.scrollY
-      const rows = Math.ceil(count / columns)
-      const last = Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS)
-      // Scrolled past the grid's end (End, a dragged scrollbar, the page below it), the window still holds its last
-      // rows rather than none.
-      const first = Math.max(0, Math.min(last - OVERSCAN_ROWS, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS))
-      setView((now) =>
-        now !== null && now.columns === columns && now.rowHeight === rowHeight && now.first === first && now.last === last
+      setView((now) => {
+        // Nothing to measure. Before any card is drawn (a test's layout) that is every card drawn. Once a window was
+        // measured, its row and columns stand in (A35), and the window is worked out again from them: dropping it drew
+        // every card loaded for a frame, and keeping it as it was left a grid whose count had shrunk under it with no
+        // card drawn and so nothing to measure ever again (A40).
+        const measured = columns > 0 && height > 0
+        if (!measured && (now === null || item !== null)) return null
+        const cols = measured ? columns : now!.columns
+        const rowHeight = measured ? height + gap : now!.rowHeight
+        const rows = Math.max(1, Math.ceil(count / cols))
+        const last = Math.max(0, Math.min(rows - 1, Math.ceil((window.scrollY + window.innerHeight - start) / rowHeight) + OVERSCAN_ROWS))
+        // Scrolled past the grid's end (End, a dragged scrollbar, the page below it), the window still holds its last
+        // rows rather than none.
+        const first = Math.max(0, Math.min(last - OVERSCAN_ROWS, Math.floor((window.scrollY - start) / rowHeight) - OVERSCAN_ROWS))
+        return now !== null && now.columns === cols && now.rowHeight === rowHeight && now.first === first && now.last === last
           ? now
-          : { columns, rowHeight, first, last },
-      )
+          : { columns: cols, rowHeight, first, last }
+      })
     }
     const schedule = () => {
       if (frame === 0) frame = requestAnimationFrame(measure)
@@ -222,9 +224,12 @@ export function Grid({
   // Only the rows in view are in the DOM (A30): at twenty thousand cards a grid that kept every one
   // held 300,000 nodes and each next page took longer to land than the last.
   const view = useRowWindow(list, parts.length, layout, density)
-  const start = view === null ? 0 : view.first * view.columns
-  const end = view === null ? parts.length : Math.min(parts.length, (view.last + 1) * view.columns)
   const rows = view === null ? 0 : Math.ceil(parts.length / view.columns)
+  // Clamped to the parts there are: the window is the last render's until it is measured again (A40).
+  const first = view === null ? 0 : Math.max(0, Math.min(view.first, rows - 1 - (view.last - view.first)))
+  const last = view === null ? 0 : Math.min(view.last, Math.max(0, rows - 1))
+  const start = view === null ? 0 : first * view.columns
+  const end = view === null ? parts.length : Math.min(parts.length, (last + 1) * view.columns)
   const drawn = parts.slice(start, end)
   const index = following === undefined ? -1 : parts.findIndex((part) => part.id === following)
   useEffect(() => {
@@ -269,8 +274,8 @@ export function Grid({
         view === null
           ? undefined
           : {
-              paddingTop: view.first * view.rowHeight,
-              paddingBottom: Math.max(0, rows - 1 - view.last) * view.rowHeight,
+              paddingTop: first * view.rowHeight,
+              paddingBottom: Math.max(0, rows - 1 - last) * view.rowHeight,
             }
       }
       // Ctrl/Cmd-A inside the grid selects every part loaded, while selecting. Anywhere else

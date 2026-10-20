@@ -325,3 +325,39 @@ test('scrolled past the end, the grid still draws a window and never every card'
   expect(most, 'never every card, not even for a frame').toBeLessThan(100)
   vi.restoreAllMocks()
 })
+
+/**
+ * A40: scrolled deep, the parts shrink under a grid that stays mounted (a cached search, a small category). The window
+ * was the old one, past the new end, so nothing was drawn and nothing could be measured again: the grid stayed blank.
+ */
+test('a grid whose parts shrink under it while scrolled deep still draws them', async () => {
+  const many = Array.from({ length: 2000 }, (_, i) =>
+    card(`01931b6e-0000-7000-8000-${i.toString(16).padStart(12, '0')}`, `bracket-lp-${1000 + i}-03`),
+  )
+  let scrollY = 0
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => scrollY })
+  const real = window.getComputedStyle
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((node) =>
+    node instanceof HTMLUListElement
+      ? ({ gridTemplateColumns: '200px 200px 200px 200px', rowGap: '0' } as CSSStyleDeclaration)
+      : real(node),
+  )
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLUListElement.prototype, 'getBoundingClientRect').mockImplementation(
+    () => ({ top: 100 - scrollY }) as DOMRect,
+  )
+  await renderGrid(many)
+  scrollY = 100 * 300
+  await act(async () => {
+    window.dispatchEvent(new Event('scroll'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  const list = screen.getByRole('list')
+  expect(list.children.length).toBeGreaterThan(0)
+  await act(async () => setParts(many.slice(0, 50)))
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  expect(list.children.length, 'the fifty are drawn, not none').toBeGreaterThan(0)
+  vi.restoreAllMocks()
+})
