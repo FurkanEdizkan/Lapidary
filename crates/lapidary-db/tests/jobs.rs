@@ -1589,7 +1589,10 @@ async fn pruning_forgets_only_finished_file_jobs_of_finished_earlier_batches(poo
         .enqueue_scan(seeded(), &paths[..1])
         .await
         .expect("enqueues");
-    let (now, _) = jobs.enqueue_scan(seeded(), &paths).await.expect("enqueues");
+    let (now, _) = jobs
+        .enqueue_scan(seeded(), &paths[..1])
+        .await
+        .expect("enqueues");
     // The old batch: one done, one failed. The running one keeps a pending job. The new one is done.
     sqlx::query(
         "UPDATE job SET state = CASE WHEN payload->>'path' = 'bracket-lp-1042-03.stl' THEN 'done' ELSE 'failed' END, \
@@ -1629,7 +1632,7 @@ async fn pruning_forgets_only_finished_file_jobs_of_finished_earlier_batches(poo
     );
     assert_eq!(
         left.iter().filter(|(b, _, _)| *b == now.as_uuid()).count(),
-        2,
+        1,
         "its own batch stays"
     );
     assert!(
@@ -1637,4 +1640,16 @@ async fn pruning_forgets_only_finished_file_jobs_of_finished_earlier_batches(poo
         "the scan job stays"
     );
     assert!(jobs.library_has_history(seeded()).await.expect("asks"));
+
+    // A33: once a later scan tries the refused file again, the older refusal goes.
+    let (again, _) = jobs
+        .enqueue_scan(seeded(), &paths[1..])
+        .await
+        .expect("enqueues");
+    jobs.prune_finished(seeded(), again).await.expect("prunes");
+    let failed: i64 = sqlx::query_scalar("SELECT count(*) FROM job WHERE state = 'failed'")
+        .fetch_one(&pool)
+        .await
+        .expect("reads");
+    assert_eq!(failed, 0, "the retried refusal is not kept twice");
 }

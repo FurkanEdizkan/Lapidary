@@ -3706,3 +3706,102 @@ async fn an_unchanged_size_and_mtime_is_not_read_again_and_a_new_mtime_is(pool: 
         "a new mtime is read, and its other bytes are the next revision"
     );
 }
+
+/// A33: the walk makes the job's own test before it queues, so a rescan queues only what changed and still counts the
+/// rest: the batch holds the unchanged file as one already here.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_scan_queues_only_the_files_that_changed_and_counts_the_rest(pool: PgPool) {
+    whole_folder(&pool).await;
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    let carrier = format!("drives/planetary/{CARRIER}");
+    stage(ingest_dir.path(), BRACKET, BRACKET_FIXTURE);
+    stage(ingest_dir.path(), &carrier, CARRIER_FIXTURE);
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    for path in [BRACKET, carrier.as_str()] {
+        handler.handle(&job_for(path)).await.expect("ingests");
+    }
+
+    let file = ingest_dir.path().join(&carrier);
+    let indexed = std::fs::metadata(&file)
+        .expect("stat")
+        .modified()
+        .expect("an mtime");
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("opens it")
+        .set_modified(indexed + std::time::Duration::from_secs(60))
+        .expect("moves the mtime");
+
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let (batch, _) = jobs
+        .enqueue(seeded(), &[JobPayload::ScanDirectory])
+        .await
+        .expect("enqueues the scan");
+    handler
+        .handle(&scan_job(batch, seeded()))
+        .await
+        .expect("walks the directory");
+    assert_eq!(
+        ingest_paths_in(&pool, batch).await,
+        vec![carrier.clone()],
+        "the bracket is as it was indexed and is not queued; the touched carrier is"
+    );
+    let status = jobs
+        .batch_status(seeded(), batch)
+        .await
+        .expect("reads the batch")
+        .expect("the batch exists");
+    assert_eq!(
+        (status.total, status.skipped),
+        (3, 1),
+        "the scan job, the carrier's job and the unchanged bracket; the bracket already here"
+    );
+}
+
+/// A33: a refusal a later scan has tried again is pruned, so a file the library cannot read has one failure, not one
+/// per scan.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_refusal_a_later_scan_tries_again_is_not_kept_twice(pool: PgPool) {
+    whole_folder(&pool).await;
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    stage(
+        ingest_dir.path(),
+        "gearbox-housing.step",
+        b"ISO-10303-21;\nEND-ISO-10303-21;\n",
+    );
+    let handler = handler_over(&pool, ingest_dir.path(), blob_root.path());
+    let jobs = lapidary_db::PgJobs(pool.clone());
+    let mut batches = Vec::new();
+    for _ in 0..2 {
+        let (batch, _) = jobs
+            .enqueue(seeded(), &[JobPayload::ScanDirectory])
+            .await
+            .expect("enqueues the scan");
+        handler
+            .handle(&scan_job(batch, seeded()))
+            .await
+            .expect("walks the directory");
+        sqlx::query(
+            "UPDATE job SET state = 'failed', last_error = 'refused' \
+             WHERE batch_id = $1 AND kind = 'ingest_file'",
+        )
+        .bind(batch.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("the job refuses it");
+        batches.push(batch);
+    }
+    let failed: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT batch_id FROM job WHERE state = 'failed'")
+            .fetch_all(&pool)
+            .await
+            .expect("reads the failures");
+    assert_eq!(
+        failed,
+        vec![batches[1].as_uuid()],
+        "the second scan's refusal is the one kept"
+    );
+}

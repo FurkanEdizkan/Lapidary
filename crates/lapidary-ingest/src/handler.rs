@@ -549,11 +549,7 @@ impl WorkerHandler {
             .current(library, source_path)
             .await
             .map_err(classify_db)?
-            .is_some_and(|current| {
-                current.storage_path.as_deref() == Some(path)
-                    && current.size_bytes == i64::try_from(stat.size).ok()
-                    && current.mtime_ns == Some(stat.mtime_ns)
-            }))
+            .is_some_and(|current| current.is_file(path, stat.size, stat.mtime_ns)))
     }
 
     async fn index_body(

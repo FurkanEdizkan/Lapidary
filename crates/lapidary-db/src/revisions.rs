@@ -8,6 +8,7 @@ use lapidary_core::{
     RevisionOrigin,
 };
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// What a library holds at one source path: the part, its current revision, and the facts a
@@ -25,6 +26,62 @@ pub struct CurrentRevision {
     /// again (A13).
     pub size_bytes: Option<i64>,
     pub mtime_ns: Option<i64>,
+}
+
+impl CurrentRevision {
+    /// Whether the file at `path`, of `size` bytes modified at `mtime_ns`, is the one this revision indexed: the same
+    /// place, size and modified time. The one test of "unchanged since it was indexed", for the scan that decides what
+    /// to queue (A33) and the job that decides what to read (A31).
+    pub fn is_file(&self, path: &str, size: u64, mtime_ns: i64) -> bool {
+        self.storage_path.as_deref() == Some(path)
+            && self.size_bytes == i64::try_from(size).ok()
+            && self.mtime_ns == Some(mtime_ns)
+    }
+}
+
+/// A part's current revision and its source file, "current" ordered exactly as the grid's LATERAL orders it.
+macro_rules! current_from {
+    () => {
+        " FROM part p \
+     JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
+                   ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
+     LEFT JOIN LATERAL (SELECT blake3, storage_path, size_bytes, mtime_ns FROM file \
+                        WHERE revision_id = r.id AND role = 'source' \
+                        ORDER BY id LIMIT 1) f ON true "
+    };
+}
+
+type CurrentRow = (
+    Uuid,
+    Uuid,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// A [`CurrentRow`] led by its part's source path.
+type PathRow = (
+    String,
+    Uuid,
+    Uuid,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+fn current_revision(
+    (part, revision, hash, storage_path, size_bytes, mtime_ns): CurrentRow,
+) -> Result<CurrentRevision, DbError> {
+    Ok(CurrentRevision {
+        part: PartId::from_uuid(part),
+        revision: RevisionId::from_uuid(revision),
+        source_hash: detail_hash("file.blake3", hash)?,
+        storage_path,
+        size_bytes,
+        mtime_ns,
+    })
 }
 
 /// The next revision of a part, as the kernel measured it.
@@ -121,41 +178,49 @@ impl PgRevisions {
         library: LibraryId,
         source_path: &str,
     ) -> Result<Option<CurrentRevision>, DbError> {
-        #[allow(clippy::type_complexity)]
-        let row: Option<(
-            Uuid,
-            Uuid,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-        )> = sqlx::query_as(
-            "SELECT p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns \
-                 FROM part p \
-                 JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
-                               ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-                 LEFT JOIN LATERAL (SELECT blake3, storage_path, size_bytes, mtime_ns FROM file \
-                                    WHERE revision_id = r.id AND role = 'source' \
-                                    ORDER BY id LIMIT 1) f ON true \
-                 WHERE p.library_id = $1 AND p.source_path = $2",
-        )
+        let row: Option<CurrentRow> = sqlx::query_as(concat!(
+            "SELECT p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns",
+            current_from!(),
+            "WHERE p.library_id = $1 AND p.source_path = $2"
+        ))
         .bind(library.as_uuid())
         .bind(source_path)
         .fetch_optional(&self.0)
         .await?;
-        row.map(
-            |(part, revision, hash, storage_path, size_bytes, mtime_ns)| {
-                Ok(CurrentRevision {
-                    part: PartId::from_uuid(part),
-                    revision: RevisionId::from_uuid(revision),
-                    source_hash: detail_hash("file.blake3", hash)?,
-                    storage_path,
-                    size_bytes,
-                    mtime_ns,
-                })
-            },
-        )
-        .transpose()
+        row.map(current_revision).transpose()
+    }
+
+    /// Every part in `library` with its current revision, by source path: what a scan compares the files it finds
+    /// against, in one read rather than one per file (A33).
+    pub async fn current_by_path(
+        &self,
+        library: LibraryId,
+    ) -> Result<HashMap<String, CurrentRevision>, DbError> {
+        let rows: Vec<PathRow> = sqlx::query_as(concat!(
+            "SELECT p.source_path, p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns",
+            current_from!(),
+            "WHERE p.library_id = $1"
+        ))
+        .bind(library.as_uuid())
+        .fetch_all(&self.0)
+        .await?;
+        rows.into_iter()
+            .map(
+                |(path, part, revision, hash, storage_path, size_bytes, mtime_ns)| {
+                    Ok((
+                        path,
+                        current_revision((
+                            part,
+                            revision,
+                            hash,
+                            storage_path,
+                            size_bytes,
+                            mtime_ns,
+                        ))?,
+                    ))
+                },
+            )
+            .collect()
     }
 
     /// Record the next revision of `req.part`, measured against `req.parent`, with its file
