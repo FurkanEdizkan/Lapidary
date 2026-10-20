@@ -104,7 +104,9 @@ services:
       # Job worker knobs, passed through empty when unset, which the server reads as "use the
       # default" (`empty_str_as_none` in bin/lapidary-server/src/main.rs). The defaults live in
       # lapidary_jobs::WorkerConfig; deploy/.env.example documents each one.
-      LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-2}
+      # Four at a time (A32; two from e47d0f8 until then, to bound memory): the ingest's own parse budget now keeps
+      # several large meshes from parsing at once, so small files keep flowing beside a large one.
+      LAPIDARY_WORKER_CONCURRENCY: ${LAPIDARY_WORKER_CONCURRENCY:-4}
       LAPIDARY_JOB_LEASE_SECS: ${LAPIDARY_JOB_LEASE_SECS:-}
       LAPIDARY_JOB_POLL_SECS: ${LAPIDARY_JOB_POLL_SECS:-}
       LAPIDARY_WORKER_ID: ${LAPIDARY_WORKER_ID:-}

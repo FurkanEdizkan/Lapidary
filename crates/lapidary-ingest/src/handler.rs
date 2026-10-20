@@ -145,6 +145,29 @@ enum Body {
 /// silence — see [`lapidary_core::CAD_FORMATS`].
 pub(crate) use lapidary_core::CAD_FORMATS;
 
+/// The whole process's parse budget, in MiB of estimated peak memory (A32). Half the container's 3 GiB, which leaves
+/// the server, its caches and its database pool their room; measured against the owner's corpus, whose large 3MF kits
+/// peaked about 1.1 GiB each (F3).
+// ponytail: one process-wide budget and fixed factors; make it a setting if a deployment raises its memory ceiling.
+const PARSE_BUDGET_MIB: u32 = 1536;
+static PARSE_BUDGET: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(PARSE_BUDGET_MIB as usize);
+
+/// What reading and measuring a mesh of `size` bytes is expected to hold at its peak, in MiB, by format: the bytes and
+/// what they parse into. A 3MF is a zip of XML that inflates as it is read, so it costs most. At least 1, and never
+/// more than the whole budget, so the largest file runs alone rather than never.
+pub(crate) fn parse_cost_mib(source_path: &str, size: u64) -> u32 {
+    let factor = match source_format(source_path).as_str() {
+        "3mf" => 6,
+        "obj" => 3,
+        _ => 2,
+    };
+    let mib = size.saturating_mul(factor).div_ceil(1 << 20);
+    u32::try_from(mib)
+        .unwrap_or(u32::MAX)
+        .clamp(1, PARSE_BUDGET_MIB)
+}
+
 /// A path from a payload or a row, refused if it would leave the directory it is joined to.
 /// `Permanent`: a payload holds the same bytes on every attempt.
 fn refuse_escaping(path: &str) -> Result<(), HandlerError> {
@@ -219,6 +242,14 @@ impl WorkerHandler {
         if self.unchanged(library, source_path, &at, &stat).await? {
             return Ok(Outcome::Skipped);
         }
+        // Its share of the parse budget, held until it is filed (A32): several large meshes at once is what nears the
+        // container's memory ceiling, so a large one waits for room while small ones keep flowing.
+        let _budget = PARSE_BUDGET
+            .acquire_many(parse_cost_mib(source_path, stat.size))
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Could not start reading {source_path}: {e}"),
+            })?;
         // 1. Read bytes, and 2. BLAKE3 -- hash first, always; everything below branches on it. Off the async threads,
         // since a mesh can be hundreds of megabytes. A missing file may mean the mount is not ready yet, so this is
         // Transient — unlike every step below it, this one has nothing to do with the bytes.
@@ -591,25 +622,33 @@ impl WorkerHandler {
         // nothing to parse: no figures, no picture, and its contents instead.
         let (measurements, centre_of_mass_mm, embedded, size, contents) = match body {
             Body::Mesh(bytes) => {
-                let mesh = lapidary_cad::parse(&bytes, &format).map_err(classify_cad)?;
-                let (measurements, centre_of_mass_mm) = lapidary_cad::measure(&mesh);
-                // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
-                // reason to fail: a part with no picture is a part.
-                let embedded = if format == "3mf" {
-                    lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
-                        tracing::warn!(source_path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                // Off the async threads, since a large mesh is seconds of work (A32), and in the order that holds
+                // least at once: the thumbnail while the file's bytes are needed anyway, then the parse, then the bytes
+                // go before the triangles are measured.
+                let (fmt, path) = (format.clone(), source_path.to_owned());
+                let (mesh, embedded, size) = tokio::task::spawn_blocking(move || {
+                    let size = bytes.len() as u64;
+                    // The picture a slicer saved inside a 3MF, attached once the part exists (F1). Never a
+                    // reason to fail: a part with no picture is a part.
+                    let embedded = if fmt == "3mf" {
+                        lapidary_cad::thumbnail_3mf(&bytes).unwrap_or_else(|error| {
+                            tracing::warn!(source_path = %path, %error, "could not read this 3MF's thumbnail; the part has no picture from it");
+                            None
+                        })
+                    } else {
                         None
-                    })
-                } else {
-                    None
-                };
-                (
-                    Some(measurements),
-                    centre_of_mass_mm,
-                    embedded,
-                    bytes.len() as u64,
-                    None,
-                )
+                    };
+                    let mesh = lapidary_cad::parse(&bytes, &fmt);
+                    drop(bytes);
+                    let mesh = mesh.map(|mesh| lapidary_cad::measure(&mesh));
+                    (mesh, embedded, size)
+                })
+                .await
+                .map_err(|e| HandlerError::Transient {
+                    message: format!("Reading {source_path} stopped: {e}"),
+                })?;
+                let (measurements, centre_of_mass_mm) = mesh.map_err(classify_cad)?;
+                (Some(measurements), centre_of_mass_mm, embedded, size, None)
             }
             Body::Pack { size, contents } => (None, None, None, size, Some(contents)),
         };
@@ -956,6 +995,30 @@ fn classify_write(error: DbError) -> Result<Outcome, HandlerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meshs_parse_cost_follows_its_format_and_never_exceeds_the_budget() {
+        const MIB: u64 = 1 << 20;
+        assert_eq!(
+            parse_cost_mib("brackets/bracket-lp-1042-03.stl", 10 * MIB),
+            20
+        );
+        assert_eq!(
+            parse_cost_mib("kits/Knight_Lancer.3mf", 174 * MIB),
+            1044,
+            "a 3MF inflates as it parses"
+        );
+        assert_eq!(
+            parse_cost_mib("idler-bracket-lp-2210-01.obj", 1),
+            1,
+            "at least one"
+        );
+        assert_eq!(
+            parse_cost_mib("Immortal.3mf", 400 * MIB),
+            PARSE_BUDGET_MIB,
+            "the largest runs alone rather than never"
+        );
+    }
 
     #[test]
     fn part_name_strips_the_stl_extension() {

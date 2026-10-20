@@ -144,14 +144,75 @@ pub(crate) fn entry(
     let file = archive
         .by_name(name)
         .map_err(|_| malformed(format!("the package has no {name} part")))?;
-    let compressed = file.compressed_size().max(1);
+    let (cap, reason) = entry_cap(file.compressed_size(), caps);
+    read_capped(file, cap, &reason)
+}
+
+/// `entry` as a stream (A32): a model part read as it is parsed, never held whole. A 176 MB Bambu kit's model XML
+/// inflates past a gigabyte, and holding it beside what it parses into was most of a 2 GiB peak. The same caps, refused
+/// the moment the stream passes one rather than after.
+pub(crate) fn entry_stream<'a, 'b>(
+    archive: &'b mut Archive<'a>,
+    name: &str,
+    caps: &Caps,
+) -> Result<ModelStream<'a, 'b>, CadError> {
+    let file = archive
+        .by_name(name)
+        .map_err(|_| malformed(format!("the package has no {name} part")))?;
+    let (cap, reason) = entry_cap(file.compressed_size(), caps);
+    Ok(std::io::BufReader::with_capacity(
+        1 << 16,
+        Capped {
+            inner: file,
+            left: cap,
+            reason,
+            breached: false,
+        },
+    ))
+}
+
+/// A model part as it is read out of its package, capped.
+pub(crate) type ModelStream<'a, 'b> =
+    std::io::BufReader<Capped<zip::read::ZipFile<'b, std::io::Cursor<&'a [u8]>>>>;
+
+/// A reader that ends in an error, and says so, once more than its cap has come through it.
+pub(crate) struct Capped<R> {
+    inner: R,
+    left: u64,
+    reason: String,
+    breached: bool,
+}
+
+impl<R: Read> Read for Capped<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            // At the cap: one byte more is the breach, none is the stream ending exactly there.
+            let mut probe = [0u8; 1];
+            if self.inner.read(&mut probe)? == 0 {
+                return Ok(0);
+            }
+            self.breached = true;
+            return Err(std::io::Error::other(format!("one entry {}", self.reason)));
+        }
+        let want = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..want])?;
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+/// The tighter of an entry's two bounds, and the words that name it.
+fn entry_cap(compressed: u64, caps: &Caps) -> (u64, String) {
+    let compressed = compressed.max(1);
     // The ratio bound and the absolute bound, whichever is tighter. Ratio catches the
     // classic bomb: a few kilobytes claiming to be gigabytes. Naming which one fired
     // matters: the ratio bound is derived from this entry's compressed size and appears
     // nowhere in configuration, so a message that just quoted the number would leave an
     // operator unable to find it anywhere.
     let ratio_cap = compressed.saturating_mul(caps.max_ratio);
-    let (cap, reason) = if caps.max_decompressed <= ratio_cap {
+    if caps.max_decompressed <= ratio_cap {
         (
             caps.max_decompressed,
             format!("expands past the {}-byte limit", caps.max_decompressed),
@@ -161,8 +222,7 @@ pub(crate) fn entry(
             ratio_cap,
             format!("compresses more than {}:1", caps.max_ratio),
         )
-    };
-    read_capped(file, cap, &reason)
+    }
 }
 
 /// The StartPart target from `_rels/.rels`, normalised to an archive entry name.
@@ -269,10 +329,13 @@ pub(crate) fn unit_scale(unit: Option<&str>) -> Result<f64, CadError> {
     }
 }
 
+/// One object as read. Vertices in `f32` and indices in `u32` (A32): the file's own numbers are decimal text the
+/// triangles end as `f32` anyway, and the transforms are applied in `f64` when the triangles are emitted; at 11 million
+/// triangles the `f64`/`usize` form was 400 MB more.
 #[derive(Default)]
 struct Object {
-    vertices: Vec<[f64; 3]>,
-    triangles: Vec<[usize; 3]>,
+    vertices: Vec<[f32; 3]>,
+    triangles: Vec<[u32; 3]>,
     components: Vec<(String, [f64; 12])>,
 }
 
@@ -349,9 +412,7 @@ pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
     // allows up to 2 GiB -- against the worker's 2 GiB ceiling, holding both live at once
     // is the difference between headroom and none.
     drop(rels);
-    let model = entry(&mut archive, &model_name, &caps)?;
-    let (mut objects, build, scale) = read_model(&model)?;
-    drop(model);
+    let (mut objects, build, scale) = read_model(entry_stream(&mut archive, &model_name, &caps)?)?;
     // Every other model part a component points into, each read once and its objects filed under
     // the part's path. Its own components without a `p:path` name objects in that same part.
     let parts: std::collections::BTreeSet<String> = objects
@@ -360,8 +421,7 @@ pub fn parse_3mf(bytes: &[u8]) -> Result<Mesh, CadError> {
         .filter_map(|(key, _)| key.split_once('#').map(|(path, _)| path.to_owned()))
         .collect();
     for path in parts {
-        let xml = entry(&mut archive, &path, &caps)?;
-        let (part_objects, _, part_scale) = read_model(&xml)?;
+        let (part_objects, _, part_scale) = read_model(entry_stream(&mut archive, &path, &caps)?)?;
         // ponytail: one unit for the whole package. Every slicer that writes `p:path` writes
         // millimetres in every part; combining parts in different units is the upgrade if one ever
         // turns up, and until then it is refused rather than drawn at the wrong size.
@@ -422,7 +482,7 @@ fn index(
     e: &quick_xml::events::BytesStart<'_>,
     want: &[u8],
     count: usize,
-) -> Result<usize, CadError> {
+) -> Result<u32, CadError> {
     let raw = attr(e, want)
         .ok_or_else(|| malformed("a triangle is missing a vertex reference".to_owned()))?;
     let i: usize = raw
@@ -433,7 +493,11 @@ fn index(
             "a triangle names vertex {i}, but its object has defined {count}"
         )));
     }
-    Ok(i)
+    u32::try_from(i).map_err(|_| {
+        malformed(format!(
+            "a triangle names vertex {i}, past what one object may hold"
+        ))
+    })
 }
 
 type Model = (
@@ -442,7 +506,26 @@ type Model = (
     f64,
 );
 
-fn read_model(xml: &[u8]) -> Result<Model, CadError> {
+/// What stands behind the XML reader: a capped entry says whether it stopped the stream at its cap, so that is refused
+/// as the bound it is rather than reported as broken XML.
+pub(crate) trait Source: std::io::BufRead {
+    fn breach(&self) -> Option<String> {
+        None
+    }
+}
+
+impl Source for &[u8] {}
+
+impl<R: Read> Source for std::io::BufReader<Capped<R>> {
+    fn breach(&self) -> Option<String> {
+        let capped = self.get_ref();
+        capped
+            .breached
+            .then(|| format!("one entry {}", capped.reason))
+    }
+}
+
+fn read_model<S: Source>(xml: S) -> Result<Model, CadError> {
     let mut reader = quick_xml::Reader::from_reader(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -452,9 +535,15 @@ fn read_model(xml: &[u8]) -> Result<Model, CadError> {
     let mut current: Option<String> = None;
 
     loop {
-        let event = reader
-            .read_event_into(&mut buf)
-            .map_err(|source| malformed(format!("its model XML is not valid: {source}")))?;
+        let event = match reader.read_event_into(&mut buf) {
+            Ok(event) => event,
+            Err(source) => {
+                return Err(match reader.get_ref().breach() {
+                    Some(reason) => refused(reason),
+                    None => malformed(format!("its model XML is not valid: {source}")),
+                });
+            }
+        };
         match &event {
             quick_xml::events::Event::Eof => break,
             quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => {
@@ -468,8 +557,11 @@ fn read_model(xml: &[u8]) -> Result<Model, CadError> {
                     }
                     b"vertex" => {
                         if let Some(o) = current.as_ref().and_then(|id| objects.get_mut(id)) {
-                            o.vertices
-                                .push([number(e, b"x")?, number(e, b"y")?, number(e, b"z")?]);
+                            o.vertices.push([
+                                number(e, b"x")? as f32,
+                                number(e, b"y")? as f32,
+                                number(e, b"z")? as f32,
+                            ]);
                         }
                     }
                     b"triangle" => {
@@ -618,8 +710,9 @@ fn emit(
         // Transform first in the file's own units, then scale to millimetres: the
         // transform's numbers are expressed in those units too, so scaling first would
         // apply the unit twice to the translation.
-        let corner = |i: usize| {
-            let v = apply(transform, object.vertices[i]);
+        let corner = |i: u32| {
+            let [x, y, z] = object.vertices[i as usize];
+            let v = apply(transform, [f64::from(x), f64::from(y), f64::from(z)]);
             [
                 (v[0] * scale) as f32,
                 (v[1] * scale) as f32,
@@ -900,6 +993,39 @@ mod tests {
         ])
     }
 
+    /// A32: the model part is streamed, and a stream that breaks its cap is refused as that cap — the bound's own
+    /// words, the same as a part read whole — never reported as broken XML. Repeated vertices deflate far past 20:1.
+    #[test]
+    fn a_streamed_model_past_the_ratio_cap_is_refused_as_that_cap() {
+        let mut xml = String::from(
+            r#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model"><mesh><vertices>"#,
+        );
+        for _ in 0..20_000 {
+            xml.push_str(r#"<vertex x="0" y="0" z="0"/>"#);
+        }
+        xml.push_str("</vertices></mesh></object></resources></model>");
+        let bytes = package(&xml);
+        let caps = Caps {
+            max_decompressed: 1 << 30,
+            max_entries: 4,
+            max_ratio: 20,
+            max_triangles: usize::MAX,
+        };
+        let mut archive = open_archive(&bytes, &caps).expect("opens");
+        let stream =
+            entry_stream(&mut archive, "3D/carrier.model", &caps).expect("the part is there");
+        let Err(err) = read_model(stream) else {
+            panic!("a stream past its cap must not parse")
+        };
+        let CadError::ArchiveRefused { detail, .. } = &err else {
+            panic!("wrong variant: {err}")
+        };
+        assert!(
+            detail.contains("20:1"),
+            "expected the ratio cap's message, got: {detail}"
+        );
+    }
+
     /// The thumbnail is found through its relationship — here at a path no slicer uses, so a
     /// lookup that guessed `Metadata/thumbnail.png` would miss it — and a stray PNG nobody points
     /// at is not taken for one.
@@ -1175,7 +1301,7 @@ mod tests {
         let model_name = model_part_name(&rels).expect("resolves model part");
         drop(rels);
         let model_bytes = entry(&mut archive, &model_name, &caps).expect("reads model");
-        let (objects, build, scale) = read_model(&model_bytes).expect("model parses");
+        let (objects, build, scale) = read_model(model_bytes.as_slice()).expect("model parses");
 
         let mut triangles = Vec::new();
         let err = build
