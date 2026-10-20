@@ -229,3 +229,33 @@ async fn another_persons_library_part_file_and_pictures_are_not_there(pool: sqlx
     let (_, libraries) = as_mira(&pool, "GET", "/api/libraries", None).await;
     assert_eq!(libraries.as_array().expect("a list").len(), 1);
 }
+
+/// A38: the router decodes a percent-encoded id into the same id, so an encoded id must not slip past the check.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn an_id_written_any_other_way_is_refused_not_let_through(pool: sqlx::PgPool) {
+    common::ensure_session(&pool).await;
+    let part = lenas_bracket(&pool).await;
+    mira(&pool).await;
+    // `0` is %30: the same id, written so a plain parse fails.
+    let id = part.to_string();
+    let encoded = format!("%3{}{}", &id[..1], &id[1..]);
+    let library = format!("%3{}{}", &LENAS[..1], &LENAS[1..]);
+    for (method, uri, body) in [
+        ("GET", format!("/api/parts/{encoded}"), None),
+        ("GET", format!("/api/parts/{encoded}/file"), None),
+        (
+            "PUT",
+            format!("/api/parts/{encoded}/shares"),
+            Some(json!({ "everyone": true, "people": [] })),
+        ),
+        ("DELETE", format!("/api/parts/{encoded}"), None),
+        ("GET", format!("/api/libraries/{library}/parts"), None),
+    ] {
+        let (status, _) = as_mira(&pool, method, &uri, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+    assert!(
+        PgParts(pool.clone()).part_exists(part).await.expect("asks"),
+        "Lena's bracket is still hers"
+    );
+}
