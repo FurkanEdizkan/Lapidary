@@ -232,8 +232,9 @@ export function Grid({
     if (view === null || node === null || index < 0 || (index >= start && index < end)) return
     const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
     window.scrollTo({ top: top - window.innerHeight / 3 })
-    // Only when the part changes: a person scrolling the grid beside the pane is not pulled back to it.
-  }, [index])
+    // Only when the part changes, not when its place does: a person scrolling the grid beside the pane is not pulled
+    // back to it, nor by a scan's refetch putting new parts above it.
+  }, [following])
   // Every part this grid has already shown. A card arrives once: a refetch during a scan hands
   // back the same parts as new objects, and replaying the arrival on each of them would make
   // the grid flicker every time the worker finishes a file.

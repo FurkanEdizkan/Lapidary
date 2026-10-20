@@ -325,7 +325,8 @@ pub struct BatchStatus {
     /// How many `scan_directory` jobs in this batch have finished their walk — in
     /// practice 0 or 1, since a scan enqueues one and its children join the same batch.
     ///
-    /// Exposed so the progress line can say *files*. `total` counts jobs, and the walk is
+    /// Exposed so the progress line can say *files*. `total` counts jobs (and the files a scan found
+    /// unchanged and did not queue, A33), and the walk is
     /// a job; reporting it as a file made a three-file directory read "Scanning — 1 of 4
     /// files", which `CLAUDE.md`'s measurement rule forbids. Subtracting this from both
     /// halves is exact, where subtracting a hardcoded 1 would encode "every batch has a
