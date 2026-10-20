@@ -545,10 +545,10 @@ export function Index({
   const [bulk, setBulk] = useState<BulkProgress | null>(null)
   const [picking, setPicking] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
-  // Ids picked out of one grid mean nothing in another: a category, format or search that
+  // Ids picked out of one grid mean nothing in another: a category, format, field filter (A40) or search that
   // changes which parts are on screen would otherwise leave hidden parts selected, and a
   // bulk action would reach parts nobody can see. Sort only reorders, so it keeps them.
-  const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? ''].join('\u0000')
+  const scope = [library, folderId ?? '', format ?? '', material ?? '', tag ?? '', q ?? '', field ?? '', fieldValue ?? '', fieldMin ?? '', fieldMax ?? ''].join('\u0000')
   const [selectionScope, setSelectionScope] = useState(scope)
   if (scope !== selectionScope) {
     setSelectionScope(scope)
@@ -790,6 +790,8 @@ export function Index({
   const pagesLoaded = parts.data?.pages.length ?? 0
   const batchFinished = scan.data?.finishedAt != null
   const countsAt = useRef(0)
+  const batchId = scan.data?.batchId ?? null
+  const finishedFor = useRef<string | null>(null)
   useEffect(() => {
     if (settled === 0) {
       return
@@ -808,6 +810,14 @@ export function Index({
     // would be the other way to make it cheap and it snaps a reading user back to the
     // top of a library they were scrolled into, which is worse than a grid that fills a
     // few seconds later.
+    //
+    // A finished batch refreshes everything once (A40). `batchFinished` stays true while the
+    // page holds the batch, so without the once each next page that landed refetched every
+    // page held, and the counts, again.
+    if (batchFinished) {
+      if (finishedFor.current === batchId) return
+      finishedFor.current = batchId
+    }
     if (pagesLoaded <= 1 || batchFinished) {
       void queryClient.invalidateQueries({ queryKey: ['parts', library] })
     }
@@ -822,7 +832,7 @@ export function Index({
       void queryClient.invalidateQueries({ queryKey: ['storage', library] })
       void queryClient.invalidateQueries({ queryKey: ['facets', library] })
     }
-  }, [settled, pagesLoaded, batchFinished, queryClient])
+  }, [settled, pagesLoaded, batchFinished, batchId, queryClient])
 
   const note = scanNow.isError ? strings.scan.startFailed : null
 

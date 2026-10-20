@@ -32,30 +32,47 @@ export function MorePages({
   onMore: () => void
 }) {
   const sentinel = useRef<HTMLDivElement>(null)
+  // Read through a ref, never depended on (A40). Re-creating the observer on every fetch, or on
+  // every render that hands down a new `onMore`, would disconnect and reconnect it mid-scroll, and
+  // an observer that reconnects while its target is already visible fires immediately — which
+  // asked for the page still in flight again and cancelled it.
+  const latest = useRef({ fetching, onMore })
+  const watching = useRef<IntersectionObserver | null>(null)
+  useEffect(() => {
+    latest.current = { fetching, onMore }
+  })
 
   useEffect(() => {
     const node = sentinel.current
     if (node === null || !hasMore) {
       return
     }
-    // `fetching` is deliberately not in the dependency list. Re-creating the observer on
-    // every fetch would disconnect and reconnect it mid-scroll, and an observer that
-    // reconnects while its target is already visible fires immediately — which is a
-    // second request for the page still in flight. The guard is inside the callback
-    // instead, where it reads the current value.
     // Two screens ahead (A30): a page of cards is a few tens of kB now that pictures are addresses, so the next one
     // is asked for well before the end comes into view, and a steady scroll never waits at the bottom.
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          onMore()
+        if (!latest.current.fetching && entries.some((entry) => entry.isIntersecting)) {
+          latest.current.onMore()
         }
       },
       { rootMargin: '0px 0px 200% 0px' },
     )
     observer.observe(node)
-    return () => observer.disconnect()
-  }, [hasMore, onMore])
+    watching.current = observer
+    return () => {
+      watching.current = null
+      observer.disconnect()
+    }
+  }, [hasMore])
+  // A page landed and the end is still within reach: an observer reports only changes, so it is asked again, and a
+  // short page or a tall screen keeps filling without a scroll.
+  useEffect(() => {
+    const node = sentinel.current
+    const observer = watching.current
+    if (fetching || node === null || observer === null) return
+    observer.unobserve(node)
+    observer.observe(node)
+  }, [fetching])
 
   return (
     <>
