@@ -70,7 +70,17 @@ pub async fn move_part(
     if let Some(target) = body.folder_id {
         match PgFolders(state.db.clone()).library_of(target).await {
             Ok(Some(owner)) if owner == source.library => {}
-            Ok(Some(_)) => return other_library(),
+            // Another of this person's libraries is an answer; somebody else's is a folder that is not there (A38).
+            Ok(Some(other)) => match (
+                parts.library_owner(other).await,
+                parts.library_owner(source.library).await,
+            ) {
+                (Ok(theirs), Ok(ours)) if theirs == ours => return other_library(),
+                (Ok(_), Ok(_)) => return no_such_folder(),
+                (Err(err), _) | (_, Err(err)) => {
+                    return internal_error(&err, "move target lookup failed");
+                }
+            },
             Ok(None) => return no_such_folder(),
             Err(err) => return internal_error(&err, "move target lookup failed"),
         }

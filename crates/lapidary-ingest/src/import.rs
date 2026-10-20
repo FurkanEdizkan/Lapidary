@@ -102,6 +102,7 @@ impl WorkerHandler {
             ));
         }
         let revisions = part.revisions.clone();
+        let imports = self.imports_dir(library).await?;
 
         // Where this library already is in the part's history. A part whose revisions are
         // the bundle's first ones, in order, resumes after them, which makes an import that stopped
@@ -174,7 +175,7 @@ impl WorkerHandler {
             // there, oldest first, so the one before is marked no longer on disk as the next
             // replaces it: the bundle's older revisions arrive as rows, the newest as a file.
             let placed = InboxWriter::open(&self.inbox_dir)
-                .put(&format!("imports/bundles/{}", part.source_path), &bytes)
+                .put(&format!("{imports}/bundles/{}", part.source_path), &bytes)
                 .map_err(|e| {
                     transient(format!(
                         "Could not write {} into the inbox: {e}",

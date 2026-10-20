@@ -1943,6 +1943,16 @@ impl PgParts {
         Ok(owner.flatten().map(UserId::from_uuid))
     }
 
+    /// The username of a library's owner (A38): whose `uploads/` and `imports/` folders a scan of it may read.
+    pub async fn library_owner_name(&self, library: LibraryId) -> Result<Option<String>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT u.username FROM library l JOIN app_user u ON u.id = l.owner_id WHERE l.id = $1",
+        )
+        .bind(library.as_uuid())
+        .fetch_optional(&self.0)
+        .await?)
+    }
+
     /// Give a library to a person: the one who made it (A3).
     pub async fn set_library_owner(
         &self,

@@ -790,6 +790,20 @@ impl WorkerHandler {
 
     /// Step 3's other half. Warn-only: the file is already indexed, and a stale time costs a
     /// download refusal that the next scan clears.
+    /// `imports/<owner>`, where this library's imports are written (A38): one folder per person, as `uploads/` is, so
+    /// a folder another person adds whole does not take them in.
+    pub(crate) async fn imports_dir(&self, library: LibraryId) -> Result<String, HandlerError> {
+        match PgParts(self.db.clone())
+            .library_owner_name(library)
+            .await
+            .map_err(classify_db)?
+        {
+            Some(owner) => Ok(format!("imports/{owner}")),
+            // A library nobody has claimed is one from before any account existed: there is nobody else to keep out.
+            None => Ok("imports".to_owned()),
+        }
+    }
+
     async fn refresh_seen(&self, library: LibraryId, source_path: &str, at: FileAt<'_>) {
         if let Err(error) = PgIngest(self.db.clone())
             .refresh_seen(library, source_path, at.root, at.path, at.mtime_ns)

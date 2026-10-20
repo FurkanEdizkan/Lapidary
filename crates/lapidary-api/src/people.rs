@@ -113,6 +113,19 @@ pub async fn create(
         Ok(name) => name,
         Err(refusal) => return *refusal,
     };
+    // A person's folders are keyed by their username (A38). One left behind by an account that was deleted would be
+    // the new account's to browse and add, and the models in it are not theirs.
+    if let Some(left) = ["uploads", "imports", lapidary_storage::REMOVED_DIR]
+        .into_iter()
+        .map(|top| format!("{top}/{username}"))
+        .find(|folder| state.ingest_dir.join(folder).exists())
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "message": format!("{left} in the models folder is still there from an account called {username} that was deleted. Choose another username, or move that folder out first.") })),
+        )
+            .into_response();
+    }
     let hash = match hash_password(body.password).await {
         Ok(hash) => hash,
         Err(refusal) => return *refusal,

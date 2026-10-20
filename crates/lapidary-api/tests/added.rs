@@ -211,3 +211,53 @@ async fn adding_records_a_file_or_folder_and_removing_one_leaves_its_files(pool:
         StatusCode::NOT_FOUND
     );
 }
+
+/// A38: a path is checked as one spelling. `./uploads/<other>` named another person's folder while passing the check
+/// on its first segment, and `./_removed` brought removed models back.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_path_is_checked_and_stored_as_one_spelling(pool: sqlx::PgPool) {
+    let models = models();
+    for path in ["uploads/bob/bracket.stl", "imports/bob/printables/x.stl"] {
+        let at = models.path().join(path);
+        std::fs::create_dir_all(at.parent().expect("parent")).expect("mkdir");
+        std::fs::write(at, b"solid x\nendsolid x\n").expect("write");
+    }
+    let sources = format!("/api/libraries/{LIBRARY}/sources");
+    for (path, status) in [
+        ("./uploads/bob", StatusCode::NOT_FOUND),
+        ("uploads//bob", StatusCode::NOT_FOUND),
+        ("./imports/bob", StatusCode::NOT_FOUND),
+        ("imports", StatusCode::BAD_REQUEST),
+        ("./_removed", StatusCode::BAD_REQUEST),
+        ("Printables/../..", StatusCode::BAD_REQUEST),
+    ] {
+        let (got, body) = send(
+            &pool,
+            models.path(),
+            "POST",
+            &sources,
+            Some(json!({ "path": path })),
+        )
+        .await;
+        assert_eq!(got, status, "adding {path:?}: {body}");
+    }
+    let (status, body) = send(
+        &pool,
+        models.path(),
+        "GET",
+        "/api/storage/browse?path=./uploads/bob",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, added) = send(
+        &pool,
+        models.path(),
+        "POST",
+        &sources,
+        Some(json!({ "path": "./Printables//benchy/" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    assert_eq!(added["path"], "Printables/benchy", "stored as one spelling");
+}

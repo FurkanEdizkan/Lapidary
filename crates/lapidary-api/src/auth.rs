@@ -141,7 +141,7 @@ pub async fn require_user(State(db): State<PgPool>, mut request: Request, next: 
 /// Somebody else's is refused with the same `404` an unknown library or part gets, so a person learns
 /// nothing about anybody else's models — except a shared part they try to change, which is a `403`,
 /// because they can already see it. An id that names nothing at all is left to the handler, which
-/// answers it exactly as it always has; so is a path whose id is not a uuid.
+/// answers it exactly as it always has. A path whose id is not a plain uuid is a 404 (A38), never let through.
 async fn scope(db: &PgPool, user: &CurrentUser, method: &Method, path: &str) -> Option<Response> {
     use lapidary_core::{FolderId, LibraryId, PartId, RevisionId};
     let mut segments = path.trim_start_matches('/').split('/');
@@ -149,7 +149,18 @@ async fn scope(db: &PgPool, user: &CurrentUser, method: &Method, path: &str) -> 
     else {
         return None;
     };
-    let id = uuid::Uuid::parse_str(id).ok()?;
+    let scoped = matches!(kind, "libraries" | "parts" | "revisions" | "folders");
+    // Fail closed (A38): an id written any other way — percent-encoded, above all — is decoded by the router into the
+    // same id, so letting it through unchecked handed the handler somebody else's part. Every id here is a plain uuid.
+    let Ok(id) = uuid::Uuid::parse_str(id) else {
+        return scoped.then(|| {
+            answer(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "There is nothing at that address. Go back to your library and open it from there.",
+            )
+        });
+    };
     let parts = lapidary_db::PgParts(db.clone());
     let reads = matches!(*method, Method::GET | Method::HEAD);
     let checked = async {
@@ -294,7 +305,6 @@ pub async fn setup(
     match code_matches(&state.db, &body.code).await {
         Ok(true) => {}
         Ok(false) => {
-            tokio::time::sleep(WRONG_ANSWER).await;
             return answer(
                 StatusCode::FORBIDDEN,
                 "wrong_code",
@@ -560,7 +570,20 @@ pub async fn setup_open(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::D
     Ok(!PgAccounts(db.clone()).any_user().await? && code_matches(db, typed).await?)
 }
 
+/// Wrong setup codes, one at a time (A38): each holds this for its `WRONG_ANSWER`, so guesses sent in parallel still
+/// come one a second, from the wizard's form and its folder picker alike.
+static WRONG_CODES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn code_matches(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
+    let matches = code_is(db, typed).await?;
+    if !matches {
+        let _one_at_a_time = WRONG_CODES.lock().await;
+        tokio::time::sleep(WRONG_ANSWER).await;
+    }
+    Ok(matches)
+}
+
+async fn code_is(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
     let typed = normal(typed);
     if typed.is_empty() {
         return Ok(false);

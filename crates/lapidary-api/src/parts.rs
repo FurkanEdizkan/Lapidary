@@ -679,8 +679,13 @@ pub struct InstanceStorageView {
 /// adding the libraries up.
 pub async fn instance_storage(
     State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
     Query(query): Query<InstanceStorageQuery>,
 ) -> Response {
+    // Walking the whole store, and where it is on the host, are the admin's (A38).
+    if query.on_disk.unwrap_or(false) && !user.is_admin {
+        return admin_only();
+    }
     // The render cache figure reads `last_accessed_at`, so the reads not yet written go first.
     if let Err(err) = state.touches.flush(&state.db).await {
         tracing::warn!(
@@ -746,7 +751,14 @@ pub struct RenderCacheFreedView {
 
 /// `POST /api/storage/render-cache` — "free cache space" (`DATA.md` §1.5). Instance-wide, as
 /// the figure it acts on is.
-pub async fn free_render_cache(State(state): State<AppState>) -> Response {
+pub async fn free_render_cache(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+) -> Response {
+    // It empties everybody's cache, so it is the admin's (A38).
+    if !user.is_admin {
+        return admin_only();
+    }
     // Reads this process has not written yet are reads all the same: a part opened a moment ago must
     // not lose its previews to when the next flush happens to be due.
     if let Err(err) = state.touches.flush(&state.db).await {
@@ -878,4 +890,13 @@ pub(crate) fn to_card(row: PartRow) -> PartCard {
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }
+}
+
+/// An install-wide action only an admin may take (A38).
+fn admin_only() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "message": "Only an admin can do that. Ask the person who runs this Lapidary." })),
+    )
+        .into_response()
 }

@@ -3805,3 +3805,43 @@ async fn a_refusal_a_later_scan_tries_again_is_not_kept_twice(pool: PgPool) {
         "the second scan's refusal is the one kept"
     );
 }
+
+/// A38: a library that added the whole models folder still scans only its owner's `uploads/` and `imports/`.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_whole_folder_scan_leaves_other_peoples_uploads_and_imports_alone(pool: PgPool) {
+    whole_folder(&pool).await;
+    let owner = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO app_user (id, username, display_name, password_hash) VALUES ($1, 'ayse', 'Ayşe Kaya', 'x')",
+    )
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .expect("Ayşe");
+    sqlx::query("UPDATE library SET owner_id = $1 WHERE id = $2")
+        .bind(owner)
+        .bind(seeded().as_uuid())
+        .execute(&pool)
+        .await
+        .expect("hers");
+    let ingest_dir = tempfile::tempdir().expect("temp dir");
+    let blob_root = tempfile::tempdir().expect("temp dir");
+    for path in [
+        BRACKET,
+        "uploads/ayse/spares/bracket.stl",
+        "uploads/bob/bracket.stl",
+        "imports/ayse/printables/benchy.stl",
+        "imports/bob/printables/benchy.stl",
+    ] {
+        stage(ingest_dir.path(), path, BRACKET_FIXTURE);
+    }
+    assert_eq!(
+        scanned_paths(&pool, ingest_dir.path(), blob_root.path()).await,
+        vec![
+            BRACKET.to_owned(),
+            "imports/ayse/printables/benchy.stl".to_owned(),
+            "uploads/ayse/spares/bracket.stl".to_owned(),
+        ],
+        "Bob's folders are his"
+    );
+}
