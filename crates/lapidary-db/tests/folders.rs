@@ -510,3 +510,59 @@ async fn deleting_a_folder_keeps_a_part_moved_out_of_it(pool: sqlx::PgPool) {
         "the part stays; the trail naming Terrain goes"
     );
 }
+
+/// A39: two categories a repair script left each other's parent count each part once, not once per lap of the walk.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_parent_cycle_counts_each_part_once(pool: sqlx::PgPool) {
+    let f = PgFolders(pool.clone());
+    let terrain = f
+        .create(library(), None, "Terrain", "terrain")
+        .await
+        .expect("Terrain");
+    let rocks = f
+        .create(library(), Some(terrain), "Rocks", "rocks")
+        .await
+        .expect("Rocks");
+    for n in 0..20 {
+        f.create(
+            library(),
+            None,
+            &format!("Filler {n}"),
+            &format!("filler-{n}"),
+        )
+        .await
+        .expect("more folders, so a lap-per-step walk would show");
+    }
+    sqlx::query("UPDATE folder SET parent_id = $1 WHERE id = $2")
+        .bind(rocks.as_uuid())
+        .bind(terrain.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("the cycle");
+    for (name, folder) in [
+        ("scree-lp-7001.stl", rocks),
+        ("boulder-lp-7002.stl", terrain),
+    ] {
+        sqlx::query(
+            "INSERT INTO part (id, library_id, name, source_path, folder_id) VALUES (gen_random_uuid(), $1, $2, $2, $3)",
+        )
+        .bind(library().as_uuid())
+        .bind(name)
+        .bind(folder.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("a part");
+    }
+    let rows = f.tree(library()).await.expect("tree");
+    let count = |id| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .expect("in the tree")
+            .part_count
+    };
+    assert_eq!(
+        (count(terrain), count(rocks)),
+        (2, 2),
+        "each holds the other, so both hold both parts, once"
+    );
+}

@@ -26,14 +26,18 @@ pub struct CurrentRevision {
     /// again (A13).
     pub size_bytes: Option<i64>,
     pub mtime_ns: Option<i64>,
+    /// Which folder `storage_path` is under (A39): the models folder, the inbox or the store.
+    pub root: Option<FileRoot>,
 }
 
 impl CurrentRevision {
     /// Whether the file at `path`, of `size` bytes modified at `mtime_ns`, is the one this revision indexed: the same
     /// place, size and modified time. The one test of "unchanged since it was indexed", for the scan that decides what
-    /// to queue (A33) and the job that decides what to read (A31).
-    pub fn is_file(&self, path: &str, size: u64, mtime_ns: i64) -> bool {
-        self.storage_path.as_deref() == Some(path)
+    /// to queue (A33) and the job that decides what to read (A31). Under the same root too (A39): the inbox can be a
+    /// folder of its own, and the same relative path there is another file.
+    pub fn is_file(&self, root: FileRoot, path: &str, size: u64, mtime_ns: i64) -> bool {
+        self.root == Some(root)
+            && self.storage_path.as_deref() == Some(path)
             && self.size_bytes == i64::try_from(size).ok()
             && self.mtime_ns == Some(mtime_ns)
     }
@@ -45,7 +49,7 @@ macro_rules! current_from {
         " FROM part p \
      JOIN LATERAL (SELECT id FROM revision WHERE part_id = p.id \
                    ORDER BY created_at DESC, id DESC LIMIT 1) r ON true \
-     LEFT JOIN LATERAL (SELECT blake3, storage_path, size_bytes, mtime_ns FROM file \
+     LEFT JOIN LATERAL (SELECT blake3, storage_path, size_bytes, mtime_ns, root FROM file \
                         WHERE revision_id = r.id AND role = 'source' \
                         ORDER BY id LIMIT 1) f ON true "
     };
@@ -58,6 +62,7 @@ type CurrentRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    Option<String>,
 );
 
 /// A [`CurrentRow`] led by its part's source path.
@@ -69,12 +74,14 @@ type PathRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    Option<String>,
 );
 
 fn current_revision(
-    (part, revision, hash, storage_path, size_bytes, mtime_ns): CurrentRow,
+    (part, revision, hash, storage_path, size_bytes, mtime_ns, root): CurrentRow,
 ) -> Result<CurrentRevision, DbError> {
     Ok(CurrentRevision {
+        root: root.as_deref().and_then(FileRoot::parse),
         part: PartId::from_uuid(part),
         revision: RevisionId::from_uuid(revision),
         source_hash: detail_hash("file.blake3", hash)?,
@@ -179,7 +186,7 @@ impl PgRevisions {
         source_path: &str,
     ) -> Result<Option<CurrentRevision>, DbError> {
         let row: Option<CurrentRow> = sqlx::query_as(concat!(
-            "SELECT p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns",
+            "SELECT p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns, f.root",
             current_from!(),
             "WHERE p.library_id = $1 AND p.source_path = $2"
         ))
@@ -197,7 +204,7 @@ impl PgRevisions {
         library: LibraryId,
     ) -> Result<HashMap<String, CurrentRevision>, DbError> {
         let rows: Vec<PathRow> = sqlx::query_as(concat!(
-            "SELECT p.source_path, p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns",
+            "SELECT p.source_path, p.id, r.id, f.blake3, f.storage_path, f.size_bytes, f.mtime_ns, f.root",
             current_from!(),
             "WHERE p.library_id = $1"
         ))
@@ -206,7 +213,7 @@ impl PgRevisions {
         .await?;
         rows.into_iter()
             .map(
-                |(path, part, revision, hash, storage_path, size_bytes, mtime_ns)| {
+                |(path, part, revision, hash, storage_path, size_bytes, mtime_ns, root)| {
                     Ok((
                         path,
                         current_revision((
@@ -216,6 +223,7 @@ impl PgRevisions {
                             storage_path,
                             size_bytes,
                             mtime_ns,
+                            root,
                         ))?,
                     ))
                 },

@@ -65,6 +65,10 @@ fn facet_normal(a: &[f32; 3], b: &[f32; 3], c: &[f32; 3]) -> [f32; 3] {
     }
 }
 
+/// The most a binary STL may carry after its last declared triangle and still be read: the one padded file in the
+/// owner's corpus has 200 bytes (A36, A39).
+const PADDING: usize = 1024;
+
 pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
     if bytes.is_empty() {
         return Err(CadError::MalformedMesh {
@@ -85,8 +89,10 @@ pub fn parse_stl(bytes: &[u8]) -> Result<Mesh, CadError> {
             return parse_binary(bytes, claimed);
         }
         // Bytes after the last declared triangle (A36): some exporters pad the file, and most readers ignore what
-        // follows the count. Text is still read as text; a file shorter than its count is still refused.
-        if bytes.len() > needs && !looks_like_ascii(bytes) {
+        // follows the count. Up to 1 KiB of it (A39): more is whole triangles the count leaves out, which is a count that
+        // is wrong, not padding, and reading only the counted ones would file a part with figures that lie. Text is
+        // still read as text; a file shorter than its count is still refused.
+        if bytes.len() > needs && bytes.len() - needs <= PADDING && !looks_like_ascii(bytes) {
             return parse_binary(&bytes[..needs], claimed);
         }
         // The length says binary but does not add up. If it also does not look like
@@ -364,6 +370,16 @@ endsolid spacer
         bytes.extend_from_slice(&[0u8; 200]);
         let mesh = parse_stl(&bytes).expect("padded binary STL parses");
         assert_eq!(mesh.triangles.len(), 2);
+    }
+
+    /// A39: whole triangles past the count are a wrong count, not padding.
+    #[test]
+    fn a_binary_stl_with_whole_triangles_past_its_count_is_refused() {
+        let mut bytes = binary_stl_that_looks_ascii(30);
+        bytes[80..84].copy_from_slice(&2u32.to_le_bytes());
+        let err =
+            parse_stl(&bytes).expect_err("a count of 2 over 30 triangles, 1,400 bytes past it");
+        assert!(err.to_string().contains("claims 2 triangles"), "{err}");
     }
 
     #[test]

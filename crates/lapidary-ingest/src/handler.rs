@@ -153,6 +153,22 @@ const PARSE_BUDGET_MIB: u32 = 1536;
 static PARSE_BUDGET: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(PARSE_BUDGET_MIB as usize);
 
+/// A blocking step that did not finish. A panic is the file's doing, the same on every attempt, so it fails the job
+/// at once rather than reading a large file three times over (A39); anything else is the runtime's, and retried.
+fn stopped(source_path: &str, doing: &str, error: &tokio::task::JoinError) -> HandlerError {
+    if error.is_panic() {
+        HandlerError::Permanent {
+            message: format!(
+                "{doing} {source_path} failed inside Lapidary's reader. The file may be malformed; export it again from your tool and rescan."
+            ),
+        }
+    } else {
+        HandlerError::Transient {
+            message: format!("{doing} {source_path} stopped: {error}"),
+        }
+    }
+}
+
 /// What reading and measuring a mesh of `size` bytes is expected to hold at its peak, in MiB, by format: the bytes and
 /// what they parse into. A 3MF is a zip of XML that inflates as it is read, so it costs most. At least 1, and never
 /// more than the whole budget, so the largest file runs alone rather than never.
@@ -239,17 +255,12 @@ impl WorkerHandler {
             .map_err(|e| HandlerError::Transient {
                 message: format!("Could not read {source_path} in your folders: {e}"),
             })?;
-        if self.unchanged(library, source_path, &at, &stat).await? {
+        if self
+            .unchanged(library, source_path, FileRoot::Library, &at, &stat)
+            .await?
+        {
             return Ok(Outcome::Skipped);
         }
-        // Its share of the parse budget, held until it is filed (A32): several large meshes at once is what nears the
-        // container's memory ceiling, so a large one waits for room while small ones keep flowing.
-        let _budget = PARSE_BUDGET
-            .acquire_many(parse_cost_mib(source_path, stat.size))
-            .await
-            .map_err(|e| HandlerError::Transient {
-                message: format!("Could not start reading {source_path}: {e}"),
-            })?;
         // 1. Read bytes, and 2. BLAKE3 -- hash first, always; everything below branches on it. Off the async threads,
         // since a mesh can be hundreds of megabytes. A missing file may mean the mount is not ready yet, so this is
         // Transient — unlike every step below it, this one has nothing to do with the bytes.
@@ -262,9 +273,7 @@ impl WorkerHandler {
                 Ok::<_, lapidary_storage::StorageError>((bytes, stat, hash))
             })
             .await
-            .map_err(|e| HandlerError::Transient {
-                message: format!("Reading {source_path} stopped: {e}"),
-            })?
+            .map_err(|e| stopped(source_path, "Reading", &e))?
             .map_err(|e| HandlerError::Transient {
                 message: format!("Could not read {source_path} in your folders: {e}"),
             })?
@@ -423,9 +432,7 @@ impl WorkerHandler {
             crate::archive::unpack(&inbox, &at, crate::archive::LIMITS)
         })
         .await
-        .map_err(|e| HandlerError::Transient {
-            message: format!("Unpacking {source_path} stopped: {e}"),
-        })?
+        .map_err(|e| stopped(source_path, "Unpacking", &e))?
         .map_err(|message| HandlerError::Permanent { message })?;
         if !unpacked.skipped.is_empty() {
             tracing::warn!(source_path, skipped = ?unpacked.skipped, "left out of an uploaded archive");
@@ -469,6 +476,16 @@ impl WorkerHandler {
         origin: RevisionOrigin,
         at: FileAt<'_>,
     ) -> Result<Outcome, HandlerError> {
+        // Its share of the parse budget, held until it is filed and no longer (A32, A39): several large meshes at once
+        // is what nears the container's memory ceiling, so a large one waits for room while small ones keep flowing.
+        // Here, because every mesh is filed through this — a scan's, an upload's, an import's — and released on
+        // return, before the part is given its pictures and its page, which may wait on another site.
+        let _budget = PARSE_BUDGET
+            .acquire_many(parse_cost_mib(source_path, bytes.len() as u64))
+            .await
+            .map_err(|e| HandlerError::Transient {
+                message: format!("Could not start reading {source_path}: {e}"),
+            })?;
         self.index_body(library, source_path, Body::Mesh(bytes), hash, origin, at)
             .await
     }
@@ -503,7 +520,10 @@ impl WorkerHandler {
             path,
             mtime_ns: stat.mtime_ns,
         };
-        if self.unchanged(library, source_path, path, &stat).await? {
+        if self
+            .unchanged(library, source_path, root, path, &stat)
+            .await?
+        {
             return Ok(Outcome::Skipped);
         }
         let file = dir.join(path);
@@ -519,9 +539,7 @@ impl WorkerHandler {
             ))
         })
         .await
-        .map_err(|e| HandlerError::Transient {
-            message: format!("Reading {source_path} stopped: {e}"),
-        })?
+        .map_err(|e| stopped(source_path, "Reading", &e))?
         .map_err(|e| HandlerError::Transient {
             message: format!("Could not read {source_path} in your folders: {e}"),
         })?;
@@ -542,6 +560,7 @@ impl WorkerHandler {
         &self,
         library: LibraryId,
         source_path: &str,
+        root: FileRoot,
         path: &str,
         stat: &lapidary_storage::FileStat,
     ) -> Result<bool, HandlerError> {
@@ -549,7 +568,7 @@ impl WorkerHandler {
             .current(library, source_path)
             .await
             .map_err(classify_db)?
-            .is_some_and(|current| current.is_file(path, stat.size, stat.mtime_ns)))
+            .is_some_and(|current| current.is_file(root, path, stat.size, stat.mtime_ns)))
     }
 
     async fn index_body(
@@ -640,9 +659,7 @@ impl WorkerHandler {
                     (mesh, embedded, size)
                 })
                 .await
-                .map_err(|e| HandlerError::Transient {
-                    message: format!("Reading {source_path} stopped: {e}"),
-                })?;
+                .map_err(|e| stopped(source_path, "Reading", &e))?;
                 let (measurements, centre_of_mass_mm) = mesh.map_err(classify_cad)?;
                 (Some(measurements), centre_of_mass_mm, embedded, size, None)
             }
@@ -788,8 +805,6 @@ impl WorkerHandler {
         }
     }
 
-    /// Step 3's other half. Warn-only: the file is already indexed, and a stale time costs a
-    /// download refusal that the next scan clears.
     /// `imports/<owner>`, where this library's imports are written (A38): one folder per person, as `uploads/` is, so
     /// a folder another person adds whole does not take them in.
     pub(crate) async fn imports_dir(&self, library: LibraryId) -> Result<String, HandlerError> {
@@ -804,6 +819,8 @@ impl WorkerHandler {
         }
     }
 
+    /// Step 3's other half. Warn-only: the file is already indexed, and a stale time costs a
+    /// download refusal that the next scan clears.
     async fn refresh_seen(&self, library: LibraryId, source_path: &str, at: FileAt<'_>) {
         if let Err(error) = PgIngest(self.db.clone())
             .refresh_seen(library, source_path, at.root, at.path, at.mtime_ns)
@@ -1005,6 +1022,18 @@ fn classify_write(error: DbError) -> Result<Outcome, HandlerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A39: a reader that panics panics again on every attempt, so the job fails at once.
+    #[tokio::test]
+    async fn a_reader_that_panics_fails_the_job_rather_than_retrying_it() {
+        let panicked = tokio::task::spawn_blocking(|| panic!("index out of bounds"))
+            .await
+            .expect_err("it panicked");
+        assert!(matches!(
+            stopped("broken.3mf", "Reading", &panicked),
+            HandlerError::Permanent { .. }
+        ));
+    }
 
     #[test]
     fn a_meshs_parse_cost_follows_its_format_and_never_exceeds_the_budget() {
