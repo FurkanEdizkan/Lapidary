@@ -150,7 +150,7 @@ is [`ACCOUNTS.md`](ACCOUNTS.md).
 | [A31](A31.md) | A rescan reads only what changed | 15 | ingest + db | A30 | see [A31.md](A31.md) | — | merged `e0220ca` | `perf/rescan-unchanged` |
 | [A32](A32.md) | Ingest within its memory, four at a time | 15 | ingest + deploy | A31 | see [A32.md](A32.md) | — | merged `609e202` | `perf/ingest-budget` |
 | [A33](A33.md) | A rescan queues only what changed | 16 | ingest + db | A32 | see [A33.md](A33.md) | 0070 | merged `688de57` | `perf/scan-diff` |
-| [A34](A34.md) | Counts that do not slow down with the library | 16 | db + api + web | A33 | see [A34.md](A34.md) | — | open | `perf/counts` |
+| [A34](A34.md) | Counts that do not slow down with the library | 16 | db + api + web | A33 | see [A34.md](A34.md) | — | merged `8d5d51a` | `perf/counts` |
 | [A35](A35.md) | Grid pages land equally fast at card 10,000 | 16 | web | A34 | see [A35.md](A35.md) | — | open | `perf/grid-pages` |
 | [A36](A36.md) | Small fixes from the scale run | 16 | api + db + cad + deploy | A35 | see [A36.md](A36.md) | — | open | `fix/scale-small` |
 
