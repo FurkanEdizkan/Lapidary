@@ -268,8 +268,8 @@ async fn a_referenced_blob_is_served_with_immutable_caching_and_an_etag(pool: sq
     assert_eq!(body, RUNG, "the bytes come back exactly as stored");
     assert_eq!(
         header(&headers, "cache-control"),
-        Some("public, max-age=31536000, immutable"),
-        "the URL contains the hash of the content, so the bytes at it cannot change"
+        Some("private, max-age=31536000, immutable"),
+        "the URL contains the hash of the content, so the bytes at it cannot change; private, as only this viewer may have them"
     );
     assert_eq!(
         header(&headers, "etag"),

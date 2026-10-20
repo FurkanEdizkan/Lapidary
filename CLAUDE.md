@@ -75,8 +75,10 @@ area — these encode decisions that are expensive to reverse.
   access. Always check that the hash is reachable from one of the viewer's own parts.
 - **A person reaches their own models and the ones shared with them** (owner, 2026-10-17, A3).
   Every route that names a library, part, category or revision is checked against the signed-in
-  person in `auth::scope`; somebody else's is the same 404 as an unknown id. Admin manages
-  accounts, not other people's models.
+  person in `auth::scope`; somebody else's is the same 404 as an unknown id, and an id that is not a
+  plain uuid is refused, never let past the check (A38). Admin manages accounts, not other people's
+  models — with one deliberate exception (owner, 2026-10-20): an admin can reset a password, and
+  inherits a deleted person's models.
 - **Pin everything.** Exact image digests, `Cargo.lock` committed, GitHub Actions pinned
   to commit SHAs.
 - **`lapidary-api` is a library that builds a Router.** Never a binary. Never fork it per

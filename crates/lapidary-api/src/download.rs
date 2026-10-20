@@ -425,6 +425,10 @@ fn stream_verified(
     tokio::task::spawn_blocking(move || {
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; 64 * 1024];
+        // The last chunk read is held back until the next read or the hash (A38): the size was checked before the
+        // first byte, so a changed file of the same size would otherwise arrive whole, at its full `Content-Length`,
+        // and read as a good download. Held back, a mismatch leaves the client short and the download fails.
+        let mut held: Option<Bytes> = None;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -433,9 +437,8 @@ fn stream_verified(
                     // A closed receiver means the client went away. Stop reading rather
                     // than decompressing the rest of a 380 MB file into a channel nobody
                     // is draining.
-                    if tx
-                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
-                        .is_err()
+                    if let Some(chunk) = held.replace(Bytes::copy_from_slice(&buf[..n]))
+                        && tx.blocking_send(Ok(chunk)).is_err()
                     {
                         return;
                     }
@@ -448,9 +451,13 @@ fn stream_verified(
         }
 
         let served = BlobHash::from_bytes(*hasher.finalize().as_bytes());
-        if served != expected {
-            // The bytes have already gone out, so all this can do is refuse to end the
-            // body cleanly and leave the client short of `Content-Length`. The operator's
+        if served == expected {
+            if let Some(chunk) = held {
+                let _ = tx.blocking_send(Ok(chunk));
+            }
+        } else {
+            // All but the last chunk have gone out, so this refuses to end the body cleanly and
+            // leaves the client short of `Content-Length`. The operator's
             // half of the old 500 survives as a log line, which is where it was always the
             // more useful of the two: nothing is wrong with the row here, and the remedy is
             // the blob rather than the record.

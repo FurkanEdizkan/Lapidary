@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 import { freeRenderCache } from '../lib/api'
+import { currentUser } from '../lib/session'
 import { Dialog } from './Dialog'
 import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
@@ -62,6 +63,9 @@ export function InstanceStorage({
 }) {
   const queryClient = useQueryClient()
   const [asking, setAsking] = useState(false)
+  // Freeing everybody's cache and walking the whole store are the admin's (A38); everybody else reads the figures.
+  // Unknown before the gate has asked, as in a page's own tests: offered, and the server refuses a non-admin.
+  const admin = currentUser()?.isAdmin ?? true
   const free = useMutation({
     mutationFn: freeRenderCache,
     onSuccess: () => {
@@ -98,7 +102,7 @@ export function InstanceStorage({
       </p>
       {free.data !== undefined ? (
         <p className="mt-1">{strings.storage.cacheFreed(free.data.removed, free.data.quarantinedBytes)}</p>
-      ) : renderCacheBytes > 0 ? (
+      ) : renderCacheBytes > 0 && admin ? (
         <p className="mt-1 flex flex-wrap items-center gap-2">
           <span>{strings.storage.renderCache(renderCacheBytes)}</span>
           <button
@@ -148,7 +152,7 @@ export function InstanceStorage({
         // Asked for and not answered: the walk failed, and the four figures above are still
         // true because they never came from the disk.
         <p className="mt-1">{strings.storage.onDiskFailed}</p>
-      ) : (
+      ) : !admin ? null : (
         <button
           type="button"
           onClick={onMeasure}

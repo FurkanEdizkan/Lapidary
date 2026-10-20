@@ -18,8 +18,9 @@ use lapidary_storage::DerivativeStore;
 
 /// A year, the maximum any cache should hold something. Safe to the point of being
 /// uninteresting: the URL contains the hash of the content, so the bytes at a given URL
-/// cannot change. `immutable` additionally tells a browser not to revalidate on reload.
-const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// cannot change. `immutable` additionally tells a browser not to revalidate on reload. `private` (A38): the bytes are
+/// served only to a person who can reach them, so no cache between may keep them for anybody else.
+const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
 pub async fn by_hash(
     State(state): State<AppState>,

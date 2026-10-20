@@ -305,7 +305,6 @@ pub async fn setup(
     match code_matches(&state.db, &body.code).await {
         Ok(true) => {}
         Ok(false) => {
-            tokio::time::sleep(WRONG_ANSWER).await;
             return answer(
                 StatusCode::FORBIDDEN,
                 "wrong_code",
@@ -571,7 +570,20 @@ pub async fn setup_open(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::D
     Ok(!PgAccounts(db.clone()).any_user().await? && code_matches(db, typed).await?)
 }
 
+/// Wrong setup codes, one at a time (A38): each holds this for its `WRONG_ANSWER`, so guesses sent in parallel still
+/// come one a second, from the wizard's form and its folder picker alike.
+static WRONG_CODES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn code_matches(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
+    let matches = code_is(db, typed).await?;
+    if !matches {
+        let _one_at_a_time = WRONG_CODES.lock().await;
+        tokio::time::sleep(WRONG_ANSWER).await;
+    }
+    Ok(matches)
+}
+
+async fn code_is(db: &PgPool, typed: &str) -> Result<bool, lapidary_db::DbError> {
     let typed = normal(typed);
     if typed.is_empty() {
         return Ok(false);

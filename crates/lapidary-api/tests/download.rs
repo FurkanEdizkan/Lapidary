@@ -1747,3 +1747,54 @@ async fn a_deleted_or_unknown_parts_file_link_is_a_404_that_says_what_to_do(pool
         );
     }
 }
+
+/// A38: a file changed in place at the same size reached the client whole, at its full `Content-Length`, with the
+/// error only after the last byte, so it read as a good download. The last chunk is held back until the hash agrees.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn a_changed_file_of_the_same_size_never_arrives_whole(pool: sqlx::PgPool) {
+    use tokio_stream::StreamExt as _;
+    let root = tempfile::tempdir().expect("temp dir");
+    let rel = "libraries/default/Fasteners/LP-3120-05/LP-3120-05.stl";
+    let seeded = seed_at_path(&pool, root.path(), rel, TURKISH_NAME, "stl", &ascii_stl()).await;
+    let mut other = ascii_stl();
+    let last = other.len() - 2;
+    other[last] = if other[last] == b'5' { b'6' } else { b'5' };
+    std::fs::write(root.path().join(rel), &other).expect("the same size, other bytes");
+    let app = router(
+        AppState {
+            db: pool.clone(),
+            blob_root: root.path().to_path_buf(),
+            upload_dir: std::path::PathBuf::from("/nonexistent-upload-dir"),
+            host_storage_root: None,
+            ingest_dir: std::path::PathBuf::from("/nonexistent-ingest"),
+            inbox_dir: std::path::PathBuf::from("/nonexistent-inbox"),
+            host_ingest_root: None,
+            host_inbox_root: None,
+            touches: Default::default(),
+        },
+        Role::Api,
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(download_uri(seeded.revision, "?variant=original"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let mut stream = response.into_body().into_data_stream();
+    let (mut received, mut failed) = (0, false);
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => received += bytes.len(),
+            Err(_) => failed = true,
+        }
+    }
+    assert!(failed, "the body ends in an error");
+    assert!(
+        received < other.len(),
+        "{received} of {} bytes arrived before the error",
+        other.len()
+    );
+}

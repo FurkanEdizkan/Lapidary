@@ -259,3 +259,27 @@ async fn an_id_written_any_other_way_is_refused_not_let_through(pool: sqlx::PgPo
         "Lena's bracket is still hers"
     );
 }
+
+/// A38: emptying everybody's render cache and walking the whole store are the admin's.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn install_wide_storage_actions_are_the_admins(pool: sqlx::PgPool) {
+    common::ensure_session(&pool).await;
+    mira(&pool).await;
+    assert_eq!(
+        as_mira(&pool, "POST", "/api/storage/render-cache", None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        as_mira(&pool, "GET", "/api/storage?onDisk=true", None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        as_mira(&pool, "GET", "/api/storage", None).await.0,
+        StatusCode::OK,
+        "the totals stay everybody's"
+    );
+}

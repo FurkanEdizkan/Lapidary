@@ -350,11 +350,8 @@ async fn value_of(
             Ok(Some(owner)) if owner == viewer => {}
             // Not there at all: the widget's own read says so, as it always has.
             Ok(None) if !parts.library_exists(library).await.unwrap_or(true) => {}
-            Ok(_) => {
-                return Err(WidgetRefusal::Failed(
-                    "That library is not there any more. Pick another for this tile.".to_owned(),
-                ));
-            }
+            // Somebody else's reads exactly as one that names nothing (A38).
+            Ok(_) => return Err(no_such_library()),
             Err(_) => {
                 return Err(WidgetRefusal::Failed(
                     "Could not check this tile's library. Try again.".to_owned(),
