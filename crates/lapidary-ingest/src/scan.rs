@@ -3,7 +3,7 @@
 //! Two halves that used to be one. [`scan`] is the worker's `POST /scan` route, now a
 //! thin enqueue of a single `scan_directory` job; [`WorkerHandler::scan_directory`] is
 //! the walk itself, running later on a worker, which reads the mounted ingest directory
-//! and enqueues one `ingest_file` job per mesh candidate. Nothing in either half reads a
+//! and enqueues one `ingest_file` job per mesh candidate that changed since it was indexed (A33). Nothing in either half reads a
 //! file's bytes, hashes anything or invokes the CAD kernel — that is `handler.rs`.
 //! `router()` (`lib.rs`) always mounts the route; see that module's doc for why this
 //! crate, rather than a role check inside `lapidary-api`, is what keeps the open path
@@ -76,7 +76,8 @@
 //! `202 ScanAccepted` — the scan has been *accepted*, not performed. `queued` is `1`: the
 //! `scan_directory` job. The file counters live in `lapidary_core::BatchStatus`, behind
 //! `GET /api/libraries/{lib}/jobs/{batch}`, and `total` climbs from 1 to 1 + however many
-//! candidates the walk finds.
+//! candidates the walk finds: the ones it queued, and the ones it found unchanged, which the scan job's
+//! own row counts (A33).
 
 use crate::AppState;
 use crate::handler::{WorkerHandler, classify_db};
@@ -114,7 +115,7 @@ pub async fn scan(State(state): State<AppState>, Path(library): Path<LibraryId>)
 impl WorkerHandler {
     /// Walks the library's folder under `self.ingest_dir` — reading only: nothing under it is
     /// written, renamed or removed (M4) — and enqueues one `ingest_file` job per mesh candidate
-    /// (case-insensitive) into `batch` — the batch this job itself is in.
+    /// (case-insensitive) that changed since it was indexed into `batch` — the batch this job itself is in.
     ///
     /// Recursive since slice 6a. It was one `read_dir`, and a nested corpus therefore
     /// scanned as "0 files" with no error anywhere — the operator had to flatten their

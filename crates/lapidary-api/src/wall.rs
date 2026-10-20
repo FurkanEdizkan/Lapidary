@@ -1,8 +1,9 @@
 //! The sign-in wall (A28, owner 2026-10-18): the library's own pictures behind the sign-in form.
 //!
 //! **The only data a signed-out page shows**, and only pictures: the first picture of a part shared with everyone
-//! that its owner has not hidden from the wall, while the admin has the wall on. No id, name, count or figure goes
-//! with them. `lapidary_db::PgWall` carries the condition; this module adds nothing to it.
+//! that its owner has not hidden from the wall, while the admin has the wall on. No part id, name, count or figure goes
+//! with them. Each is addressed by its own picture id (A36), which says nothing about the part but when the picture was
+//! added. `lapidary_db::PgWall` carries the condition; this module adds nothing to it.
 
 use crate::AppState;
 use crate::auth::CurrentUser;
