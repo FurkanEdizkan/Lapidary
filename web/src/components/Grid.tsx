@@ -268,14 +268,16 @@ export function Grid({
     const wanted = target.current
     const node = list.current
     if (wanted === null || node === null) return
-    const index = parts.findIndex((part) => part.id === wanted.part)
-    if (index < 0) return
-    if (view === null || (index >= start && index < end)) {
-      if (wanted.focus) cardName(wanted.part)?.focus()
+    // Drawn is what the page holds, not what this render's window says: the first render's effects run with the
+    // window not yet measured, and taking that for "every card drawn" let the target go before it was reached.
+    const name = cardName(wanted.part)
+    if (name !== null) {
+      if (wanted.focus) name.focus()
       target.current = null
       return
     }
-    if (wanted.scrolledTo === index) return
+    const index = parts.findIndex((part) => part.id === wanted.part)
+    if (view === null || index < 0 || wanted.scrolledTo === index) return
     wanted.scrolledTo = index
     const top = node.getBoundingClientRect().top + window.scrollY + Math.floor(index / view.columns) * view.rowHeight
     window.scrollTo({ top: top - window.innerHeight / 3 })
