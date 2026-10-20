@@ -283,3 +283,45 @@ test('resting on a card, and focusing its name, start nothing at all', async () 
   fireEvent.mouseLeave(article)
   expect(fetchMock).not.toHaveBeenCalled()
 })
+
+/**
+ * A35: scrolled past the grid's last row (End, a dragged scrollbar), the window kept no rows, found no card to measure,
+ * and drew every card loaded for a frame: at 8,000 cards each page took 1.9 s to land. Layout stubbed, since jsdom lays
+ * nothing out: four columns of 300px rows, the grid 100px down the page.
+ */
+test('scrolled past the end, the grid still draws a window and never every card', async () => {
+  const many = Array.from({ length: 2000 }, (_, i) =>
+    card(`01931b6e-0000-7000-8000-${i.toString(16).padStart(12, '0')}`, `bracket-lp-${1000 + i}-03`),
+  )
+  let scrollY = 0
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => scrollY })
+  const real = window.getComputedStyle
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((node) =>
+    node instanceof HTMLUListElement
+      ? ({ gridTemplateColumns: '200px 200px 200px 200px', rowGap: '0' } as CSSStyleDeclaration)
+      : real(node),
+  )
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLUListElement.prototype, 'getBoundingClientRect').mockImplementation(
+    () => ({ top: 100 - scrollY }) as DOMRect,
+  )
+  await renderGrid(many)
+  const list = screen.getByRole('list')
+  let most = 0
+  const watch = new MutationObserver(() => {
+    most = Math.max(most, list.children.length)
+  })
+  watch.observe(list, { childList: true })
+  expect(list.children.length).toBeLessThan(100)
+
+  scrollY = 10_000_000
+  await act(async () => {
+    window.dispatchEvent(new Event('scroll'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  })
+  watch.disconnect()
+  expect(list.children.length, 'the last rows are drawn').toBeGreaterThan(0)
+  expect(list.children.length).toBeLessThan(100)
+  expect(most, 'never every card, not even for a frame').toBeLessThan(100)
+  vi.restoreAllMocks()
+})
