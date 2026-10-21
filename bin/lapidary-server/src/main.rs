@@ -7,6 +7,7 @@
 mod models_dir;
 mod ports;
 mod web;
+mod workers;
 
 use anyhow::{Context, Result, bail};
 use figment::Figment;
@@ -175,6 +176,7 @@ fn spawn_worker(
     ingest_dir: PathBuf,
     inbox_dir: PathBuf,
     blob_root: PathBuf,
+    concurrency: usize,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     use std::time::Duration;
@@ -190,7 +192,7 @@ fn spawn_worker(
             .job_poll_secs
             .map(Duration::from_secs)
             .unwrap_or(defaults.poll_interval),
-        concurrency: config.worker_concurrency.unwrap_or(defaults.concurrency),
+        concurrency,
         listen: true,
     };
 
@@ -354,9 +356,16 @@ async fn main() -> Result<()> {
     let (port_handle, port_moves) = ports::handle(first.locked_by.clone(), first.port);
     let ports_db = db.clone();
     let shutdown = tokio_util::sync::CancellationToken::new();
-    // Cancelled when the models folder changes (A6): this process stops as it does for SIGTERM, and
-    // compose's `restart: unless-stopped` starts it again on the new folder.
+    // Cancelled when the models folder (A6) or the import count (A41) changes: this process stops as it
+    // does for SIGTERM, and compose's `restart: unless-stopped` starts it again on the new setting.
     let restart = tokio_util::sync::CancellationToken::new();
+    // How many files the worker reads at once (A41): the operator's, the saved one, or the default.
+    let import_workers = workers::first(
+        &db,
+        config.worker_concurrency,
+        lapidary_jobs::WorkerConfig::default().concurrency,
+    )
+    .await;
     let (app_router, worker, flusher) = {
         tracing::info!(parsers = %parsers_description(), "parsers");
         let blob_root = config
@@ -438,6 +447,7 @@ async fn main() -> Result<()> {
             ingest_dir.clone(),
             inbox_dir.clone(),
             blob_root.clone(),
+            import_workers.workers,
             shutdown.clone(),
         );
 
@@ -495,6 +505,11 @@ async fn main() -> Result<()> {
             folder,
             store,
             restart.clone(),
+        ))
+        .merge(workers::routes(
+            ports_db.clone(),
+            import_workers.clone(),
+            restart.clone(),
         ));
         let app = match &config.web_dir {
             Some(dist) => {
@@ -525,7 +540,7 @@ async fn main() -> Result<()> {
     tokio::select! {
         () = shutdown_signal(shutdown.clone()) => {}
         () = restart.cancelled() => {
-            tracing::info!("stopping to start again on the new models folder; if nothing restarts Lapidary, start it again");
+            tracing::info!("stopping to start again on the new settings; if nothing restarts Lapidary, start it again");
             shutdown.cancel();
         }
     }

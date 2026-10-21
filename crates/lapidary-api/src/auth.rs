@@ -108,6 +108,11 @@ pub struct SetupRequest {
     pub password: String,
     /// Import from model sites; `None` leaves it on.
     pub import_links: Option<bool>,
+    /// How many imports run at once (A41); `None` leaves the default. The worker takes it when it
+    /// next starts, which the wizard asks for once setup is done.
+    #[serde(default)]
+    #[ts(optional)]
+    pub import_workers: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -324,6 +329,14 @@ pub async fn setup(
         Ok(name) => name,
         Err(response) => return *response,
     };
+    let range = crate::server_port::IMPORT_WORKERS_RANGE;
+    if body.import_workers.is_some_and(|n| !range.contains(&n)) {
+        return refused(&format!(
+            "Choose from {} to {} imports at once.",
+            range.start(),
+            range.end()
+        ));
+    }
     let hash = match hash_password(body.password).await {
         Ok(hash) => hash,
         Err(response) => return *response,
@@ -346,6 +359,16 @@ pub async fn setup(
     {
         // The account is made; a switch left at its default is not a reason to say setup failed.
         tracing::warn!(error = %err, "could not save the import switch the wizard set; it stays on");
+    }
+    if let Some(workers) = body.import_workers
+        && let Err(err) = PgSettings(state.db.clone())
+            .set(
+                crate::server_port::IMPORT_WORKERS,
+                &serde_json::json!(workers),
+            )
+            .await
+    {
+        tracing::warn!(error = %err, "could not save how many imports run at once; the default stays");
     }
     tracing::info!(username = %user.username, "setup made the first account");
     signed_in(&accounts, &user).await

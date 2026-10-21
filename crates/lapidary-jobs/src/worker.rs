@@ -41,7 +41,7 @@ impl Default for WorkerConfig {
             worker_id: default_worker_id(),
             lease: Duration::from_secs(60),
             poll_interval: Duration::from_secs(5),
-            concurrency: 4,
+            concurrency: 2,
             listen: true,
         }
     }
@@ -85,7 +85,7 @@ pub async fn run<H: JobHandler>(
         // lease that expires in a queue is indistinguishable from a crashed worker --
         // manufacturing the exact failure the lease exists to detect.
         //
-        // At this crate's default and tested concurrency (2 in the worker tests, 4 by
+        // At this crate's default and tested concurrency (2 in the worker tests and by
         // default) no test can observe this ordering directly: the queue never has more
         // ready jobs than permits, so a permit is always available and "acquire before"
         // vs. "acquire after" behave identically. Verified by hand for this task: moving

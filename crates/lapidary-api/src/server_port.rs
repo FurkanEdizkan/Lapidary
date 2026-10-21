@@ -23,6 +23,29 @@ pub struct MovePort {
     pub port: u16,
 }
 
+/// The `instance_setting` key for how many imports run at once (A41), and the range offered: one is the
+/// lightest, eight is past what the default 2 CPUs can use.
+pub const IMPORT_WORKERS: &str = "import_workers";
+pub const IMPORT_WORKERS_RANGE: std::ops::RangeInclusive<u16> = 1..=8;
+
+/// How many files the job worker reads at once (A41), and whether Settings may change it. A change
+/// restarts Lapidary, as a models folder change does.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportWorkers {
+    pub workers: u16,
+    /// `LAPIDARY_WORKER_CONCURRENCY` when `deploy/.env` fixes it.
+    pub locked_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SetImportWorkers {
+    pub workers: u16,
+}
+
 /// The models folder (A6): where it is on the host, and whether the wizard and Settings may choose
 /// another. Choosing one restarts Lapidary on it.
 #[derive(Debug, Serialize, TS)]
