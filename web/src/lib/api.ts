@@ -1710,16 +1710,16 @@ export async function saveImportWorkers(workers: number): Promise<boolean> {
 }
 
 /**
- * Wait until the app answers on `port`, then go there, on the same page (A5). Another port is another
- * origin, so the check is a `no-cors` request: its answer cannot be read, only that one came. The
- * session cookie names no port, so the person arrives signed in.
+ * Wait until the app answers on `port`, then go there, on the same page unless `path` names another (A5).
+ * Another port is another origin, so the check is a `no-cors` request: its answer cannot be read, only that
+ * one came. The session cookie names no port, so the person arrives signed in.
  */
-export async function followPort(port: number, tries = 40): Promise<boolean> {
+export async function followPort(port: number, tries = 40, path?: string): Promise<boolean> {
   const there = `${window.location.protocol}//${window.location.hostname}:${port}`
   for (let i = 0; i < tries; i++) {
     try {
       await fetch(`${there}/api/healthz`, { mode: 'no-cors', cache: 'no-store' })
-      window.location.assign(`${there}${window.location.pathname}${window.location.search}`)
+      window.location.assign(`${there}${path ?? `${window.location.pathname}${window.location.search}`}`)
       return true
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 250))
@@ -1778,15 +1778,19 @@ export async function chooseModelsFolder(choice: ChooseModelsFolder): Promise<bo
   return response.status === 202
 }
 
-/** After a restart was asked for: wait for this page's server to stop, then follow it back on `port`. */
-export async function followRestart(port: number): Promise<boolean> {
-  for (let i = 0; i < 60; i++) {
+/**
+ * After a restart was asked for: wait for this page's server to stop, then follow it back on `port`, to `path`
+ * when given. It looks every 50ms: a container comes back in well under a second (A41 measured half of one), and a
+ * slower look missed the gap and waited out its whole 15 seconds.
+ */
+export async function followRestart(port: number, path?: string): Promise<boolean> {
+  for (let i = 0; i < 300; i++) {
     try {
       await fetch('/api/healthz', { cache: 'no-store' })
-      await new Promise((resolve) => setTimeout(resolve, 250))
+      await new Promise((resolve) => setTimeout(resolve, 50))
     } catch {
       break
     }
   }
-  return followPort(port, 160)
+  return followPort(port, 160, path)
 }

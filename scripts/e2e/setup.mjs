@@ -72,7 +72,8 @@ try {
   // The intro plays once, and Skip ends it.
   await page.go('/setup', `[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === ${JSON.stringify(T.skip)})`)
   await press(T.skip)
-  await page.waitFor(`Boolean(${field(T.code)})`, 10_000)
+  // The intro's full-screen layer fades out over the form; a press before it has gone lands on it.
+  await page.waitFor(`Boolean(${field(T.code)}) && !document.querySelector('.fixed.inset-0.z-40')`, 10_000)
   done.push('intro skipped')
 
   // Step 1 with a wrong code: the code is only checked at Finish, so it comes back here.
@@ -84,7 +85,7 @@ try {
   await page.waitFor(at('Server'), 5_000)
   // Back keeps what was typed.
   await press(T.back)
-  await page.waitFor(at('Account'), 5_000)
+  await page.waitFor(`${at('Account')} && Boolean(${field(T.username)})`, 5_000)
   const kept = await page.evaluate(`${field(T.username)}?.value`)
   expect(kept === args.user, `Back lost the username: "${kept}"`)
   await press(T.next)
@@ -94,9 +95,10 @@ try {
   done.push('steps forward, back and forward')
 
   // Options: the sign-in pictures on by default, and the import count once the server has said it.
-  const wall = await page.evaluate(
-    `[...document.querySelectorAll('label')].find((l) => l.textContent.includes(${JSON.stringify(T.wall)}))?.querySelector('input')?.checked`,
-  )
+  // The stepper moves at once; the step itself arrives after the last one has left.
+  const wallBox = `[...document.querySelectorAll('label')].find((l) => l.textContent.includes(${JSON.stringify(T.wall)}))?.querySelector('input')`
+  await page.waitFor(`Boolean(${wallBox})`, 5_000)
+  const wall = await page.evaluate(`${wallBox}.checked`)
   expect(wall === true, `the sign-in pictures switch reads ${wall}, not on`)
   // Without a valid code the server will not say its count, so the field waits; it is the code that is wrong.
   await press(T.finish)

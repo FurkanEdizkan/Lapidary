@@ -325,7 +325,7 @@ function Wizard({
         try {
           // The restart comes back on the saved port, moved or not.
           const restarting = await chooseModelsFolder({ path, store: kept })
-          if (restarting && (await followRestart(moved ? to : thisPort()))) return
+          if (restarting && (await followRestart(moved ? to : thisPort(), HOME))) return
         } catch {
           // Refused: Settings shows the folder and why.
           window.location.assign(SETTINGS_PATH)
@@ -336,12 +336,12 @@ function Wizard({
         try {
           // Setup saved the number; the worker takes it when Lapidary starts again.
           const restarting = await saveImportWorkers(newWorkers)
-          if (restarting && (await followRestart(moved ? to : thisPort()))) return
+          if (restarting && (await followRestart(moved ? to : thisPort(), HOME))) return
         } catch {
           // Saved either way: it applies at the next start.
         }
       }
-      if (moved && (await followPort(to))) return
+      if (moved && (await followPort(to, undefined, HOME))) return
       window.location.assign('/')
     },
     onError: (error) => {
@@ -648,6 +648,8 @@ function Choose({
 }
 
 const SETTINGS_PATH = '/settings'
+/** Where a finished setup lands, wherever Lapidary went: `/setup` would only say it is set up. */
+const HOME = '/'
 
 /** The port this page is on, as a number, whatever the scheme's default. */
 function thisPort(): number {
