@@ -423,20 +423,24 @@ EOF
 
 # The rig's account (A1): setup on a fresh stack, sign-in on one already set up. The cookie lands in
 # $COOKIES for every curl, and `rig_cookie` hands its value to the flows' browsers.
+#
+# Setup is the wizard's own (A41): `setup.mjs` drives it in a browser, the way a person does, and the rig
+# then signs in as the account it made. Its screenshots go to $WORK/setup.
 sign_in_rig() {
   local status
   status=$(command curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" "$API/api/session")
   [ "$status" = 200 ] && return 0
   if [ "$status" = 409 ]; then
-    command curl -sf -c "$COOKIES" -H 'content-type: application/json' \
-      -d "{\"code\":\"E2E-RIG-SETUP\",\"username\":\"$RIG_USER\",\"password\":\"$RIG_PASSWORD\"}" \
-      "$API/api/setup" > /dev/null || die "setup refused the rig's account; see \`compose logs app\`"
-    note "ran first-run setup as $RIG_USER"
-  else
-    command curl -sf -c "$COOKIES" -H 'content-type: application/json' \
-      -d "{\"username\":\"$RIG_USER\",\"password\":\"$RIG_PASSWORD\"}" \
-      "$API/api/session" > /dev/null || die "the rig could not sign in as $RIG_USER (status $status)"
+    node "$ROOT/scripts/e2e/setup.mjs" --web "$WEB" --code E2E-RIG-SETUP --user "$RIG_USER" \
+      --password "$RIG_PASSWORD" --out "$WORK/setup" ||
+      die "first-run setup through the wizard failed (above; screenshots in $WORK/setup)"
+    note "ran first-run setup through the wizard as $RIG_USER"
+    wait_for "$API/api/healthz" "the api, back from setup's restart" 60 ||
+      die "the api did not come back after setup's restart; see \`compose logs app\`"
   fi
+  command curl -sf -c "$COOKIES" -H 'content-type: application/json' \
+    -d "{\"username\":\"$RIG_USER\",\"password\":\"$RIG_PASSWORD\"}" \
+    "$API/api/session" > /dev/null || die "the rig could not sign in as $RIG_USER (status $status)"
 }
 rig_cookie() { awk '$6 == "lapidary_session" { print $7 }' "$COOKIES" | tail -1; }
 
