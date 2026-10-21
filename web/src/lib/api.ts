@@ -6,6 +6,9 @@ import type {
   ModelsFolder,
   MovePort,
   ServerPort,
+  ImportWorkers,
+  SetImportWorkers,
+  SitesSwitch,
   NewPassword,
   NewPerson,
   PasswordChange,
@@ -398,6 +401,16 @@ export async function fetchSiteSettings(): Promise<SiteSettings> {
   const response = await fetch('/api/settings/sites')
   if (!response.ok) throw new Error(`site settings returned ${response.status}`)
   return (await response.json()) as SiteSettings
+}
+
+/** `PUT /api/settings/sites` — admin only: importing from model sites on or off for the install (A41). */
+export async function saveSitesSwitch(enabled: boolean): Promise<void> {
+  const response = await fetch('/api/settings/sites', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled } satisfies SitesSwitch),
+  })
+  if (!response.ok) throw await sentence(response, `the import switch returned ${response.status}`)
 }
 
 /** `PUT /api/settings/sites/{site}` — save a key, replacing the one there. */
@@ -1670,6 +1683,30 @@ export async function movePort(port: number): Promise<ServerPort> {
   })
   if (!response.ok) throw await sentence(response, `moving the port returned ${response.status}`)
   return (await response.json()) as ServerPort
+}
+
+/**
+ * How many imports run at once (A41). Signed in it is Settings' route; in the wizard, before anybody can
+ * sign in, it is setup's and carries the setup code.
+ */
+export async function fetchImportWorkers(code: string | null = null): Promise<ImportWorkers> {
+  const response = await fetch(
+    code === null ? '/api/settings/workers' : '/api/setup/workers',
+    code === null ? {} : { headers: { 'x-setup-code': code } },
+  )
+  if (!response.ok) throw await sentence(response, `imports at once returned ${response.status}`)
+  return (await response.json()) as ImportWorkers
+}
+
+/** `PUT /api/settings/workers` — saved, and Lapidary restarts on it: `true` when it is restarting. */
+export async function saveImportWorkers(workers: number): Promise<boolean> {
+  const response = await fetch('/api/settings/workers', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workers } satisfies SetImportWorkers),
+  })
+  if (!response.ok) throw await sentence(response, `imports at once returned ${response.status}`)
+  return response.status === 202
 }
 
 /**

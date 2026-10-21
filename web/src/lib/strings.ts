@@ -168,6 +168,17 @@ export const strings = {
     storeHint: 'Pictures and Lapidary’s copies. Chosen in the setup wizard, and kept where it is after that, so every download keeps working.',
     restarting: (path: string) => `Restarting Lapidary on ${path}…`,
     restartLost: 'Lapidary was asked to restart but has not come back. Check `docker compose logs app`, then reload.',
+    /** A41: importing from model sites, for the whole install; the wizard set it first. */
+    importLinks: 'Import models from Printables, Thingiverse and MyMiniFactory links',
+    importLinksHint:
+      'Lapidary contacts those sites only when you paste a link. Turn this off for an install that must contact nobody.',
+    importLinksAdminsOnly: 'Only an admin can turn importing on or off.',
+    /** A41: how many files the worker reads at once. */
+    workers: 'Imports at once',
+    workersHint:
+      'How many files Lapidary reads at once. More is faster on a first scan of a big folder, and uses more memory and CPU. Saving restarts Lapidary.',
+    workersAdminsOnly: 'Only an admin can change how many imports run at once.',
+    restartingWorkers: (n: number) => `Restarting Lapidary with ${n} ${n === 1 ? 'import' : 'imports'} at once…`,
     importHeading: 'Adding models',
     fetchDetails: 'Fetch a model’s details from its page when I add it with a link',
     fetchDetailsHint:
@@ -300,6 +311,14 @@ export const strings = {
       'Lapidary contacts those sites only when you paste a link. Turn this off for an install that must contact nobody.',
     importLinksForcedOff: 'Turned off by LAPIDARY_IMPORT_LINKS=false in deploy/.env.',
     keysLater: 'Keys for Thingiverse and MyMiniFactory go in Settings once you are signed in.',
+    /** A41: the sign-in wall and the import count, both changeable later in Settings. */
+    wall: 'Show pictures on the sign-in page',
+    wallHint:
+      'Pictures of the models shared with everybody, and nothing else about them. Anybody who can open the address sees them.',
+    workers: 'Imports at once',
+    workersHint:
+      'How many files Lapidary reads at once. 2 suits most machines; more is faster on a first scan of a big folder, and uses more memory and CPU.',
+    later: 'All of these can be changed later in Settings.',
     next: 'Next',
     back: 'Back',
     finish: 'Finish setup',

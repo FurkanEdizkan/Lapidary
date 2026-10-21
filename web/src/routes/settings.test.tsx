@@ -13,6 +13,7 @@ import type { SiteSettings } from '../lib/types'
 
 const SETTINGS: SiteSettings = {
   enabled: true,
+  forcedOff: false,
   sites: [
     { site: 'printables', name: 'Printables', needsKey: false, hint: null, checkedOk: null, checkedAt: null },
     { site: 'thingiverse', name: 'Thingiverse', needsKey: true, hint: '9f2e', checkedOk: true, checkedAt: '2026-10-16T09:30:00Z' },
@@ -34,6 +35,7 @@ function stub(settings: SiteSettings = SETTINGS) {
       }
       if (method !== 'GET') return { ok: true, status: 204, json: async () => null }
       if (url === '/api/settings/server') return { ok: true, status: 200, json: async () => ({ port: 32000, lockedBy: 'LAPIDARY_PORT' }) }
+      if (url === '/api/settings/workers') return { ok: true, status: 200, json: async () => ({ workers: 2, lockedBy: null }) }
       return { ok: true, status: 200, json: async () => settings }
     }),
   )
@@ -92,8 +94,8 @@ test('a typed key is checked before it is saved, then saved, and a saved one can
   )
 })
 
-test('switched off, the page says so and nothing can be checked', async () => {
-  stub({ ...SETTINGS, enabled: false })
+test('switched off by deploy/.env, the page says so and nothing can be checked', async () => {
+  stub({ ...SETTINGS, enabled: false, forcedOff: true })
   renderPage()
   expect(await screen.findByText(strings.settings.switchedOff)).toBeTruthy()
   const printables = await row('Printables')
@@ -106,6 +108,28 @@ test('a port fixed by deploy/.env reads as a fact, not as a field', async () => 
   renderPage()
   const value = await screen.findByText('32000')
   expect(value.tagName).toBe('DD')
-  expect(screen.queryByRole('spinbutton')).toBeNull()
+  expect(screen.queryByRole('spinbutton', { name: strings.settings.port })).toBeNull()
   screen.getByText(strings.settings.portLocked('LAPIDARY_PORT'))
+})
+
+/** A41: the wizard's import switch can be changed afterwards, by an admin, unless deploy/.env decides it. */
+test('importing from model sites is switched off from Settings', async () => {
+  const calls = stub()
+  renderPage()
+  const box = (await screen.findByRole('checkbox', { name: new RegExp(strings.settings.importLinks) })) as HTMLInputElement
+  expect(box.checked).toBe(true)
+  fireEvent.click(box)
+  await waitFor(() =>
+    expect(calls).toContainEqual({ url: '/api/settings/sites', method: 'PUT', body: { enabled: false } }),
+  )
+})
+
+/** A41: how many imports run at once is saved from the Server section, which restarts Lapidary. */
+test('imports at once is saved as a number', async () => {
+  const calls = stub()
+  renderPage()
+  const field = await screen.findByRole('spinbutton', { name: strings.settings.workers })
+  fireEvent.change(field, { target: { value: '3' } })
+  fireEvent.click(within(field.closest('form') as HTMLElement).getByRole('button', { name: strings.settings.save }))
+  await waitFor(() => expect(calls).toContainEqual({ url: '/api/settings/workers', method: 'PUT', body: { workers: 3 } }))
 })

@@ -97,17 +97,18 @@ export function Rise({ className, ...props }: Primitive) {
 }
 
 /**
- * One step of a sequence: in from the side it is going to, out to the side it came from. `direction` is 1 going
- * forward and -1 going back, and must be passed to `Presence`'s `custom` as well so the leaving step knows it.
+ * One step of a sequence: in from the side it is going to, out to the side it came from, 8px each way (DESIGN.md
+ * § Stepper). `direction` is 1 going forward and -1 going back, and must be passed to `Presence`'s `custom` as well
+ * so the leaving step knows it.
  */
 export function Step({ className, direction, ...props }: Primitive & { direction: 1 | -1 }) {
   return (
     <m.div
       custom={direction}
       variants={{
-        enter: (to: number) => ({ opacity: 0, x: 16 * to }),
+        enter: (to: number) => ({ opacity: 0, x: 8 * to }),
         here: { opacity: 1, x: 0, transition: mechanical('base') },
-        leave: (to: number) => ({ opacity: 0, x: -16 * to, transition: mechanical('fast') }),
+        leave: (to: number) => ({ opacity: 0, x: -8 * to, transition: mechanical('fast') }),
       }}
       initial="enter"
       animate="here"
