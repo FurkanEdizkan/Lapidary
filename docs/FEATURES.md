@@ -71,6 +71,7 @@ Phase tags map to `docs/ROADMAP.md`. `[—]` means deliberately not planned.
 | View in 3D reads the model in a worker, so the page never freezes; a 3MF reader of our own that follows the server's (projects with components in other model parts, transforms, units) | A11, built |
 | The 3D view's tools: a millimetre grid, the part's box and size, a measurement between two clicked points with their coordinates, each figure with its ≈, and an X/Y/Z axis gizmo | A12, built |
 | Packs: a zip, 7z or rar in the models folder kept as one item — read where it is, never unpacked, filed under its folder's category, its contents listed from the archive's index, downloaded byte for byte | A13, built |
+| First-run setup offers the sign-in pictures and how many imports run at once (1–8, 2 by default; fixed by LAPIDARY_WORKER_CONCURRENCY when set), and Settings changes either afterwards, with the import switch; a changed count restarts Lapidary, and the page follows it back. Every fresh rig stack is set up through the wizard in a browser | A41, built |
 | Move history per part, newest first — route only, deliberately unread ([—] UI) | 1 |
 <!--
   The move-history row keeps its Phase 1 tag because `GET /api/parts/{id}/moves` shipped
