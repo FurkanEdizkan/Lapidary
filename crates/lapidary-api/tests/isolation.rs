@@ -277,6 +277,18 @@ async fn install_wide_storage_actions_are_the_admins(pool: sqlx::PgPool) {
             .0,
         StatusCode::FORBIDDEN
     );
+    // A41: so is importing from model sites, for the whole install.
+    assert_eq!(
+        as_mira(
+            &pool,
+            "PUT",
+            "/api/settings/sites",
+            Some(json!({ "enabled": false }))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         as_mira(&pool, "GET", "/api/storage", None).await.0,
         StatusCode::OK,

@@ -6,7 +6,16 @@ import { Doorway, Field, INPUT } from '../components/Doorway'
 import { Icon } from '../components/Icon'
 import { FACT, HEADLINE, HINT, LEAD, SECTION_TITLE, STANDING } from '../components/Page'
 import { LOGIN_PATH, Refused, fetchSetupStatus, runSetup } from '../lib/session'
-import { chooseModelsFolder, fetchModelsFolder, followPort, followRestart, movePort } from '../lib/api'
+import {
+  chooseModelsFolder,
+  fetchImportWorkers,
+  fetchModelsFolder,
+  followPort,
+  followRestart,
+  movePort,
+  saveImportWorkers,
+  saveWallSetting,
+} from '../lib/api'
 import { FolderPicker } from '../components/FolderPicker'
 import { Fade, Indicator, Presence, Rise, Step } from '../lib/motion-react'
 import { reduced, tokens } from '../lib/motion-tokens'
@@ -23,6 +32,9 @@ const MODELS = 'models'
 const STORE = 'store'
 type Picking = typeof MODELS | typeof STORE
 const MIN_PASSWORD = 8
+/** How many imports may run at once: `IMPORT_WORKERS_RANGE` in lapidary-api's server_port.rs (A41). */
+const MIN_WORKERS = 1
+const MAX_WORKERS = 8
 /** The refusal that is about the setup code itself, shown under that field. */
 const WRONG_CODE = 'wrong_code'
 
@@ -239,6 +251,26 @@ function Wizard({
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [importLinks, setImportLinks] = useState(!status.importLinksForcedOff)
+  // The sign-in wall (A28) and how many imports run at once (A41), applied once the account exists.
+  const [wall, setWall] = useState(true)
+  const running = useQuery({
+    queryKey: ['setup-workers', code],
+    queryFn: () => fetchImportWorkers(code),
+    enabled: step === 3,
+    retry: false,
+  })
+  const [workers, setWorkers] = useState<string | null>(null)
+  const asked = Number(workers)
+  const newWorkers =
+    workers !== null &&
+    running.data !== undefined &&
+    running.data.lockedBy === null &&
+    Number.isInteger(asked) &&
+    asked >= MIN_WORKERS &&
+    asked <= MAX_WORKERS &&
+    asked !== running.data.workers
+      ? asked
+      : null
   // The port this page was opened on (A5); changing it moves Lapidary there once the account exists.
   const here = window.location.port === '' ? '' : window.location.port
   const [port, setPort] = useState(here)
@@ -263,6 +295,7 @@ function Wizard({
         displayName: displayName.trim() === '' ? null : displayName,
         password,
         importLinks: status.importLinksForcedOff ? null : importLinks,
+        importWorkers: newWorkers ?? undefined,
       }),
     onSuccess: async () => {
       // The account exists: the done moment, while whatever follows runs. It holds nothing up.
@@ -279,20 +312,36 @@ function Wizard({
           // Stay on this port.
         }
       }
+      if (!wall) {
+        try {
+          await saveWallSetting(false)
+        } catch {
+          // Left on; Settings turns it off.
+        }
+      }
       const path = chosen !== null && chosen !== folder.data?.path ? chosen : null
       const kept = store !== null && store !== folder.data?.store ? store : null
       if (path !== null || kept !== null) {
         try {
           // The restart comes back on the saved port, moved or not.
           const restarting = await chooseModelsFolder({ path, store: kept })
-          if (restarting && (await followRestart(moved ? to : thisPort()))) return
+          if (restarting && (await followRestart(moved ? to : thisPort(), HOME))) return
         } catch {
           // Refused: Settings shows the folder and why.
           window.location.assign(SETTINGS_PATH)
           return
         }
       }
-      if (moved && (await followPort(to))) return
+      if (newWorkers !== null) {
+        try {
+          // Setup saved the number; the worker takes it when Lapidary starts again.
+          const restarting = await saveImportWorkers(newWorkers)
+          if (restarting && (await followRestart(moved ? to : thisPort(), HOME))) return
+        } catch {
+          // Saved either way: it applies at the next start.
+        }
+      }
+      if (moved && (await followPort(to, undefined, HOME))) return
       window.location.assign('/')
     },
     onError: (error) => {
@@ -493,7 +542,38 @@ function Wizard({
                   </span>
                 </span>
               </label>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={wall}
+                  onChange={(event) => setWall(event.target.checked)}
+                  className="mt-0.5 size-4 accent-[var(--color-dim)]"
+                />
+                <span className="flex flex-col gap-1">
+                  {strings.setup.wall}
+                  <span className={HINT}>{strings.setup.wallHint}</span>
+                </span>
+              </label>
+              <Field
+                label={strings.setup.workers}
+                hint={
+                  running.data?.lockedBy
+                    ? strings.settings.portLocked(running.data.lockedBy)
+                    : strings.setup.workersHint
+                }
+              >
+                <input
+                  type="number"
+                  min={MIN_WORKERS}
+                  max={MAX_WORKERS}
+                  value={workers ?? String(running.data?.workers ?? '')}
+                  disabled={running.data === undefined || running.data.lockedBy !== null}
+                  onChange={(event) => setWorkers(event.target.value)}
+                  className={`${INPUT} tabular w-20`}
+                />
+              </Field>
               <p className={HINT}>{strings.setup.keysLater}</p>
+              <p className={HINT}>{strings.setup.later}</p>
             </section>
           )}
 
@@ -568,6 +648,8 @@ function Choose({
 }
 
 const SETTINGS_PATH = '/settings'
+/** Where a finished setup lands, wherever Lapidary went: `/setup` would only say it is set up. */
+const HOME = '/'
 
 /** The port this page is on, as a number, whatever the scheme's default. */
 function thisPort(): number {

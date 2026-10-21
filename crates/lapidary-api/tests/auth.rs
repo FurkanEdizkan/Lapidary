@@ -91,7 +91,8 @@ async fn setup_makes_the_admin_once_with_the_logged_code_and_claims_what_exists(
             "username": "  Furkan ",
             "displayName": "Furkan Edizkan",
             "password": "correct horse battery",
-            "importLinks": false
+            "importLinks": false,
+            "importWorkers": 3
         })
     };
     let wrong = send(
@@ -107,6 +108,16 @@ async fn setup_makes_the_admin_once_with_the_logged_code_and_claims_what_exists(
         wrong.body["message"]
             .as_str()
             .is_some_and(|m| m.contains("docker compose logs"))
+    );
+
+    // An import count out of range is refused before any account is made (A41).
+    let mut too_many = wizard(&code);
+    too_many["importWorkers"] = json!(9);
+    let refused = send(&pool, "POST", "/api/setup", None, Some(too_many)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(
+        send(&pool, "GET", "/api/setup", None, None).await.body["required"],
+        true
     );
 
     // Typed lowercase and without dashes, as a person might.
@@ -127,6 +138,13 @@ async fn setup_makes_the_admin_once_with_the_logged_code_and_claims_what_exists(
     let sites = send(&pool, "GET", "/api/settings/sites", Some(&cookie), None).await;
     assert_eq!(sites.status, StatusCode::OK);
     assert_eq!(sites.body["enabled"], false);
+    // And the import count, for the worker's next start (A41).
+    let workers: Option<Value> =
+        sqlx::query_scalar("SELECT value FROM instance_setting WHERE key = 'import_workers'")
+            .fetch_optional(&pool)
+            .await
+            .expect("setting");
+    assert_eq!(workers, Some(json!(3)));
 
     // Once only, and the code is spent.
     let again = send(&pool, "POST", "/api/setup", None, Some(wizard(&code))).await;

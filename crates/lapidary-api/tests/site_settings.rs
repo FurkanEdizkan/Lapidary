@@ -53,6 +53,26 @@ fn json_of(body: &str) -> Value {
     serde_json::from_str(body).expect("json")
 }
 
+/// A41: the admin turns importing off and on again from Settings, after the wizard.
+#[sqlx::test(migrations = "../lapidary-db/migrations")]
+async fn importing_is_switched_off_and_on_from_settings(pool: sqlx::PgPool) {
+    let (status, body) = send(&pool, "GET", "/api/settings/sites", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json_of(&body)["forcedOff"], false);
+    for on in [false, true] {
+        let (status, body) = send(
+            &pool,
+            "PUT",
+            "/api/settings/sites",
+            Some(json!({ "enabled": on })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let (_, body) = send(&pool, "GET", "/api/settings/sites", None).await;
+        assert_eq!(json_of(&body)["enabled"], on);
+    }
+}
+
 #[sqlx::test(migrations = "../lapidary-db/migrations")]
 async fn a_saved_key_is_listed_by_its_last_four_characters_and_never_returned(pool: sqlx::PgPool) {
     let (status, body) = send(&pool, "GET", "/api/settings/sites", None).await;

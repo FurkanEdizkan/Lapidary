@@ -638,11 +638,15 @@ Setup's wizard (`routes/setup.tsx`, A20), in the Doorway's split.
   as a horizontal hairline under it, its done part in Quicklime.
 - **Server's folders are facts** (`FACT`), as in Settings, and every hint is `HINT`. Back and Skip
   are quiet and bounded by Edge.
+- **Options** (A41): importing from model sites, the sign-in page's pictures, and how many imports
+  run at once (a 1–8 number field, locked as a fact when deploy/.env fixes it). Each is changeable
+  later in Settings, and the step says so.
 - **The intro into setup** (once per page load, inside `--duration-intro`): the brand mark holds at
   the centre over `--duration-scene`; then it fades while the wizard rises 8px and fades in. A key, a click or **Skip** ends it.
   Under reduced motion it does not play.
 - **Done.** The diamond fills while `followRestart` or `followPort`
-  runs. The animation never delays either: if the server answers first, the page moves on.
+  runs, and either lands on `/`, never back on `/setup`. The animation never delays either: if the
+  server answers first, the page moves on.
 
 ### Buttons
 

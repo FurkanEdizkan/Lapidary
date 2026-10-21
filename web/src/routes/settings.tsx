@@ -8,6 +8,7 @@ import {
   checkSiteKey,
   clearSiteKey,
   fetchImportSettings,
+  fetchImportWorkers,
   fetchModelsFolder,
   fetchServerPort,
   fetchSiteSettings,
@@ -15,7 +16,9 @@ import {
   followRestart,
   movePort,
   saveImportSettings,
+  saveImportWorkers,
   saveSiteKey,
+  saveSitesSwitch,
 } from '../lib/api'
 import { Presence } from '../lib/motion-react'
 import { strings } from '../lib/strings'
@@ -65,10 +68,12 @@ export function SettingsPage() {
             </p>
           ) : (
             <>
-              {settings.data.enabled ? null : (
+              {settings.data.forcedOff ? (
                 <p role="status" className="mt-4 max-w-prose text-[var(--color-muted)]">
                   {strings.settings.switchedOff}
                 </p>
+              ) : (
+                <SitesSwitch enabled={settings.data.enabled} />
               )}
               <ul role="list" className="flex flex-col divide-y divide-[var(--color-border)]">
                 {settings.data.sites.map((site) => (
@@ -204,9 +209,125 @@ function ServerSection() {
             {strings.settings.moveLost(lost)}
           </p>
         )}
+        <WorkersRow />
       </section>
     </>
   )
+}
+
+/** Importing from model sites, for the whole install (A41): the switch the wizard set first. */
+function SitesSwitch({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient()
+  const admin = currentUser()?.isAdmin ?? true
+  const save = useMutation({
+    mutationFn: saveSitesSwitch,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['site-settings'] }),
+  })
+  return (
+    <>
+      <label className="mt-4 flex items-start gap-3 text-sm">
+        <input
+          type="checkbox"
+          checked={save.isPending ? save.variables : enabled}
+          disabled={!admin || save.isPending}
+          onChange={(event) => save.mutate(event.target.checked)}
+          className="mt-0.5 size-4 accent-[var(--color-dim)]"
+        />
+        <span className="flex flex-col gap-1">
+          {strings.settings.importLinks}
+          <span className={HINT}>
+            {admin ? strings.settings.importLinksHint : strings.settings.importLinksAdminsOnly}
+          </span>
+        </span>
+      </label>
+      {save.isError ? (
+        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+          {save.error.message}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * How many imports run at once (A41): fixed by deploy/.env, or this install's own. Saving restarts Lapidary, and
+ * the page follows it back, as a models folder change does.
+ */
+function WorkersRow() {
+  const current = useQuery({ queryKey: ['import-workers'], queryFn: () => fetchImportWorkers() })
+  const [workers, setWorkers] = useState('')
+  const [lost, setLost] = useState(false)
+  const admin = currentUser()?.isAdmin ?? true
+  const save = useMutation({
+    mutationFn: async (to: number) => {
+      if (!(await saveImportWorkers(to))) return
+      if (!(await followRestart(thisPort()))) setLost(true)
+    },
+  })
+  if (current.data === undefined) return null
+  const locked = current.data.lockedBy
+  const wanted = Number(workers)
+  return (
+    <>
+      {save.isPending && save.variables !== undefined ? (
+        <div className="fixed inset-0 z-50">
+          <AppSkeleton label={strings.settings.restartingWorkers(save.variables)} />
+        </div>
+      ) : null}
+      {locked !== null || !admin ? (
+        <dl className="mt-6 flex flex-col gap-1.5">
+          <dt className={KEY}>{strings.settings.workers}</dt>
+          <dd className={FACT}>{current.data.workers}</dd>
+        </dl>
+      ) : (
+        <form
+          className="mt-6 flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (Number.isInteger(wanted) && wanted > 0 && !save.isPending) save.mutate(wanted)
+          }}
+        >
+          <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+            {strings.settings.workers}
+            <input
+              type="number"
+              min={1}
+              max={8}
+              placeholder={String(current.data.workers)}
+              value={workers}
+              onChange={(event) => setWorkers(event.target.value)}
+              className={`${FIELD} tabular w-20`}
+            />
+          </label>
+          <button type="submit" disabled={workers === '' || save.isPending} className={workers === '' ? QUIET : READY}>
+            {strings.settings.save}
+          </button>
+        </form>
+      )}
+      <p className={`${HINT} mt-2`}>
+        {locked !== null
+          ? strings.settings.portLocked(locked)
+          : admin
+            ? strings.settings.workersHint
+            : strings.settings.workersAdminsOnly}
+      </p>
+      {save.isError ? (
+        <p role="alert" className="mt-2 text-sm text-[var(--color-text)]">
+          {save.error.message}
+        </p>
+      ) : null}
+      {lost ? (
+        <p role="alert" className="mt-2 max-w-prose text-sm text-[var(--color-text)]">
+          {strings.settings.restartLost}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+/** This page's port, for following a restart back to it. */
+function thisPort(): number {
+  return window.location.port === '' ? (window.location.protocol === 'https:' ? 443 : 80) : Number(window.location.port)
 }
 
 /** How Import starts (A2): whether a file added with a page link fetches the page's details. */
@@ -365,8 +486,7 @@ function ModelsFolderSection() {
   const choose = useMutation({
     mutationFn: async (path: string) => {
       if (!(await chooseModelsFolder({ path, store: null }))) return
-      const port = window.location.port === '' ? (window.location.protocol === 'https:' ? 443 : 80) : Number(window.location.port)
-      if (!(await followRestart(port))) setLost(true)
+      if (!(await followRestart(thisPort()))) setLost(true)
     },
   })
   if (folder.data === undefined) return null

@@ -39,10 +39,20 @@ async fn switched_off_the_page_says_so_and_nothing_imports_or_checks(pool: sqlx:
     let body = axum::body::to_bytes(list.into_body(), 64 * 1024)
         .await
         .expect("body");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).expect("json")["enabled"],
-        false
-    );
+    let listed = serde_json::from_slice::<serde_json::Value>(&body).expect("json");
+    assert_eq!(listed["enabled"], false);
+    assert_eq!(listed["forcedOff"], true);
+    // Settings cannot turn back on what deploy/.env turned off (A41).
+    let switched = app()
+        .oneshot(
+            Request::put("/api/settings/sites")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("responds");
+    assert_eq!(switched.status(), StatusCode::FORBIDDEN);
 
     for uri in [
         "/api/libraries/01931b6e-0000-7000-8000-000000000001/imports/link",

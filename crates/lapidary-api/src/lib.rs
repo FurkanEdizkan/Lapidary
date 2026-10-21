@@ -256,7 +256,10 @@ fn guarded(db: PgPool) -> Router<AppState> {
             get(wall::setting).put(wall::set_setting),
         )
         .route("/api/parts/{id}/wall", get(wall::part).put(wall::set_part))
-        .route("/api/settings/sites", get(site_settings::list))
+        .route(
+            "/api/settings/sites",
+            get(site_settings::list).put(site_settings::switch),
+        )
         // The people on the install, the admin's account management, and sharing (A4). See
         // `people.rs`.
         .route("/api/people", get(people::list).post(people::create))

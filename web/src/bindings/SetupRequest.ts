@@ -4,4 +4,9 @@ export type SetupRequest = { code: string, username: string, displayName: string
 /**
  * Import from model sites; `None` leaves it on.
  */
-importLinks: boolean | null, };
+importLinks: boolean | null, 
+/**
+ * How many imports run at once (A41); `None` leaves the default. The worker takes it when it
+ * next starts, which the wizard asks for once setup is done.
+ */
+importWorkers?: number, };

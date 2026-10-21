@@ -6,6 +6,9 @@ import type {
   ModelsFolder,
   MovePort,
   ServerPort,
+  ImportWorkers,
+  SetImportWorkers,
+  SitesSwitch,
   NewPassword,
   NewPerson,
   PasswordChange,
@@ -398,6 +401,16 @@ export async function fetchSiteSettings(): Promise<SiteSettings> {
   const response = await fetch('/api/settings/sites')
   if (!response.ok) throw new Error(`site settings returned ${response.status}`)
   return (await response.json()) as SiteSettings
+}
+
+/** `PUT /api/settings/sites` — admin only: importing from model sites on or off for the install (A41). */
+export async function saveSitesSwitch(enabled: boolean): Promise<void> {
+  const response = await fetch('/api/settings/sites', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled } satisfies SitesSwitch),
+  })
+  if (!response.ok) throw await sentence(response, `the import switch returned ${response.status}`)
 }
 
 /** `PUT /api/settings/sites/{site}` — save a key, replacing the one there. */
@@ -1673,16 +1686,40 @@ export async function movePort(port: number): Promise<ServerPort> {
 }
 
 /**
- * Wait until the app answers on `port`, then go there, on the same page (A5). Another port is another
- * origin, so the check is a `no-cors` request: its answer cannot be read, only that one came. The
- * session cookie names no port, so the person arrives signed in.
+ * How many imports run at once (A41). Signed in it is Settings' route; in the wizard, before anybody can
+ * sign in, it is setup's and carries the setup code.
  */
-export async function followPort(port: number, tries = 40): Promise<boolean> {
+export async function fetchImportWorkers(code: string | null = null): Promise<ImportWorkers> {
+  const response = await fetch(
+    code === null ? '/api/settings/workers' : '/api/setup/workers',
+    code === null ? {} : { headers: { 'x-setup-code': code } },
+  )
+  if (!response.ok) throw await sentence(response, `imports at once returned ${response.status}`)
+  return (await response.json()) as ImportWorkers
+}
+
+/** `PUT /api/settings/workers` — saved, and Lapidary restarts on it: `true` when it is restarting. */
+export async function saveImportWorkers(workers: number): Promise<boolean> {
+  const response = await fetch('/api/settings/workers', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workers } satisfies SetImportWorkers),
+  })
+  if (!response.ok) throw await sentence(response, `imports at once returned ${response.status}`)
+  return response.status === 202
+}
+
+/**
+ * Wait until the app answers on `port`, then go there, on the same page unless `path` names another (A5).
+ * Another port is another origin, so the check is a `no-cors` request: its answer cannot be read, only that
+ * one came. The session cookie names no port, so the person arrives signed in.
+ */
+export async function followPort(port: number, tries = 40, path?: string): Promise<boolean> {
   const there = `${window.location.protocol}//${window.location.hostname}:${port}`
   for (let i = 0; i < tries; i++) {
     try {
       await fetch(`${there}/api/healthz`, { mode: 'no-cors', cache: 'no-store' })
-      window.location.assign(`${there}${window.location.pathname}${window.location.search}`)
+      window.location.assign(`${there}${path ?? `${window.location.pathname}${window.location.search}`}`)
       return true
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 250))
@@ -1741,15 +1778,19 @@ export async function chooseModelsFolder(choice: ChooseModelsFolder): Promise<bo
   return response.status === 202
 }
 
-/** After a restart was asked for: wait for this page's server to stop, then follow it back on `port`. */
-export async function followRestart(port: number): Promise<boolean> {
-  for (let i = 0; i < 60; i++) {
+/**
+ * After a restart was asked for: wait for this page's server to stop, then follow it back on `port`, to `path`
+ * when given. It looks every 50ms: a container comes back in well under a second (A41 measured half of one), and a
+ * slower look missed the gap and waited out its whole 15 seconds.
+ */
+export async function followRestart(port: number, path?: string): Promise<boolean> {
+  for (let i = 0; i < 300; i++) {
     try {
       await fetch('/api/healthz', { cache: 'no-store' })
-      await new Promise((resolve) => setTimeout(resolve, 250))
+      await new Promise((resolve) => setTimeout(resolve, 50))
     } catch {
       break
     }
   }
-  return followPort(port, 160)
+  return followPort(port, 160, path)
 }

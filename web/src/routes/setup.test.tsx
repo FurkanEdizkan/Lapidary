@@ -158,6 +158,7 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
       return json(403, { code: 'wrong_code', message: 'That setup code is not the one this server printed.' })
     }
     if (url === '/api/setup/storage') return json(200, FOLDER)
+    if (url === '/api/setup/workers') return json(200, { workers: 2, lockedBy: null })
     if (url === '/api/setup/storage/folders' && init?.method === 'POST') {
       const { path, name } = JSON.parse(String(init.body)) as { path: string; name: string }
       return json(201, {
@@ -232,7 +233,11 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
   expect(new Headers(listed?.[1]?.headers).get('x-setup-code')).toBe('K7QF-M2XD-PR4T')
 
   fireEvent.click(screen.getByRole('button', { name: strings.setup.next }))
-  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(strings.setup.importLinks) }))
+  // A41: the sign-in pictures are on unless turned off, and the import count starts at the server's.
+  expect(screen.getByRole('checkbox', { name: new RegExp(strings.setup.wall) })).toHaveProperty('checked', true)
+  expect(await screen.findByDisplayValue('2')).toBeTruthy()
+  type(strings.setup.workers, '3')
   fireEvent.click(screen.getByRole('button', { name: strings.setup.finish }))
 
   // Back on step one, with the server's sentence under the code it is about, and the code field focused.
@@ -250,5 +255,6 @@ test('the wizard checks the account, shows the server, and a wrong code sends it
     displayName: 'Furkan Edizkan',
     password: 'correct horse battery',
     importLinks: false,
+    importWorkers: 3,
   })
 })

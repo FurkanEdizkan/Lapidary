@@ -1307,9 +1307,8 @@ const FLOWS = [
     // from this browser, signs in through the form (a session of its own), signs *that* out through the account
     // menu, signs in once more, and puts the rig's cookie back whatever happened.
     //
-    // Setup on a fresh stack is not here: the rig drives a seeded stack, which `seed` set up by curl, so `/setup`
-    // only ever shows "Lapidary is set up". The intro, Skip and step 1 are `setup.test.tsx`'s, and A25 checked them
-    // once in a browser on a fresh `up` (docs/goals/A25.md § Record).
+    // Setup on a fresh stack is not here but in `setup.mjs`, which `stack.sh` runs before the seed (A41): by the time
+    // the flows run, `/setup` only ever shows "Lapidary is set up".
     name: 'doorway',
     widths: [1440, 390],
     async run(page) {
