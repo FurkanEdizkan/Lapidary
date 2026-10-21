@@ -42,9 +42,20 @@ pub struct SiteSetting {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct SiteSettings {
-    /// `false` when `LAPIDARY_IMPORT_LINKS=false` turned importing off for this install.
+    /// `false` when importing is off for this install: by `LAPIDARY_IMPORT_LINKS=false`, or by the
+    /// switch the wizard and Settings set.
     pub enabled: bool,
+    /// `true` when `LAPIDARY_IMPORT_LINKS=false` decides it, and the switch is shown, not offered.
+    pub forced_off: bool,
     pub sites: Vec<SiteSetting>,
+}
+
+/// `PUT /api/settings/sites`'s body: importing from model sites on or off for the install (A41).
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SitesSwitch {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -160,9 +171,41 @@ pub async fn list(
         .collect();
     Json(SiteSettings {
         enabled: enabled(&state.db).await,
+        forced_off: forced_off(),
         sites,
     })
     .into_response()
+}
+
+/// `PUT /api/settings/sites` — admin only: importing from model sites on or off, the switch the wizard
+/// first set (A41). `204`.
+pub async fn switch(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::CurrentUser>,
+    body: Result<Json<SitesSwitch>, JsonRejection>,
+) -> Response {
+    if !user.is_admin {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "Only an admin can turn importing from model sites on or off.",
+        );
+    }
+    if forced_off() {
+        return switched_off();
+    }
+    let Ok(Json(body)) = body else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "Send `{\"enabled\": true}` or `{\"enabled\": false}`.",
+        );
+    };
+    match lapidary_db::PgSettings(state.db.clone())
+        .set(IMPORT_LINKS, &serde_json::Value::Bool(body.enabled))
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(&err, "import switch failed"),
+    }
 }
 
 /// `PUT /api/settings/sites/{site}` — save a key, replacing the one there. `204`.

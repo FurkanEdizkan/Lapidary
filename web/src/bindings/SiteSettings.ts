@@ -3,6 +3,11 @@ import type { SiteSetting } from "./SiteSetting";
 
 export type SiteSettings = { 
 /**
- * `false` when `LAPIDARY_IMPORT_LINKS=false` turned importing off for this install.
+ * `false` when importing is off for this install: by `LAPIDARY_IMPORT_LINKS=false`, or by the
+ * switch the wizard and Settings set.
  */
-enabled: boolean, sites: Array<SiteSetting>, };
+enabled: boolean, 
+/**
+ * `true` when `LAPIDARY_IMPORT_LINKS=false` decides it, and the switch is shown, not offered.
+ */
+forcedOff: boolean, sites: Array<SiteSetting>, };
